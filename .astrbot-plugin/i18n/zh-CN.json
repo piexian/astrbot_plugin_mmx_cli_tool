@@ -1,0 +1,35 @@
+{
+  "commands": {
+    "image": {
+      "description": "生成图片 - 使用 MiniMax AI 根据文本描述生成图片",
+      "usage": "/mmx image <描述>"
+    },
+    "video": {
+      "description": "生成视频 - 使用 MiniMax AI 根据文本描述生成视频",
+      "usage": "/mmx video <描述>"
+    },
+    "music": {
+      "description": "生成音乐 - 使用 MiniMax AI 生成音乐（支持纯器乐和歌词）",
+      "usage": "/mmx music <描述> [--instrumental]"
+    },
+    "search": {
+      "description": "联网搜索 - 使用 MiniMax 搜索引擎查询信息",
+      "usage": "/mmx search <查询>"
+    },
+    "vision": {
+      "description": "图片理解 - 使用 MiniMax 视觉模型分析图片内容",
+      "usage": "/mmx vision [描述要求]（需引用图片）"
+    },
+    "quota": {
+      "description": "额度查询 - 查看 MiniMax API 剩余额度",
+      "usage": "/mmx quota"
+    }
+  },
+  "errors": {
+    "no_api_key": "未配置 MiniMax API Key，请在插件配置中设置。",
+    "auth_failed": "API Key 无效，请检查配置。",
+    "quota_exceeded": "额度不足或请求过多。",
+    "timeout": "请求超时，请稍后重试。",
+    "content_filter": "内容被安全审核拦截。"
+  }
+}

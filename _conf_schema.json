@@ -1,0 +1,60 @@
+{
+  "api_key": {
+    "description": "MiniMax API Key 列表。每个 Key 可指定对应区域。",
+    "type": "template_list",
+    "default": [],
+    "hint": "添加多个 Key 可实现额度池化，插件自动按模型额度轮询。",
+    "templates": {
+      "key_entry": {
+        "name": "API Key",
+        "hint": "从 MiniMax 开放平台获取的 API Key",
+        "items": {
+          "key": {
+            "description": "API Key",
+            "type": "string",
+            "hint": "以 sk- 开头"
+          },
+          "region": {
+            "description": "区域",
+            "type": "string",
+            "options": [
+              { "label": "中国 (api.minimaxi.com)", "value": "cn" },
+              { "label": "国际 (api.minimax.io)", "value": "global" }
+            ],
+            "default": "cn"
+          }
+        }
+      }
+    }
+  },
+  "base_url": {
+    "description": "自定义 API 地址（留空则使用区域默认地址）",
+    "type": "string",
+    "default": ""
+  },
+  "timeout": {
+    "description": "请求超时（秒）",
+    "type": "int",
+    "default": 300
+  },
+  "video_poll_interval": {
+    "description": "视频生成轮询间隔（秒）",
+    "type": "int",
+    "default": 5
+  },
+  "video_timeout": {
+    "description": "视频生成超时（秒）",
+    "type": "int",
+    "default": 600
+  },
+  "default_image_model": {
+    "description": "默认图片生成模型",
+    "type": "string",
+    "default": "image-01"
+  },
+  "default_music_model": {
+    "description": "默认音乐生成模型",
+    "type": "string",
+    "default": "music-2.6"
+  }
+}
