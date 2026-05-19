@@ -1,7 +1,4 @@
-"""MiniMax API Key 池 — 多 Key 轮询与按模型额度感知调度。
-
-每个 Key 可关联区域（region），请求时自动使用对应区域的 API 端点。
-"""
+"""MiniMax API Key 池 — 多 Key 轮询与按模型额度感知调度。"""
 
 from __future__ import annotations
 
@@ -18,7 +15,6 @@ class KeyState:
 
     key: str
     index: int
-    region: str = "cn"
     enabled: bool = True
     disabled_time: float = 0.0
     disabled_reason: str = ""
@@ -35,14 +31,12 @@ class KeyPool:
     DISABLED_COOLDOWN = 600
     CHECK_TIMEOUT = 10.0
 
-    def __init__(self, entries: list[dict[str, str]]) -> None:
-        """entries: [{"key": "sk-xxx", "region": "cn"}, ...]"""
-        if not entries:
+    def __init__(self, keys: list[str], region: str = "cn") -> None:
+        if not keys:
             raise ValueError("至少需要提供一个 API Key")
+        self._region = region
         self._states: list[KeyState] = [
-            KeyState(key=e["key"].strip(), index=i, region=e.get("region", "cn"))
-            for i, e in enumerate(entries)
-            if e.get("key", "").strip()
+            KeyState(key=k.strip(), index=i) for i, k in enumerate(keys) if k.strip()
         ]
         if not self._states:
             raise ValueError("没有有效的 API Key")
@@ -68,7 +62,7 @@ class KeyPool:
             items.append({
                 "index": s.index,
                 "masked_key": self._mask_key(s.key),
-                "region": s.region,
+                
                 "enabled": s.enabled,
                 "disabled_reason": s.disabled_reason or None,
                 "model_quotas": s.model_quotas,
@@ -83,11 +77,11 @@ class KeyPool:
             return -1
         return mq.get("remaining", -1)
 
-    async def get_key(self, model: str = "") -> tuple[str, int, str]:
+    async def get_key(self, model: str = "") -> tuple[str, int]:
         """选择目标模型有可用额度的 Key。
 
         Returns:
-            (api_key, key_index, region)
+            (api_key, key_index)
         """
         async with self._lock:
             now = time.time()
@@ -132,7 +126,7 @@ class KeyPool:
                     chosen = enabled[self._index]
 
             chosen.total_requests += 1
-            return chosen.key, chosen.index, chosen.region
+            return chosen.key, chosen.index
 
     async def mark_failed(self, key_index: int) -> None:
         async with self._lock:

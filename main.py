@@ -44,17 +44,10 @@ class Main(star.Star):
     def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
         super().__init__(context)
 
-        # 读取配置 — template_list 格式：[{"key": "sk-xxx", "region": "cn"}, ...]
-        raw_cfg = config.get("api_key", [])
-        default_region = "cn"
-        key_entries: list[dict[str, str]] = []
-        if isinstance(raw_cfg, list):
-            for item in raw_cfg:
-                if isinstance(item, dict) and item.get("key", "").strip():
-                    key_entries.append({
-                        "key": str(item["key"]).strip(),
-                        "region": str(item.get("region", default_region)),
-                    })
+        # 读取配置
+        raw_keys = config.get("api_key", [])
+        keys: list[str] = [str(k).strip() for k in raw_keys if str(k).strip()] if isinstance(raw_keys, list) else []
+        region = str(config.get("region", "cn"))
         base_url_override = str(config.get("base_url", "")).strip() or None
         timeout = float(config.get("timeout", 300))
         self._video_poll_interval = int(config.get("video_poll_interval", 5))
@@ -66,27 +59,22 @@ class Main(star.Star):
         self._plugin_data_dir.mkdir(parents=True, exist_ok=True)
 
         # 创建客户端 — 支持单 Key 和多 Key 池两种模式
-        if not key_entries:
+        if not keys:
             logger.warning("[mmx] api_key 未配置，插件将无法调用 API")
             self._key_pool = None
-            client_kwargs: dict = {"api_key": "", "base_url": base_url_override, "region": default_region, "timeout": timeout}
-        elif len(key_entries) > 1:
-            self._key_pool = KeyPool(key_entries)
-            logger.info(f"[mmx] 多 Key 模式已启用，共 {len(key_entries)} 个 Key")
+            client_kwargs: dict = {"api_key": "", "base_url": base_url_override, "region": region, "timeout": timeout}
+        elif len(keys) > 1:
+            self._key_pool = KeyPool(keys, region)
+            logger.info(f"[mmx] 多 Key 模式已启用，共 {len(keys)} 个 Key")
             client_kwargs = {
                 "key_getter": self._key_pool.get_key,
                 "base_url": base_url_override,
-                "region": default_region,
+                "region": region,
                 "timeout": timeout,
             }
         else:
             self._key_pool = None
-            client_kwargs = {
-                "api_key": key_entries[0]["key"],
-                "base_url": base_url_override,
-                "region": key_entries[0]["region"],
-                "timeout": timeout,
-            }
+            client_kwargs = {"api_key": keys[0], "base_url": base_url_override, "region": region, "timeout": timeout}
 
         self._client = MiniMaxClient(**client_kwargs)
 
@@ -307,21 +295,21 @@ class Main(star.Star):
         不带参数显示所有 Key 统合额度。带序号（如 /mmx quota 1）显示指定 Key 详情。
         """
         # 收集所有 Key
-        keys_to_check: list[tuple[int, str, str]] = []  # (index, key, region)
+        keys_to_check: list[tuple[int, str]] = []  # (index, key)
         if self._key_pool is not None:
             for s in self._key_pool._states:
-                keys_to_check.append((s.index, s.key, s.region))
+                keys_to_check.append((s.index, s.key))
         else:
-            keys_to_check.append((0, self._client._api_key or "", "cn"))
+            keys_to_check.append((0, self._client._api_key or ""))
 
         # 指定序号则只查该 Key
         if index.strip():
             try:
-                idx = int(index.strip()) - 1  
+                idx = int(index.strip()) - 1
             except ValueError:
                 yield event.plain_result("序号无效，请输入数字。如 /mmx quota 1")
                 return
-            filtered = [(i, k, r) for i, k, r in keys_to_check if i == idx]
+            filtered = [(i, k) for i, k in keys_to_check if i == idx]
             if not filtered:
                 yield event.plain_result(f"Key 序号 {index} 不存在，共 {len(keys_to_check)} 个 Key。")
                 return
@@ -329,15 +317,14 @@ class Main(star.Star):
 
         # 并发查询所有 Key 的额度
         import asyncio
+        from .mmx.endpoints import quota_endpoint
 
-        async def _fetch(api_key: str, region: str):
+        async def _fetch(api_key: str):
             try:
-                from .mmx.endpoints import quota_endpoint, REGIONS
-                base = REGIONS.get(region, REGIONS["cn"])
                 import httpx
                 async with httpx.AsyncClient(timeout=10) as cl:
                     r = await cl.get(
-                        quota_endpoint(base),
+                        quota_endpoint(self._client.base_url),
                         headers={"Authorization": f"Bearer {api_key}"},
                     )
                     if r.is_success:
@@ -346,15 +333,15 @@ class Main(star.Star):
                 pass
             return []
 
-        tasks = [_fetch(k, r) for _, k, r in keys_to_check]
+        tasks = [_fetch(k) for _, k in keys_to_check]
         results = await asyncio.gather(*tasks)
 
-        # 统合模式：按模型聚合所有 Key 的额度，同时显示异常 Key
+        # 统合模式：按模型聚合所有 Key 的额度
         if not index.strip() and len(keys_to_check) > 1:
             merged: dict[str, dict] = {}
             exhausted_keys: list[int] = []
 
-            for (ki, _, _), model_remains in zip(keys_to_check, results):
+            for (ki, _), model_remains in zip(keys_to_check, results):
                 if not model_remains:
                     exhausted_keys.append(ki + 1)
                     continue
@@ -380,7 +367,7 @@ class Main(star.Star):
             return
 
         # 单 Key 详情模式
-        for (ki, key, _), model_remains in zip(keys_to_check, results):
+        for (ki, key), model_remains in zip(keys_to_check, results):
             masked = key[:4] + "..." + key[-4:] if len(key) > 8 else "***"
             lines = [f"💰 Key [{ki + 1}] {masked} 额度:"]
             if not model_remains:

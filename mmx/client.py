@@ -1,6 +1,6 @@
 """MiniMax API 客户端 — 共享 httpx.AsyncClient，统一处理鉴权和错误。
 
-支持单 Key 和多 Key 池模式。多 Key 模式通过 key_getter(model) 按模型额度选 Key+区域。
+支持单 Key 和多 Key 池模式。多 Key 模式下通过 key_getter(model) 按模型额度选 Key。
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ class MiniMaxClient:
     def __init__(
         self,
         api_key: str | None = None,
-        key_getter: Callable[[str], Awaitable[tuple[str, int, str]]] | None = None,
+        key_getter: Callable[[str], Awaitable[tuple[str, int]]] | None = None,
         base_url: str | None = None,
         region: str = "cn",
         timeout: float = 300,
@@ -28,8 +28,7 @@ class MiniMaxClient:
     ) -> None:
         self._api_key = api_key
         self._key_getter = key_getter
-        self._default_base_url = base_url or REGIONS.get(region, REGIONS["cn"])
-        self._timeout = timeout
+        self._base_url = base_url or REGIONS.get(region, REGIONS["cn"])
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
             proxy=proxy or None,
@@ -37,15 +36,16 @@ class MiniMaxClient:
 
     @property
     def base_url(self) -> str:
-        return self._default_base_url
+        """当前 API 基础地址。"""
+        return self._base_url
 
-    async def _resolve(self, model: str = "") -> tuple[str, str]:
-        """获取本次请求的 (api_key, base_url)。"""
+    async def _resolve(self, model: str = "") -> str:
+        """获取本次请求的 API Key。"""
         if self._key_getter is not None:
-            key, _, key_region = await self._key_getter(model)
-            return key, REGIONS.get(key_region, self._default_base_url)
+            key, _ = await self._key_getter(model)
+            return key
         if self._api_key is not None:
-            return self._api_key, self._default_base_url
+            return self._api_key
         raise RuntimeError("未配置 API Key")
 
     async def request(
@@ -58,11 +58,12 @@ class MiniMaxClient:
         auth_style: str = "bearer",
         model: str = "",
     ) -> httpx.Response:
+        """发送 HTTP 请求，返回原始 Response。"""
         hdrs: dict[str, str] = {"User-Agent": "astrbot-plugin-mmx/0.1.0"}
         if headers:
             hdrs.update(headers)
 
-        api_key, base_url = await self._resolve(model)
+        api_key = await self._resolve(model)
 
         if auth_style == "x-api-key":
             hdrs["x-api-key"] = api_key
@@ -72,7 +73,7 @@ class MiniMaxClient:
         if body is not None and isinstance(body, (dict, list)):
             hdrs.setdefault("Content-Type", "application/json")
 
-        url = f"{base_url}{path}"
+        url = f"{self._base_url}{path}"
         res = await self._client.request(
             method=method,
             url=url,
@@ -95,6 +96,7 @@ class MiniMaxClient:
         auth_style: str = "bearer",
         model: str = "",
     ) -> Any:
+        """发送请求并解析 JSON 响应体。"""
         res = await self.request(
             method=method, path=path, body=body, headers=headers,
             auth_style=auth_style, model=model,
@@ -106,4 +108,5 @@ class MiniMaxClient:
         return data
 
     async def close(self) -> None:
+        """关闭底层 httpx 客户端连接。"""
         await self._client.aclose()
