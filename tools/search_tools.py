@@ -34,7 +34,7 @@ class WebSearchTool(FunctionTool):
         )
         self._api = api
 
-    async def handler(
+    async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
         query = kwargs.get("query", "")

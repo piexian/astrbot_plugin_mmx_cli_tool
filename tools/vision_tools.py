@@ -38,7 +38,7 @@ class DescribeImageTool(FunctionTool):
         )
         self._api = api
 
-    async def handler(
+    async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
         image = kwargs.get("image_url", "")

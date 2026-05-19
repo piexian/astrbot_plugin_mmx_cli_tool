@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 import time as _time
 from pathlib import Path
 
@@ -33,6 +35,39 @@ from .tools import (
     DescribeImageTool,
     CheckQuotaTool,
 )
+
+
+def _clean_display_text(value: object, *, limit: int | None = None) -> str:
+    text = str(value or "")
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if limit is not None and len(text) > limit:
+        return text[:limit].rstrip()
+    return text
+
+
+def _extract_vision_text(result: dict) -> str:
+    for key in ("content", "description", "text"):
+        text = _clean_display_text(result.get(key))
+        if text:
+            return text
+
+    choices = result.get("choices", [])
+    if choices:
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        text = _clean_display_text(message.get("content"))
+        if text:
+            return text
+
+    data = result.get("data")
+    if isinstance(data, dict):
+        for key in ("content", "description", "text"):
+            text = _clean_display_text(data.get(key))
+            if text:
+                return text
+
+    return _clean_display_text(result, limit=2000)
 
 
 @filter.command_group("mmx")
@@ -146,23 +181,17 @@ class Main(star.Star):
             yield event.plain_result("图片生成失败：未返回链接。")
             return
 
-        saved = None
-        if urls:
-            try:
-                saved = await self._image.save(
-                    result, out_dir=str(self._plugin_data_dir)
-                )
-            except Exception:
-                pass
+        saved = []
+        try:
+            saved = await self._image.save(result, out_dir=str(self._plugin_data_dir))
+        except Exception as e:
+            logger.warning(f"[mmx] 图片下载失败，将尝试直接发送远程图片: {e}")
 
-        lines = ["✅ 图片生成完成"]
-        for i, u in enumerate(urls, 1):
-            lines.append(f"{i}. {u}")
-        yield event.plain_result("\n".join(lines))
         if saved:
             yield event.image_result(saved[0])
-        elif urls:
-            yield event.image_result(urls[0])
+            return
+
+        yield event.image_result(urls[0])
 
     @mmx_group.command("video")
     async def mmx_video(self, event: AstrMessageEvent, *, prompt: str = ""):
@@ -176,36 +205,35 @@ class Main(star.Star):
         try:
             result = await self._video.generate(prompt=prompt)
             task_id = result.get("task_id", "")
-            yield event.plain_result(
-                f"🎬 视频任务已提交\n\ntask_id: {task_id}\n状态: {result.get('status', 'Queueing')}"
-            )
-            if task_id:
-                yield event.plain_result(
-                    f"⏳ 等待生成完成（最长 {self._video_timeout}s）..."
+            if not task_id:
+                yield event.plain_result("视频任务提交失败：未返回任务 ID。")
+                return
+
+            yield event.plain_result(f"⏳ 视频生成中（最长 {self._video_timeout}s）...")
+            try:
+                final = await self._video.wait_for_completion(
+                    task_id,
+                    poll_interval=self._video_poll_interval,
+                    timeout=self._video_timeout,
                 )
+                fid = final.get("file_id", "")
+                if not fid:
+                    yield event.plain_result("视频生成完成，但未返回可下载文件。")
+                    return
+
                 try:
-                    final = await self._video.wait_for_completion(
-                        task_id,
-                        poll_interval=self._video_poll_interval,
-                        timeout=self._video_timeout,
-                    )
-                    fid = final.get("file_id", "")
+                    video_path = str(self._plugin_data_dir / f"mmx_video_{task_id}.mp4")
+                    saved = await self._video.download(fid, video_path)
+                    yield event.chain_result([Video(file=saved)])
+                except Exception as e:
+                    logger.warning(f"[mmx] 视频下载失败: {e}")
                     yield event.plain_result(
-                        f"✅ 视频生成完成\n\nfile_id: {fid}\ntask_id: {task_id}"
+                        "视频生成完成，但下载失败，无法直接发送视频。"
                     )
-                    if fid:
-                        try:
-                            video_path = str(
-                                self._plugin_data_dir / f"mmx_video_{task_id}.mp4"
-                            )
-                            saved = await self._video.download(fid, video_path)
-                            yield event.chain_result([Video(file=saved)])
-                        except Exception as e:
-                            logger.warning(f"[mmx] 视频下载失败: {e}")
-                except TimeoutError:
-                    yield event.plain_result(
-                        f"⏰ 视频生成超时。task_id={task_id}，请前往 MiniMax 控制台查看。"
-                    )
+            except TimeoutError:
+                yield event.plain_result(
+                    f"⏰ 视频生成超时。task_id={task_id}，请前往 MiniMax 控制台查看。"
+                )
         except MiniMaxError as e:
             yield event.plain_result(friendly_message(e))
         except Exception as e:
@@ -236,16 +264,19 @@ class Main(star.Star):
             yield event.plain_result(f"音乐生成失败: {e}")
             return
 
-        lines = ["🎵 音乐生成完成"]
         saved_path = None
         out_path = self._plugin_data_dir / f"mmx_music_{int(_time.time() * 1000)}.mp3"
         try:
             saved_path = self._music.save(result, str(out_path))
-            lines.append(f"已保存到: {saved_path}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[mmx] 音乐保存失败: {e}")
+            audio_url = result.get("data", {}).get("audio_url", "")
+            if audio_url:
+                yield event.chain_result([Record(file=audio_url)])
+                return
+            yield event.plain_result("音乐生成完成，但未返回可发送音频。")
+            return
 
-        yield event.plain_result("\n".join(lines))
         if saved_path:
             yield event.chain_result([Record(file=saved_path)])
 
@@ -278,9 +309,15 @@ class Main(star.Star):
         lines = ["🔍 搜索结果:"]
         for i, item in enumerate(items[:5], 1):
             if isinstance(item, dict):
-                title = item.get("title", f"结果 {i}")
-                url = item.get("url", "")
-                snippet = item.get("snippet", "")
+                title = _clean_display_text(item.get("title"), limit=80) or f"结果 {i}"
+                url = _clean_display_text(item.get("url") or item.get("link"))
+                snippet = _clean_display_text(
+                    item.get("snippet")
+                    or item.get("summary")
+                    or item.get("content")
+                    or item.get("description"),
+                    limit=180,
+                )
                 lines.append(f"\n{i}. **{title}**")
                 if url:
                     lines.append(f"   {url}")
@@ -295,13 +332,21 @@ class Main(star.Star):
         parts = msg.split(maxsplit=1)
         prompt = prompt or (parts[1] if len(parts) > 1 else "Describe the image.")
 
-        image_input = await extract_image_input(
+        image_input, saw_image = await extract_image_input(
             event.get_messages(),
             image_type=Comp.Image,
             reply_type=Comp.Reply,
+            event=event,
         )
         if not image_input:
-            yield event.plain_result("请附带一张图片，或引用一张图片后再发送 /mmx vision 指令。")
+            if saw_image:
+                yield event.plain_result(
+                    "检测到了图片，但当前无法在本地解析该图片。请改为直接发送图片，或引用一张仍可访问的图片后重试。"
+                )
+                return
+            yield event.plain_result(
+                "请附带一张图片，或引用一张图片后再发送 /mmx vision 指令。"
+            )
             return
 
         try:
@@ -314,12 +359,7 @@ class Main(star.Star):
             yield event.plain_result(f"图片理解失败: {e}")
             return
 
-        desc = result.get("description", result.get("text", ""))
-        choices = result.get("choices", [])
-        if not desc and choices:
-            desc = choices[0].get("message", {}).get("content", "")
-        if not desc:
-            desc = str(result)[:2000]
+        desc = _extract_vision_text(result)
         yield event.plain_result(f"🖼️ 图片分析:\n\n{desc}")
 
     @mmx_group.command("quota")

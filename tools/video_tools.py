@@ -45,7 +45,7 @@ class GenerateVideoTool(FunctionTool):
         self._poll_interval = poll_interval
         self._video_timeout = video_timeout
 
-    async def handler(
+    async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
         prompt = kwargs.get("prompt", "")

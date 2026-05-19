@@ -17,6 +17,14 @@ async def _to_data_uri(image: str) -> str:
     if image.startswith("data:"):
         return image
 
+    if image.startswith("base64://"):
+        return f"data:image/jpeg;base64,{image.removeprefix('base64://')}"
+
+    if image.startswith("file:///"):
+        image = image[8:]
+    elif image.startswith("file://"):
+        image = image[7:]
+
     if image.startswith("http://") or image.startswith("https://"):
         async with httpx.AsyncClient() as cl:
             r = await cl.get(image)

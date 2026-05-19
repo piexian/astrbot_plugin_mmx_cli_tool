@@ -28,7 +28,7 @@ class MiniMaxClient:
     ) -> None:
         self._api_key = api_key
         self._key_getter = key_getter
-        self._base_url = base_url or REGIONS.get(region, REGIONS["cn"])
+        self._base_url = (base_url or REGIONS.get(region, REGIONS["cn"])).rstrip("/")
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
             proxy=proxy or None,
@@ -73,7 +73,11 @@ class MiniMaxClient:
         if body is not None and isinstance(body, (dict, list)):
             hdrs.setdefault("Content-Type", "application/json")
 
-        url = f"{self._base_url}{path}"
+        url = (
+            path
+            if path.startswith(("http://", "https://"))
+            else f"{self._base_url}{path}"
+        )
         res = await self._client.request(
             method=method,
             url=url,

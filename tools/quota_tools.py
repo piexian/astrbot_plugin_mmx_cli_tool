@@ -28,7 +28,7 @@ class CheckQuotaTool(FunctionTool):
         )
         self._api = api
 
-    async def handler(
+    async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
         try:
