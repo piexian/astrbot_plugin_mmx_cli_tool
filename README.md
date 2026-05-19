@@ -45,7 +45,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx video <描述>              # 生成视频
 /mmx music <描述> [--instrumental]  # 生成音乐
 /mmx search <查询>             # 联网搜索
-/mmx vision <描述要求>         # 图片理解（需引用图片）
+/mmx vision <描述要求>         # 图片理解（支持当前消息带图或引用图片）
 /mmx quota                    # 查询额度
 ```
 
@@ -123,6 +123,10 @@ astrbot_plugin_mmx_cli_tool/
     ├── vision_tools.py              # DescribeImageTool
     └── quota_tools.py               # CheckQuotaTool
 ```
+
+## 更新日志
+
+详见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 相关链接
 

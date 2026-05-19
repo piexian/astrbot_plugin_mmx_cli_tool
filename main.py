@@ -11,6 +11,7 @@ from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger, star
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.core.message import components as Comp
 from astrbot.core.message.components import Record, Video
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
@@ -21,6 +22,7 @@ from .mmx.apis.music import MusicAPI
 from .mmx.apis.search import SearchAPI
 from .mmx.apis.vision import VisionAPI
 from .mmx.apis.quota import QuotaAPI
+from .mmx.vision_input import extract_image_input
 from .mmx.errors import MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
 from .tools import (
@@ -288,26 +290,22 @@ class Main(star.Star):
 
     @mmx_group.command("vision")
     async def mmx_vision(self, event: AstrMessageEvent, *, prompt: str = ""):
-        """图片理解。用法: /mmx vision（需要引用一张图片）"""
+        """图片理解。用法: /mmx vision（支持当前消息带图或引用图片）"""
         msg = event.message_str.strip()
         parts = msg.split(maxsplit=1)
         prompt = prompt or (parts[1] if len(parts) > 1 else "Describe the image.")
 
-        # 从消息链中提取图片
-        message_chain = event.get_messages()
-        image_url = None
-        for comp in message_chain:
-            ct = getattr(comp, "type", "")
-            if ct.lower() in ("image",):
-                image_url = getattr(comp, "url", None) or getattr(comp, "file", None)
-                break
-
-        if not image_url:
-            yield event.plain_result("请引用一张图片并附带 /mmx vision 指令。")
+        image_input = await extract_image_input(
+            event.get_messages(),
+            image_type=Comp.Image,
+            reply_type=Comp.Reply,
+        )
+        if not image_input:
+            yield event.plain_result("请附带一张图片，或引用一张图片后再发送 /mmx vision 指令。")
             return
 
         try:
-            result = await self._vision.describe(image=image_url, prompt=prompt)
+            result = await self._vision.describe(image=image_input, prompt=prompt)
         except MiniMaxError as e:
             yield event.plain_result(friendly_message(e))
             return
