@@ -22,7 +22,9 @@ class FileAPI:
     def __init__(self, client: MiniMaxClient) -> None:
         self._client = client
 
-    async def upload(self, file_path: str, purpose: str = "file-extract") -> dict[str, Any]:
+    async def upload(
+        self, file_path: str, purpose: str = "file-extract"
+    ) -> dict[str, Any]:
         """上传文件到 MiniMax。"""
         p = Path(file_path)
         if not p.is_file():
@@ -39,7 +41,9 @@ class FileAPI:
             if not res.is_success:
                 from .errors import classify_error
 
-                raise classify_error(res.status_code, res, file_upload_endpoint(self._client.base_url))
+                raise classify_error(
+                    res.status_code, res, file_upload_endpoint(self._client.base_url)
+                )
             return res.json()
 
     async def list(self) -> dict[str, Any]:

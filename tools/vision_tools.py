@@ -38,10 +38,16 @@ class DescribeImageTool(FunctionTool):
         )
         self._api = api
 
-    async def handler(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+    async def handler(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
         image = kwargs.get("image_url", "")
         if not image:
-            return ToolExecResult(json.dumps({"ok": False, "error": "缺少 image_url 参数"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": "缺少 image_url 参数"}, ensure_ascii=False
+                )
+            )
 
         try:
             result = await self._api.describe(
@@ -50,6 +56,12 @@ class DescribeImageTool(FunctionTool):
             )
         except Exception as e:
             logger.error(f"[mmx] 图片理解失败: {e}")
-            return ToolExecResult(json.dumps({"ok": False, "error": f"图片理解失败: {e}"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": f"图片理解失败: {e}"}, ensure_ascii=False
+                )
+            )
 
-        return ToolExecResult(json.dumps({"ok": True, "data": result}, ensure_ascii=False))
+        return ToolExecResult(
+            json.dumps({"ok": True, "data": result}, ensure_ascii=False)
+        )

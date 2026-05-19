@@ -102,6 +102,7 @@ class MusicAPI:
             path.write_bytes(raw)
         elif audio_url:
             import httpx
+
             r = httpx.get(audio_url, timeout=60)
             r.raise_for_status()
             path.write_bytes(r.content)

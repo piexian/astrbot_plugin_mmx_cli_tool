@@ -25,8 +25,11 @@ async def _to_data_uri(image: str) -> str:
             mime = content_type.split(";")[0].strip()
             data = r.content
             if len(data) > MAX_IMAGE_SIZE:
-                raise ValueError(f"图片过大 ({len(data) / 1024 / 1024:.1f} MB)，最大 50 MB")
+                raise ValueError(
+                    f"图片过大 ({len(data) / 1024 / 1024:.1f} MB)，最大 50 MB"
+                )
             import base64
+
             return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
     # 本地文件路径

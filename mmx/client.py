@@ -98,8 +98,12 @@ class MiniMaxClient:
     ) -> Any:
         """发送请求并解析 JSON 响应体。"""
         res = await self.request(
-            method=method, path=path, body=body, headers=headers,
-            auth_style=auth_style, model=model,
+            method=method,
+            path=path,
+            body=body,
+            headers=headers,
+            auth_style=auth_style,
+            model=model,
         )
         data: dict[str, Any] = res.json()
         base_resp = data.get("base_resp")

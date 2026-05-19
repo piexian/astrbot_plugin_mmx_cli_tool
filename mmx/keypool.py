@@ -59,17 +59,22 @@ class KeyPool:
     def get_summary(self) -> dict[str, Any]:
         items = []
         for s in self._states:
-            items.append({
-                "index": s.index,
-                "masked_key": self._mask_key(s.key),
-                
-                "enabled": s.enabled,
-                "disabled_reason": s.disabled_reason or None,
-                "model_quotas": s.model_quotas,
-                "total_requests": s.total_requests,
-                "failed_requests": s.failed_requests,
-            })
-        return {"keys": items, "total": len(self._states), "enabled": self.enabled_count()}
+            items.append(
+                {
+                    "index": s.index,
+                    "masked_key": self._mask_key(s.key),
+                    "enabled": s.enabled,
+                    "disabled_reason": s.disabled_reason or None,
+                    "model_quotas": s.model_quotas,
+                    "total_requests": s.total_requests,
+                    "failed_requests": s.failed_requests,
+                }
+            )
+        return {
+            "keys": items,
+            "total": len(self._states),
+            "enabled": self.enabled_count(),
+        }
 
     def _model_remaining(self, state: KeyState, model: str) -> int:
         mq = state.model_quotas.get(model)
@@ -86,7 +91,11 @@ class KeyPool:
         async with self._lock:
             now = time.time()
             for s in self._states:
-                if not s.enabled and s.disabled_time > 0 and (now - s.disabled_time) > self.DISABLED_COOLDOWN:
+                if (
+                    not s.enabled
+                    and s.disabled_time > 0
+                    and (now - s.disabled_time) > self.DISABLED_COOLDOWN
+                ):
                     s.enabled = True
                     s.disabled_reason = ""
                     s.disabled_time = 0
@@ -103,7 +112,9 @@ class KeyPool:
                 with_quota = [s for s in enabled if self._model_remaining(s, model) > 0]
                 unknown = [s for s in enabled if self._model_remaining(s, model) == -1]
                 if with_quota:
-                    chosen = max(with_quota, key=lambda s: self._model_remaining(s, model))
+                    chosen = max(
+                        with_quota, key=lambda s: self._model_remaining(s, model)
+                    )
                 elif unknown:
                     self._index = (self._index + 1) % len(unknown)
                     chosen = unknown[self._index]
@@ -112,15 +123,24 @@ class KeyPool:
                         f"[{s.index}] {self._mask_key(s.key)}: 模型 {model} 额度已用尽"
                         for s in enabled
                     ]
-                    raise RuntimeError(f"所有 Key 的 {model} 模型额度已用尽:\n" + "\n".join(reasons))
+                    raise RuntimeError(
+                        f"所有 Key 的 {model} 模型额度已用尽:\n" + "\n".join(reasons)
+                    )
             else:
-                known = [s for s in enabled if any(
-                    mq.get("remaining", -1) >= 0 for mq in s.model_quotas.values()
-                )]
+                known = [
+                    s
+                    for s in enabled
+                    if any(
+                        mq.get("remaining", -1) >= 0 for mq in s.model_quotas.values()
+                    )
+                ]
                 if known:
-                    chosen = max(known, key=lambda s: sum(
-                        mq.get("remaining", 0) for mq in s.model_quotas.values()
-                    ))
+                    chosen = max(
+                        known,
+                        key=lambda s: sum(
+                            mq.get("remaining", 0) for mq in s.model_quotas.values()
+                        ),
+                    )
                 else:
                     self._index = (self._index + 1) % len(enabled)
                     chosen = enabled[self._index]
@@ -142,8 +162,7 @@ class KeyPool:
                     if model in s.model_quotas:
                         s.model_quotas[model]["remaining"] = 0
                     all_zero = all(
-                        mq.get("remaining", -1) == 0
-                        for mq in s.model_quotas.values()
+                        mq.get("remaining", -1) == 0 for mq in s.model_quotas.values()
                     )
                     if all_zero and s.model_quotas:
                         s.enabled = False
@@ -157,7 +176,9 @@ class KeyPool:
                 if time.time() - s.disabled_time < self.DISABLED_COOLDOWN:
                     continue
             try:
-                result = await asyncio.wait_for(fetcher(s.key), timeout=self.CHECK_TIMEOUT)
+                result = await asyncio.wait_for(
+                    fetcher(s.key), timeout=self.CHECK_TIMEOUT
+                )
                 model_remains = result.get("model_remains", [])
                 new_quotas: dict[str, dict[str, int]] = {}
                 all_zero = True
@@ -166,7 +187,11 @@ class KeyPool:
                     total = m.get("current_interval_total_count", 0)
                     used = m.get("current_interval_usage_count", 0)
                     remaining = max(total - used, 0)
-                    new_quotas[name] = {"total": total, "used": used, "remaining": remaining}
+                    new_quotas[name] = {
+                        "total": total,
+                        "used": used,
+                        "remaining": remaining,
+                    }
                     if remaining > 0:
                         all_zero = False
 

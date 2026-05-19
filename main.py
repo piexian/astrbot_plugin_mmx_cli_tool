@@ -46,7 +46,11 @@ class Main(star.Star):
 
         # 读取配置
         raw_keys = config.get("api_key", [])
-        keys: list[str] = [str(k).strip() for k in raw_keys if str(k).strip()] if isinstance(raw_keys, list) else []
+        keys: list[str] = (
+            [str(k).strip() for k in raw_keys if str(k).strip()]
+            if isinstance(raw_keys, list)
+            else []
+        )
         region = str(config.get("region", "cn"))
         base_url_override = str(config.get("base_url", "")).strip() or None
         timeout = float(config.get("timeout", 300))
@@ -55,14 +59,21 @@ class Main(star.Star):
 
         # 插件数据目录
         _plugin_name = getattr(self, "name", None) or "astrbot_plugin_mmx_cli_tool"
-        self._plugin_data_dir = Path(get_astrbot_data_path()) / "plugin_data" / _plugin_name
+        self._plugin_data_dir = (
+            Path(get_astrbot_data_path()) / "plugin_data" / _plugin_name
+        )
         self._plugin_data_dir.mkdir(parents=True, exist_ok=True)
 
         # 创建客户端 — 支持单 Key 和多 Key 池两种模式
         if not keys:
             logger.warning("[mmx] api_key 未配置，插件将无法调用 API")
             self._key_pool = None
-            client_kwargs: dict = {"api_key": "", "base_url": base_url_override, "region": region, "timeout": timeout}
+            client_kwargs: dict = {
+                "api_key": "",
+                "base_url": base_url_override,
+                "region": region,
+                "timeout": timeout,
+            }
         elif len(keys) > 1:
             self._key_pool = KeyPool(keys, region)
             logger.info(f"[mmx] 多 Key 模式已启用，共 {len(keys)} 个 Key")
@@ -74,7 +85,12 @@ class Main(star.Star):
             }
         else:
             self._key_pool = None
-            client_kwargs = {"api_key": keys[0], "base_url": base_url_override, "region": region, "timeout": timeout}
+            client_kwargs = {
+                "api_key": keys[0],
+                "base_url": base_url_override,
+                "region": region,
+                "timeout": timeout,
+            }
 
         self._client = MiniMaxClient(**client_kwargs)
 
@@ -88,7 +104,9 @@ class Main(star.Star):
         # 注册 LLM 工具
         context.add_llm_tools(
             GenerateImageTool(self._image),
-            GenerateVideoTool(self._video, self._video_poll_interval, self._video_timeout),
+            GenerateVideoTool(
+                self._video, self._video_poll_interval, self._video_timeout
+            ),
             GenerateMusicTool(self._music),
             WebSearchTool(self._search),
             DescribeImageTool(self._vision),
@@ -99,7 +117,6 @@ class Main(star.Star):
         if self._client:
             await self._client.close()
 
-
     @mmx_group.command("image")
     async def mmx_image(self, event: AstrMessageEvent, *, prompt: str = ""):
         """生成图片。用法: /mmx image <描述>"""
@@ -107,7 +124,9 @@ class Main(star.Star):
         parts = msg.split(maxsplit=1)
         prompt = prompt or (parts[1] if len(parts) > 1 else "")
         if not prompt:
-            yield event.plain_result("用法: /mmx image <描述>。例如: /mmx image a cute cat")
+            yield event.plain_result(
+                "用法: /mmx image <描述>。例如: /mmx image a cute cat"
+            )
             return
         try:
             result = await self._image.generate(prompt=prompt)
@@ -128,7 +147,9 @@ class Main(star.Star):
         saved = None
         if urls:
             try:
-                saved = await self._image.save(result, out_dir=str(self._plugin_data_dir))
+                saved = await self._image.save(
+                    result, out_dir=str(self._plugin_data_dir)
+                )
             except Exception:
                 pass
 
@@ -153,9 +174,13 @@ class Main(star.Star):
         try:
             result = await self._video.generate(prompt=prompt)
             task_id = result.get("task_id", "")
-            yield event.plain_result(f"🎬 视频任务已提交\n\ntask_id: {task_id}\n状态: {result.get('status', 'Queueing')}")
+            yield event.plain_result(
+                f"🎬 视频任务已提交\n\ntask_id: {task_id}\n状态: {result.get('status', 'Queueing')}"
+            )
             if task_id:
-                yield event.plain_result(f"⏳ 等待生成完成（最长 {self._video_timeout}s）...")
+                yield event.plain_result(
+                    f"⏳ 等待生成完成（最长 {self._video_timeout}s）..."
+                )
                 try:
                     final = await self._video.wait_for_completion(
                         task_id,
@@ -163,16 +188,22 @@ class Main(star.Star):
                         timeout=self._video_timeout,
                     )
                     fid = final.get("file_id", "")
-                    yield event.plain_result(f"✅ 视频生成完成\n\nfile_id: {fid}\ntask_id: {task_id}")
+                    yield event.plain_result(
+                        f"✅ 视频生成完成\n\nfile_id: {fid}\ntask_id: {task_id}"
+                    )
                     if fid:
                         try:
-                            video_path = str(self._plugin_data_dir / f"mmx_video_{task_id}.mp4")
+                            video_path = str(
+                                self._plugin_data_dir / f"mmx_video_{task_id}.mp4"
+                            )
                             saved = await self._video.download(fid, video_path)
                             yield event.chain_result([Video(file=saved)])
                         except Exception as e:
                             logger.warning(f"[mmx] 视频下载失败: {e}")
                 except TimeoutError:
-                    yield event.plain_result(f"⏰ 视频生成超时。task_id={task_id}，请前往 MiniMax 控制台查看。")
+                    yield event.plain_result(
+                        f"⏰ 视频生成超时。task_id={task_id}，请前往 MiniMax 控制台查看。"
+                    )
         except MiniMaxError as e:
             yield event.plain_result(friendly_message(e))
         except Exception as e:
@@ -186,7 +217,9 @@ class Main(star.Star):
         parts = msg.split(maxsplit=1)
         prompt = prompt or (parts[1] if len(parts) > 1 else "")
         if not prompt:
-            yield event.plain_result("用法: /mmx music <描述>\n例如: /mmx music warm acoustic guitar, folk style\n加 --instrumental 生成纯器乐")
+            yield event.plain_result(
+                "用法: /mmx music <描述>\n例如: /mmx music warm acoustic guitar, folk style\n加 --instrumental 生成纯器乐"
+            )
             return
         try:
             result = await self._music.generate(
@@ -221,7 +254,9 @@ class Main(star.Star):
         parts = msg.split(maxsplit=1)
         query = query or (parts[1] if len(parts) > 1 else "")
         if not query:
-            yield event.plain_result("用法: /mmx search <查询>。例如: /mmx search 今天天气")
+            yield event.plain_result(
+                "用法: /mmx search <查询>。例如: /mmx search 今天天气"
+            )
             return
         try:
             result = await self._search.query(query)
@@ -311,7 +346,9 @@ class Main(star.Star):
                 return
             filtered = [(i, k) for i, k in keys_to_check if i == idx]
             if not filtered:
-                yield event.plain_result(f"Key 序号 {index} 不存在，共 {len(keys_to_check)} 个 Key。")
+                yield event.plain_result(
+                    f"Key 序号 {index} 不存在，共 {len(keys_to_check)} 个 Key。"
+                )
                 return
             keys_to_check = filtered
 
@@ -322,6 +359,7 @@ class Main(star.Star):
         async def _fetch(api_key: str):
             try:
                 import httpx
+
                 async with httpx.AsyncClient(timeout=10) as cl:
                     r = await cl.get(
                         quota_endpoint(self._client.base_url),
@@ -360,7 +398,9 @@ class Main(star.Star):
                 lines.append("所有 Key 均无额度信息。")
             else:
                 for name, m in sorted(merged.items()):
-                    lines.append(f"- {name}: 已用 {m['used']} / 总计 {m['total']} (剩余 {m['remaining']})")
+                    lines.append(
+                        f"- {name}: 已用 {m['used']} / 总计 {m['total']} (剩余 {m['remaining']})"
+                    )
             if exhausted_keys:
                 lines.append(f"\n⚠️ Key 序号 {exhausted_keys} 无额度信息或查询失败。")
             yield event.plain_result("\n".join(lines))
@@ -377,5 +417,7 @@ class Main(star.Star):
                     total = m.get("current_interval_total_count", 0)
                     used = m.get("current_interval_usage_count", 0)
                     name = m.get("model_name", "unknown")
-                    lines.append(f"- {name}: 已用 {used} / 总计 {total} (剩余 {max(total - used, 0)})")
+                    lines.append(
+                        f"- {name}: 已用 {used} / 总计 {total} (剩余 {max(total - used, 0)})"
+                    )
             yield event.plain_result("\n".join(lines))

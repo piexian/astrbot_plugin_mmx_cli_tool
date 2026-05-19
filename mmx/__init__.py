@@ -5,4 +5,11 @@ from .errors import MiniMaxError, ErrorCategory, friendly_message
 from .keypool import KeyPool
 from . import endpoints
 
-__all__ = ["MiniMaxClient", "MiniMaxError", "ErrorCategory", "friendly_message", "KeyPool", "endpoints"]
+__all__ = [
+    "MiniMaxClient",
+    "MiniMaxError",
+    "ErrorCategory",
+    "friendly_message",
+    "KeyPool",
+    "endpoints",
+]

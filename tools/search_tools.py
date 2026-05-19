@@ -34,15 +34,25 @@ class WebSearchTool(FunctionTool):
         )
         self._api = api
 
-    async def handler(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+    async def handler(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
         query = kwargs.get("query", "")
         if not query:
-            return ToolExecResult(json.dumps({"ok": False, "error": "缺少 query 参数"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": "缺少 query 参数"}, ensure_ascii=False
+                )
+            )
 
         try:
             result = await self._api.query(query)
         except Exception as e:
             logger.error(f"[mmx] 搜索失败: {e}")
-            return ToolExecResult(json.dumps({"ok": False, "error": f"搜索失败: {e}"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps({"ok": False, "error": f"搜索失败: {e}"}, ensure_ascii=False)
+            )
 
-        return ToolExecResult(json.dumps({"ok": True, "data": result}, ensure_ascii=False))
+        return ToolExecResult(
+            json.dumps({"ok": True, "data": result}, ensure_ascii=False)
+        )

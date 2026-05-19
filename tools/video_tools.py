@@ -45,10 +45,16 @@ class GenerateVideoTool(FunctionTool):
         self._poll_interval = poll_interval
         self._video_timeout = video_timeout
 
-    async def handler(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+    async def handler(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
         prompt = kwargs.get("prompt", "")
         if not prompt:
-            return ToolExecResult(json.dumps({"ok": False, "error": "缺少 prompt 参数"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": "缺少 prompt 参数"}, ensure_ascii=False
+                )
+            )
 
         try:
             result = await self._api.generate(
@@ -57,7 +63,11 @@ class GenerateVideoTool(FunctionTool):
             )
         except Exception as e:
             logger.error(f"[mmx] 视频生成失败: {e}")
-            return ToolExecResult(json.dumps({"ok": False, "error": f"视频生成失败: {e}"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": f"视频生成失败: {e}"}, ensure_ascii=False
+                )
+            )
 
         task_id = result.get("task_id", "")
         status = result.get("status", "Unknown")
@@ -96,5 +106,7 @@ class GenerateVideoTool(FunctionTool):
                 )
 
         return ToolExecResult(
-            json.dumps({"ok": True, "task_id": task_id, "status": status}, ensure_ascii=False)
+            json.dumps(
+                {"ok": True, "task_id": task_id, "status": status}, ensure_ascii=False
+            )
         )

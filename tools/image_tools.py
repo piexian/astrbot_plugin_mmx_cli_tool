@@ -51,10 +51,16 @@ class GenerateImageTool(FunctionTool):
         )
         self._api = api
 
-    async def handler(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+    async def handler(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
         prompt = kwargs.get("prompt", "")
         if not prompt:
-            return ToolExecResult(json.dumps({"ok": False, "error": "缺少 prompt 参数"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": "缺少 prompt 参数"}, ensure_ascii=False
+                )
+            )
 
         try:
             result = await self._api.generate(
@@ -66,11 +72,20 @@ class GenerateImageTool(FunctionTool):
             )
         except Exception as e:
             logger.error(f"[mmx] 图片生成失败: {e}")
-            return ToolExecResult(json.dumps({"ok": False, "error": f"图片生成失败: {e}"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": f"图片生成失败: {e}"}, ensure_ascii=False
+                )
+            )
 
         data = result.get("data", {})
         image_urls = data.get("image_urls", [])
         task_id = data.get("task_id", "")
 
-        resp: dict = {"ok": True, "image_urls": image_urls, "task_id": task_id, "count": len(image_urls)}
+        resp: dict = {
+            "ok": True,
+            "image_urls": image_urls,
+            "task_id": task_id,
+            "count": len(image_urls),
+        }
         return ToolExecResult(json.dumps(resp, ensure_ascii=False))

@@ -28,12 +28,18 @@ class CheckQuotaTool(FunctionTool):
         )
         self._api = api
 
-    async def handler(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+    async def handler(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
         try:
             result = await self._api.info()
         except Exception as e:
             logger.error(f"[mmx] 额度查询失败: {e}")
-            return ToolExecResult(json.dumps({"ok": False, "error": f"额度查询失败: {e}"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": f"额度查询失败: {e}"}, ensure_ascii=False
+                )
+            )
 
         # 精简为人类可读的摘要
         model_remains = result.get("model_remains", [])
@@ -53,5 +59,7 @@ class CheckQuotaTool(FunctionTool):
             )
 
         return ToolExecResult(
-            json.dumps({"ok": True, "models": summary, "raw": result}, ensure_ascii=False)
+            json.dumps(
+                {"ok": True, "models": summary, "raw": result}, ensure_ascii=False
+            )
         )

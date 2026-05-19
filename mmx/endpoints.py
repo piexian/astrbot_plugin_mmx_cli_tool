@@ -54,7 +54,11 @@ def vision_endpoint(base: str) -> str:
 
 def quota_endpoint(base: str) -> str:
     """额度查询端点（使用 api 子域）。"""
-    host = "https://api.minimaxi.com" if "minimaxi.com" in base else "https://api.minimax.io"
+    host = (
+        "https://api.minimaxi.com"
+        if "minimaxi.com" in base
+        else "https://api.minimax.io"
+    )
     return f"{host}/v1/token_plan/remains"
 
 

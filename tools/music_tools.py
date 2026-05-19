@@ -67,7 +67,9 @@ class GenerateMusicTool(FunctionTool):
         )
         self._api = api
 
-    async def handler(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> ToolExecResult:
+    async def handler(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
         try:
             result = await self._api.generate(
                 prompt=kwargs.get("prompt"),
@@ -82,7 +84,11 @@ class GenerateMusicTool(FunctionTool):
             )
         except Exception as e:
             logger.error(f"[mmx] 音乐生成失败: {e}")
-            return ToolExecResult(json.dumps({"ok": False, "error": f"音乐生成失败: {e}"}, ensure_ascii=False))
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": f"音乐生成失败: {e}"}, ensure_ascii=False
+                )
+            )
 
         data = result.get("data", {})
         audio_url = data.get("audio_url", "")

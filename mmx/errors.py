@@ -10,13 +10,14 @@ import httpx
 
 class ErrorCategory(Enum):
     """错误类别枚举。"""
-    AUTH = "auth"                       # 鉴权失败
-    QUOTA = "quota"                     # 额度不足/限流
-    TIMEOUT = "timeout"                 # 超时
-    CONTENT_FILTER = "content_filter"   # 内容审核拦截
-    USAGE = "usage"                     # 参数错误
-    GENERAL = "general"                 # 一般错误
-    NETWORK = "network"                 # 网络错误
+
+    AUTH = "auth"  # 鉴权失败
+    QUOTA = "quota"  # 额度不足/限流
+    TIMEOUT = "timeout"  # 超时
+    CONTENT_FILTER = "content_filter"  # 内容审核拦截
+    USAGE = "usage"  # 参数错误
+    GENERAL = "general"  # 一般错误
+    NETWORK = "network"  # 网络错误
 
 
 class MiniMaxError(Exception):
