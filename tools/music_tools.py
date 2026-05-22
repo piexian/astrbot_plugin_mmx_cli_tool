@@ -40,7 +40,7 @@ class GenerateMusicTool(FunctionTool):
                 "1. With lyrics: provide 'lyrics' with structure tags like [Verse], [Chorus], etc.\n"
                 "2. Instrumental: set 'instrumental' to true for music without vocals.\n"
                 "3. Auto lyrics: set 'lyricsOptimizer' to true to auto-generate lyrics from prompt.\n"
-                "At least one of prompt/lyrics/instrumental/lyricsOptimizer is required."
+                "Provide at least one content, mode, or style-control parameter."
             ),
             parameters={
                 "type": "object",
@@ -130,6 +130,32 @@ class GenerateMusicTool(FunctionTool):
         is_instrumental = kwargs.get("instrumental", False)
         lyrics = kwargs.get("lyrics")
         lyrics_optimizer = kwargs.get("lyricsOptimizer", False)
+        generation_inputs = (
+            kwargs.get("prompt"),
+            lyrics,
+            is_instrumental,
+            lyrics_optimizer,
+            kwargs.get("genre"),
+            kwargs.get("mood"),
+            kwargs.get("vocals"),
+            kwargs.get("instruments"),
+            kwargs.get("tempo"),
+            kwargs.get("bpm"),
+            kwargs.get("key"),
+            kwargs.get("avoid"),
+            kwargs.get("useCase"),
+            kwargs.get("structure"),
+            kwargs.get("references"),
+            kwargs.get("extra"),
+        )
+        if not any(bool(value) for value in generation_inputs):
+            return ToolExecResult(
+                _hint_json(
+                    "缺少音乐生成参数",
+                    "请至少提供 prompt、lyrics、instrumental、lyricsOptimizer 或一个风格控制参数",
+                    {"prompt": "Cinematic orchestral", "instrumental": True},
+                )
+            )
 
         # 互斥校验
         if lyrics and is_instrumental:

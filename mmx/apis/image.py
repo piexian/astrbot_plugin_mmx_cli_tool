@@ -30,6 +30,7 @@ class ImageAPI:
         response_format: str = "url",
         prompt_optimizer: bool = True,
         subject_reference: list[dict[str, Any]] | None = None,
+        seed: int | None = None,
     ) -> dict[str, Any]:
         """生成图片。"""
         body: dict[str, Any] = {
@@ -46,6 +47,8 @@ class ImageAPI:
             body["height"] = height
         if subject_reference:
             body["subject_reference"] = subject_reference
+        if seed is not None:
+            body["seed"] = seed
 
         return await self._client.request_json(
             "POST",

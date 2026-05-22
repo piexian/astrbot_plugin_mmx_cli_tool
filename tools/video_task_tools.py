@@ -71,6 +71,7 @@ class QueryVideoTaskTool(FunctionTool):
         elif status == "Processing":
             resp["hint"] = "视频仍在生成中，请稍后再次查询"
         elif status == "Failed":
+            resp["ok"] = False
             resp["error"] = "视频生成失败"
         return ToolExecResult(json.dumps(resp, ensure_ascii=False))
 

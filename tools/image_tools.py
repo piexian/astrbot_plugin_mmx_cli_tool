@@ -39,7 +39,7 @@ class GenerateImageTool(FunctionTool):
                     },
                     "seed": {
                         "type": "integer",
-                        "description": "Random seed for reproducible generation (same seed + prompt = identical output)",
+                        "description": "Random seed for reproducible generation (same seed + parameters = reproducible output)",
                     },
                     "width": {
                         "type": "integer",
@@ -102,6 +102,7 @@ class GenerateImageTool(FunctionTool):
                 height=kwargs.get("height"),
                 prompt_optimizer=kwargs.get("promptOptimizer", True),
                 subject_reference=subject_reference,
+                seed=kwargs.get("seed"),
             )
         except Exception as e:
             logger.error(f"[mmx] 图片生成失败: {e}")

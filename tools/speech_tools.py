@@ -13,6 +13,26 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 from ..mmx.apis.speech import SpeechAPI
 
 
+def _language_prefix(voice_id: str) -> str:
+    match = voice_id.split("_", 1)
+    return match[0] if match else voice_id
+
+
+def _filter_voices_by_language(voices: list[dict], language: str) -> list[dict]:
+    target = language.lower()
+    filtered: list[dict] = []
+    for voice in voices:
+        voice_id = str(voice.get("voice_id", ""))
+        prefix = _language_prefix(voice_id).lower()
+        if (
+            prefix == target
+            or prefix.startswith(f"{target}_")
+            or prefix.startswith(f"{target} (")
+        ):
+            filtered.append(voice)
+    return filtered
+
+
 @dataclass
 class SpeechSynthesizeTool(FunctionTool):
     """LLM 工具：调用 MiniMax 语音合成（TTS）API。"""
@@ -145,7 +165,7 @@ class ListVoicesTool(FunctionTool):
                 "properties": {
                     "language": {
                         "type": "string",
-                        "description": "Filter voices by language (e.g. english, korean, japanese)",
+                        "description": "Client-side filter by voice ID language prefix (e.g. english, korean, japanese)",
                     },
                 },
                 "required": [],
@@ -157,9 +177,7 @@ class ListVoicesTool(FunctionTool):
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
         try:
-            result = await self._api.list_voices(
-                language=kwargs.get("language"),
-            )
+            result = await self._api.list_voices()
         except Exception as e:
             logger.error(f"[mmx] 音色列表查询失败: {e}")
             return ToolExecResult(
@@ -168,6 +186,14 @@ class ListVoicesTool(FunctionTool):
                     ensure_ascii=False,
                 )
             )
+
+        language = kwargs.get("language")
+        if language:
+            data = result.copy()
+            voices = data.get("system_voice", [])
+            if isinstance(voices, list):
+                data["system_voice"] = _filter_voices_by_language(voices, language)
+            result = data
 
         return ToolExecResult(
             json.dumps({"ok": True, "data": result}, ensure_ascii=False)

@@ -84,9 +84,10 @@ class SpeechAPI:
 
         return str(path)
 
-    async def list_voices(self, language: str | None = None) -> dict[str, Any]:
+    async def list_voices(self) -> dict[str, Any]:
         """获取可用系统音色列表。"""
         return await self._client.request_json(
-            "GET",
+            "POST",
             voices_endpoint(self._client.base_url),
+            body={"voice_type": "system"},
         )

@@ -26,18 +26,18 @@ class DescribeImageTool(FunctionTool):
                 "properties": {
                     "image": {
                         "type": "string",
-                        "description": "Image URL or local file path (auto base64-encoded)",
+                        "description": "Image URL or local file path (auto base64-encoded). Mutually exclusive with fileId.",
                     },
                     "fileId": {
                         "type": "string",
-                        "description": "Pre-uploaded file ID (skips base64 conversion)",
+                        "description": "Pre-uploaded file ID (skips base64 conversion). Mutually exclusive with image.",
                     },
                     "prompt": {
                         "type": "string",
                         "description": "Question about the image (default: 'Describe the image.')",
                     },
                 },
-                "required": ["image"],
+                "oneOf": [{"required": ["image"]}, {"required": ["fileId"]}],
             },
         )
         self._api = api
@@ -61,15 +61,23 @@ class DescribeImageTool(FunctionTool):
                     ensure_ascii=False,
                 )
             )
-
-        # 如果提供了 fileId，直接使用
-        image_input = image
-        if file_id and not image:
-            image_input = file_id
+        if image and file_id:
+            return ToolExecResult(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "image 和 fileId 不能同时提供",
+                        "hint": "请只提供 image（图片 URL/本地路径）或 fileId（二选一）",
+                        "example": {"fileId": "file-123456789", "prompt": "Extract the text"},
+                    },
+                    ensure_ascii=False,
+                )
+            )
 
         try:
             result = await self._api.describe(
-                image=image_input,
+                image=image or None,
+                file_id=file_id,
                 prompt=kwargs.get("prompt", "Describe the image."),
             )
         except Exception as e:

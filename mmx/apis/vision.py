@@ -63,14 +63,24 @@ class VisionAPI:
 
     async def describe(
         self,
-        image: str,
+        image: str | None = None,
         prompt: str = "Describe the image.",
+        *,
+        file_id: str | None = None,
     ) -> dict[str, Any]:
         """对图片进行理解和描述。"""
-        body: dict[str, Any] = {
-            "prompt": prompt,
-            "image_url": await _to_data_uri(image),
-        }
+        if image:
+            body: dict[str, Any] = {
+                "prompt": prompt,
+                "image_url": await _to_data_uri(image),
+            }
+        elif file_id:
+            body = {
+                "prompt": prompt,
+                "file_id": file_id,
+            }
+        else:
+            raise ValueError("需要提供 image 或 file_id")
         return await self._client.request_json(
             "POST",
             vision_endpoint(self._client.base_url),
