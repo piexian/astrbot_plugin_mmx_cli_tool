@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ class ImageAPI:
         response_format: str = "url",
         prompt_optimizer: bool = True,
         subject_reference: list[dict[str, Any]] | None = None,
+        seed: int | None = None,
     ) -> dict[str, Any]:
         """生成图片。"""
         body: dict[str, Any] = {
@@ -46,6 +48,8 @@ class ImageAPI:
             body["height"] = height
         if subject_reference:
             body["subject_reference"] = subject_reference
+        if seed is not None:
+            body["seed"] = seed
 
         return await self._client.request_json(
             "POST",
@@ -76,7 +80,7 @@ class ImageAPI:
             async with httpx.AsyncClient() as cl:
                 r = await cl.get(url)
                 r.raise_for_status()
-                filepath.write_bytes(r.content)
+                await asyncio.to_thread(filepath.write_bytes, r.content)
             saved.append(str(filepath))
 
         import base64
@@ -84,7 +88,7 @@ class ImageAPI:
         for i, b64 in enumerate(base64_images):
             filename = f"{prefix}_{ts}_{i + len(urls)}.png"
             filepath = out / filename
-            filepath.write_bytes(base64.b64decode(b64))
+            await asyncio.to_thread(filepath.write_bytes, base64.b64decode(b64))
             saved.append(str(filepath))
 
         return saved

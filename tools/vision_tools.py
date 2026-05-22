@@ -20,20 +20,24 @@ class DescribeImageTool(FunctionTool):
     def __init__(self, api: VisionAPI):
         super().__init__(
             name="mmx_describe_image",
-            description="Analyze and describe an image using MiniMax vision AI. Provide an image URL or file path.",
+            description="Analyze and describe an image using MiniMax vision AI. Provide an image URL, local file path, or pre-uploaded file ID.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "image_url": {
+                    "image": {
                         "type": "string",
-                        "description": "URL or local file path of the image to analyze",
+                        "description": "Image URL or local file path (auto base64-encoded). Mutually exclusive with fileId.",
+                    },
+                    "fileId": {
+                        "type": "string",
+                        "description": "Pre-uploaded file ID (skips base64 conversion). Mutually exclusive with image.",
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "What to look for in the image. Default 'Describe the image.'",
+                        "description": "Question about the image (default: 'Describe the image.')",
                     },
                 },
-                "required": ["image_url"],
+                "oneOf": [{"required": ["image"]}, {"required": ["fileId"]}],
             },
         )
         self._api = api
@@ -41,17 +45,39 @@ class DescribeImageTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        image = kwargs.get("image_url", "")
-        if not image:
+        image = kwargs.get("image", "")
+        file_id = kwargs.get("fileId")
+
+        if not image and not file_id:
             return ToolExecResult(
                 json.dumps(
-                    {"ok": False, "error": "缺少 image_url 参数"}, ensure_ascii=False
+                    {
+                        "ok": False,
+                        "error": "缺少图片输入",
+                        "hint": "请提供 image（图片 URL 或本地路径）或 fileId（预上传文件 ID）",
+                        "example": {"image": "https://example.com/photo.jpg", "prompt": "这张图片里有什么？"},
+                        "docs": "https://platform.minimaxi.com/docs/api-reference/vlm",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        if image and file_id:
+            return ToolExecResult(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "image 和 fileId 不能同时提供",
+                        "hint": "请只提供 image（图片 URL/本地路径）或 fileId（二选一）",
+                        "example": {"fileId": "file-123456789", "prompt": "Extract the text"},
+                    },
+                    ensure_ascii=False,
                 )
             )
 
         try:
             result = await self._api.describe(
-                image=image,
+                image=image or None,
+                file_id=file_id,
                 prompt=kwargs.get("prompt", "Describe the image."),
             )
         except Exception as e:

@@ -1,6 +1,6 @@
 name: astrbot_plugin_mmx_cli_tool
 display_name: MiniMax 多模态工具
-version: 0.1.2
+version: 0.2.0
 description: 为 AstrBot 提供 MiniMax 图片/视频/音乐生成、联网搜索、视觉理解、额度查询能力,基于mmx cli。
 short_desc: MiniMax 多模态 AI 工具集
 author: piexian

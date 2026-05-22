@@ -1,0 +1,145 @@
+"""MiniMax 视频任务查询与下载 FunctionTool。"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+
+from astrbot.api import FunctionTool, logger
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.agent.tool import ToolExecResult
+from astrbot.core.astr_agent_context import AstrAgentContext
+
+from ..mmx.apis.video import VideoAPI
+
+
+@dataclass
+class QueryVideoTaskTool(FunctionTool):
+    """LLM 工具：查询 MiniMax 视频生成任务状态。"""
+
+    def __init__(self, api: VideoAPI):
+        super().__init__(
+            name="mmx_video_task_get",
+            description="Query the status of a video generation task. Returns status, progress, and file_id when completed.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "taskId": {
+                        "type": "string",
+                        "description": "Video generation task ID (returned by mmx_generate_video)",
+                    },
+                },
+                "required": ["taskId"],
+            },
+        )
+        self._api = api
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        task_id = kwargs.get("taskId", "")
+        if not task_id:
+            return ToolExecResult(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "缺少 taskId 参数",
+                        "hint": "请提供 mmx_generate_video 返回的 task_id",
+                        "example": {"taskId": "task_xxxxxxxxxxxx"},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        try:
+            result = await self._api.get_task(task_id)
+        except Exception as e:
+            logger.error(f"[mmx] 视频任务查询失败: {e}")
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": f"视频任务查询失败: {e}"},
+                    ensure_ascii=False,
+                )
+            )
+
+        status = result.get("status", "Unknown")
+        file_id = result.get("file_id", "")
+        resp: dict = {"ok": True, "task_id": task_id, "status": status}
+        if file_id:
+            resp["file_id"] = file_id
+            resp["hint"] = "视频已完成，使用 mmx_video_download 工具下载"
+        elif status == "Processing":
+            resp["hint"] = "视频仍在生成中，请稍后再次查询"
+        elif status == "Failed":
+            resp["ok"] = False
+            resp["error"] = "视频生成失败"
+        return ToolExecResult(json.dumps(resp, ensure_ascii=False))
+
+
+@dataclass
+class DownloadVideoTool(FunctionTool):
+    """LLM 工具：下载已完成的 MiniMax 视频。"""
+
+    def __init__(self, api: VideoAPI, data_dir: str = "."):
+        super().__init__(
+            name="mmx_video_download",
+            description="Download a completed video by file ID. Returns the local file path.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "fileId": {
+                        "type": "string",
+                        "description": "File ID of the completed video (from mmx_video_task_get result)",
+                    },
+                    "out": {
+                        "type": "string",
+                        "description": "Output file path (optional, auto-generated if omitted)",
+                    },
+                },
+                "required": ["fileId"],
+            },
+        )
+        self._api = api
+        self._data_dir = data_dir
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        file_id = kwargs.get("fileId", "")
+        if not file_id:
+            return ToolExecResult(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "缺少 fileId 参数",
+                        "hint": "请提供 mmx_video_task_get 返回的 file_id",
+                        "example": {"fileId": "file_xxxxxxxxxxxx"},
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        import time
+        from pathlib import Path
+
+        out_path = kwargs.get("out") or str(
+            Path(self._data_dir) / f"mmx_video_{int(time.time() * 1000)}.mp4"
+        )
+
+        try:
+            saved = await self._api.download(file_id, out_path)
+        except Exception as e:
+            logger.error(f"[mmx] 视频下载失败: {e}")
+            return ToolExecResult(
+                json.dumps(
+                    {"ok": False, "error": f"视频下载失败: {e}"},
+                    ensure_ascii=False,
+                )
+            )
+
+        return ToolExecResult(
+            json.dumps(
+                {"ok": True, "file_path": saved, "message": "视频下载完成"},
+                ensure_ascii=False,
+            )
+        )

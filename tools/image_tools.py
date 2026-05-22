@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.image import ImageAPI
+from ..mmx.utils import is_url, resolve_image
 
 
 @dataclass
@@ -20,7 +21,7 @@ class GenerateImageTool(FunctionTool):
     def __init__(self, api: ImageAPI):
         super().__init__(
             name="mmx_generate_image",
-            description="Generate images using MiniMax AI. Provide a detailed prompt describing the image you want.",
+            description="Generate images using MiniMax AI (image-01 / image-01-live). Provide a detailed prompt describing the image you want.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -28,22 +29,38 @@ class GenerateImageTool(FunctionTool):
                         "type": "string",
                         "description": "Detailed image description in English or Chinese",
                     },
+                    "aspectRatio": {
+                        "type": "string",
+                        "description": "Image aspect ratio, e.g. '1:1', '16:9', '9:16', '4:3'. Ignored if width and height are both set.",
+                    },
                     "n": {
                         "type": "integer",
                         "description": "Number of images to generate (1-9, default 1)",
                         "default": 1,
                     },
-                    "aspect_ratio": {
-                        "type": "string",
-                        "description": "Image aspect ratio, e.g. '1:1', '16:9', '9:16', '4:3'",
+                    "seed": {
+                        "type": "integer",
+                        "description": "Random seed for reproducible generation (same seed + parameters = reproducible output)",
                     },
                     "width": {
                         "type": "integer",
-                        "description": "Image width in pixels (512-2048, multiple of 8). Use with height for exact size.",
+                        "description": "Custom width in pixels (512-2048, multiple of 8). Only for image-01. Overrides aspectRatio.",
                     },
                     "height": {
                         "type": "integer",
-                        "description": "Image height in pixels (512-2048, multiple of 8). Use with width for exact size.",
+                        "description": "Custom height in pixels (512-2048, multiple of 8). Only for image-01. Overrides aspectRatio.",
+                    },
+                    "promptOptimizer": {
+                        "type": "boolean",
+                        "description": "Automatically optimize the prompt for better results (default: true)",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model: image-01 (default) or image-01-live",
+                    },
+                    "subjectRef": {
+                        "type": "string",
+                        "description": "Subject reference for character consistency. Format: image URL or local path.",
                     },
                 },
                 "required": ["prompt"],
@@ -58,17 +75,39 @@ class GenerateImageTool(FunctionTool):
         if not prompt:
             return ToolExecResult(
                 json.dumps(
-                    {"ok": False, "error": "缺少 prompt 参数"}, ensure_ascii=False
+                    {
+                        "ok": False,
+                        "error": "缺少 prompt 参数",
+                        "hint": "请提供 prompt 参数描述想要生成的图片内容",
+                        "example": {"prompt": "A cat in a spacesuit, digital art"},
+                    },
+                    ensure_ascii=False,
                 )
             )
+
+        aspect_ratio = kwargs.get("aspectRatio")
+
+        # 构建 subject_reference（对齐 mmx-cli：URL → image_url，本地 → image_file）
+        subject_reference = None
+        subject_ref = kwargs.get("subjectRef")
+        if subject_ref:
+            if is_url(subject_ref):
+                subject_reference = [{"type": "character", "image_url": subject_ref}]
+            else:
+                data_uri = await resolve_image(subject_ref)
+                subject_reference = [{"type": "character", "image_file": data_uri}]
 
         try:
             result = await self._api.generate(
                 prompt=prompt,
+                model=kwargs.get("model", "image-01"),
                 n=kwargs.get("n", 1),
-                aspect_ratio=kwargs.get("aspect_ratio"),
+                aspect_ratio=aspect_ratio,
                 width=kwargs.get("width"),
                 height=kwargs.get("height"),
+                prompt_optimizer=kwargs.get("promptOptimizer", True),
+                subject_reference=subject_reference,
+                seed=kwargs.get("seed"),
             )
         except Exception as e:
             logger.error(f"[mmx] 图片生成失败: {e}")
