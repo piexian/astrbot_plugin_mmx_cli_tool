@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.image import ImageAPI
+from ..mmx.utils import is_url, resolve_image
 
 
 @dataclass
@@ -86,11 +87,15 @@ class GenerateImageTool(FunctionTool):
 
         aspect_ratio = kwargs.get("aspectRatio")
 
-        # 构建 subject_reference
+        # 构建 subject_reference（对齐 mmx-cli：URL → image_url，本地 → image_file）
         subject_reference = None
         subject_ref = kwargs.get("subjectRef")
         if subject_ref:
-            subject_reference = [{"type": "character", "image": subject_ref}]
+            if is_url(subject_ref):
+                subject_reference = [{"type": "character", "image_url": subject_ref}]
+            else:
+                data_uri = await resolve_image(subject_ref)
+                subject_reference = [{"type": "character", "image_file": data_uri}]
 
         try:
             result = await self._api.generate(

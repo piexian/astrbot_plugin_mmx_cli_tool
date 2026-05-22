@@ -156,13 +156,13 @@ class MusicAPI:
         if prompt:
             body["prompt"] = prompt
         if audio:
-            body["audio"] = audio
+            body["audio_url"] = audio
         elif audio_file:
             import asyncio
             import base64
 
             raw = await asyncio.to_thread(Path(audio_file).read_bytes)
-            body["audio"] = f"data:audio/mpeg;base64,{base64.b64encode(raw).decode('ascii')}"
+            body["audio_base64"] = base64.b64encode(raw).decode("ascii")
         if lyrics:
             body["lyrics"] = lyrics
         if seed is not None:

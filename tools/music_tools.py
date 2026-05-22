@@ -175,6 +175,18 @@ class GenerateMusicTool(FunctionTool):
                 )
             )
 
+        # 非纯器乐且未开启自动歌词时，lyrics 必填（对齐 mmx-cli）
+        if not is_instrumental and not lyrics_optimizer and not lyrics:
+            return ToolExecResult(
+                _hint_json(
+                    "缺少 lyrics 参数",
+                    "非纯器乐模式必须提供 lyrics（歌词）。"
+                    "如果要纯器乐请设置 instrumental=true，"
+                    "如果要自动生成歌词请设置 lyricsOptimizer=true",
+                    {"prompt": "Upbeat pop", "lyricsOptimizer": True},
+                )
+            )
+
         try:
             result = await self._api.generate(
                 prompt=kwargs.get("prompt"),

@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.video import VideoAPI
+from ..mmx.utils import resolve_image
 
 def _hint_json(error: str, hint: str, example: dict | None = None) -> str:
     """构造带提示的错误 JSON。"""
@@ -110,7 +111,7 @@ class GenerateVideoTool(FunctionTool):
         no_wait = kwargs.get("noWait", False)
         poll_interval = kwargs.get("pollInterval") or self._poll_interval
 
-        # 校验 SEF 模式
+        # 校验 SEF 模式：lastFrame 需要 firstFrame
         if last_frame and not first_frame:
             return ToolExecResult(
                 _hint_json(
@@ -120,17 +121,42 @@ class GenerateVideoTool(FunctionTool):
                 )
             )
 
-        # 构建 subject_reference
+        # 校验 SEF 与 S2V 互斥（对齐 mmx-cli）
+        if (first_frame or last_frame) and subject_image:
+            return ToolExecResult(
+                _hint_json(
+                    "firstFrame/lastFrame 与 subjectImage 不能同时使用",
+                    "首尾帧插值（SEF）和角色一致性（S2V）是两种独立模式，请选择其一",
+                    {"prompt": "A person walking", "firstFrame": "start.jpg", "lastFrame": "end.jpg"},
+                )
+            )
+
+        # 校验 Fast 模型需要 firstFrame（对齐 mmx-cli）
+        if model and "Fast" in model and not first_frame:
+            return ToolExecResult(
+                _hint_json(
+                    f"{model} 模型需要提供 firstFrame",
+                    "Fast 模型属于 I2V 模式，必须提供 firstFrame（起始帧图片）",
+                    {"prompt": "A cat running", "firstFrame": "cat.jpg", "model": model},
+                )
+            )
+
+        # 构建 subject_reference（image 必须为数组，对齐 mmx-cli）
         subject_reference = None
         if subject_image:
-            subject_reference = [{"type": "character", "image": subject_image}]
+            converted_subject = await resolve_image(subject_image)
+            subject_reference = [{"type": "character", "image": [converted_subject]}]
+
+        # 本地路径转 Data URI（对齐 mmx-cli Rn 函数）
+        resolved_first = await resolve_image(first_frame) if first_frame else None
+        resolved_last = await resolve_image(last_frame) if last_frame else None
 
         try:
             result = await self._api.generate(
                 prompt=prompt,
                 model=model,
-                first_frame_image=first_frame,
-                last_frame_image=last_frame,
+                first_frame_image=resolved_first,
+                last_frame_image=resolved_last,
                 subject_reference=subject_reference,
                 callback_url=callback_url,
             )

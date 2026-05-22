@@ -48,7 +48,7 @@ class MusicCoverTool(FunctionTool):
                         "description": "Random seed 0–1000000 for reproducible results",
                     },
                 },
-                "required": [],
+                "required": ["prompt"],
             },
         )
         self._api = api
@@ -56,9 +56,47 @@ class MusicCoverTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
+        prompt = kwargs.get("prompt", "")
         audio = kwargs.get("audio")
         audio_file = kwargs.get("audioFile")
 
+        # prompt 必填（对齐 mmx-cli）
+        if not prompt:
+            return ToolExecResult(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "缺少 prompt 参数",
+                        "hint": "prompt 为必填参数，请描述翻唱的目标音乐风格",
+                        "example": {
+                            "prompt": "Indie folk, acoustic guitar, warm male vocal",
+                            "audio": "https://example.com/song.mp3",
+                        },
+                        "docs": "https://platform.minimaxi.com/docs/api-reference/music-generation",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        # audio 和 audioFile 互斥（对齐 mmx-cli）
+        if audio and audio_file:
+            return ToolExecResult(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "audio 和 audioFile 不能同时使用",
+                        "hint": "请选择其一：audio 提供参考音频 URL，或 audioFile 提供本地文件路径",
+                        "example": {
+                            "prompt": "Jazz piano cover",
+                            "audio": "https://example.com/song.mp3",
+                        },
+                        "docs": "https://platform.minimaxi.com/docs/api-reference/music-generation",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        # 至少需要一个音频来源
         if not audio and not audio_file:
             return ToolExecResult(
                 json.dumps(
@@ -78,7 +116,7 @@ class MusicCoverTool(FunctionTool):
 
         try:
             result = await self._api.cover(
-                prompt=kwargs.get("prompt"),
+                prompt=prompt,
                 audio=audio,
                 audio_file=audio_file,
                 lyrics=kwargs.get("lyrics"),

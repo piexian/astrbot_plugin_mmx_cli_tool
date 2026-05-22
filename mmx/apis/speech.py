@@ -54,7 +54,7 @@ class SpeechAPI:
         if language:
             body["language_boost"] = language
         if subtitles:
-            body["subtitle"] = True
+            body["subtitle_enable"] = True
 
         return await self._client.request_json(
             "POST",

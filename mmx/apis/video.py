@@ -38,7 +38,7 @@ class VideoAPI:
         # 自动选择模型
         if model is None:
             if last_frame_image and first_frame_image:
-                model = "Hailuo-02"
+                model = "MiniMax-Hailuo-02"
             elif subject_reference:
                 model = "S2V-01"
             else:
