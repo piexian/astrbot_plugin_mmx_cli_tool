@@ -106,5 +106,5 @@ class VideoAPI:
             r.raise_for_status()
             from pathlib import Path
 
-            Path(out_path).write_bytes(r.content)
+            await asyncio.to_thread(Path(out_path).write_bytes, r.content)
         return out_path

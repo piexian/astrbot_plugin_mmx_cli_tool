@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,7 @@ class ImageAPI:
             async with httpx.AsyncClient() as cl:
                 r = await cl.get(url)
                 r.raise_for_status()
-                filepath.write_bytes(r.content)
+                await asyncio.to_thread(filepath.write_bytes, r.content)
             saved.append(str(filepath))
 
         import base64
@@ -87,7 +88,7 @@ class ImageAPI:
         for i, b64 in enumerate(base64_images):
             filename = f"{prefix}_{ts}_{i + len(urls)}.png"
             filepath = out / filename
-            filepath.write_bytes(base64.b64decode(b64))
+            await asyncio.to_thread(filepath.write_bytes, base64.b64decode(b64))
             saved.append(str(filepath))
 
         return saved

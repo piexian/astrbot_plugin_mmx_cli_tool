@@ -51,7 +51,9 @@ async def _to_data_uri(image: str) -> str:
     mime, _ = mimetypes.guess_type(p.name)
     if not mime:
         mime = "image/jpeg"
-    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    import asyncio
+
+    b64 = base64.b64encode(await asyncio.to_thread(p.read_bytes)).decode("ascii")
     return f"data:{mime};base64,{b64}"
 
 
