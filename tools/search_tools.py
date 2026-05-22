@@ -24,12 +24,12 @@ class WebSearchTool(FunctionTool):
             parameters={
                 "type": "object",
                 "properties": {
-                    "query": {
+                    "q": {
                         "type": "string",
                         "description": "Search query string",
                     },
                 },
-                "required": ["query"],
+                "required": ["q"],
             },
         )
         self._api = api
@@ -37,11 +37,17 @@ class WebSearchTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        query = kwargs.get("query", "")
+        query = kwargs.get("q", "")
         if not query:
             return ToolExecResult(
                 json.dumps(
-                    {"ok": False, "error": "缺少 query 参数"}, ensure_ascii=False
+                    {
+                        "ok": False,
+                        "error": "缺少搜索查询",
+                        "hint": "请提供 q 参数作为搜索关键词",
+                        "example": {"q": "MiniMax AI 最新动态"},
+                    },
+                    ensure_ascii=False,
                 )
             )
 

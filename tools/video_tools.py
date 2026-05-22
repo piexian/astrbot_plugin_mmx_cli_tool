@@ -12,30 +12,74 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.video import VideoAPI
 
+def _hint_json(error: str, hint: str, example: dict | None = None) -> str:
+    """构造带提示的错误 JSON。"""
+    resp: dict = {"ok": False, "error": error, "hint": hint}
+    if example:
+        resp["example"] = example
+    resp["docs"] = "https://platform.minimaxi.com/docs/api-reference/video-generation"
+    return json.dumps(resp, ensure_ascii=False)
+
 
 @dataclass
 class GenerateVideoTool(FunctionTool):
-    """LLM 工具：调用 MiniMax 视频生成 API。"""
+    """LLM 工具：调用 MiniMax 视频生成 API。
+
+    支持 T2V、I2V、SEF（首尾帧插值）、S2V（角色一致性）四种模式。
+    """
 
     def __init__(self, api: VideoAPI, poll_interval: int = 5, video_timeout: int = 600):
         super().__init__(
             name="mmx_generate_video",
-            description="Generate a video using MiniMax AI from a text prompt. Returns a task_id for tracking.",
+            description=(
+                "Generate a video using MiniMax AI.\n"
+                "Modes:\n"
+                "  T2V: text prompt only → Hailuo-2.3\n"
+                "  I2V: firstFrame image → Hailuo-2.3 (or Hailuo-2.3-Fast)\n"
+                "  SEF: firstFrame + lastFrame → Hailuo-02 (start-end frame interpolation)\n"
+                "  S2V: subjectImage → S2V-01 (character consistency)\n"
+                "By default waits for completion. Set noWait=true to return task_id immediately."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "Detailed video description",
+                        "description": "Video description (required)",
                     },
-                    "first_frame_image_url": {
+                    "model": {
                         "type": "string",
-                        "description": "Optional URL of an image to use as the first frame for image-to-video generation",
+                        "description": (
+                            "Model ID. Auto-selected based on inputs: "
+                            "MiniMax-Hailuo-2.3 (T2V/I2V), MiniMax-Hailuo-2.3-Fast (fast I2V), "
+                            "Hailuo-02 (SEF with firstFrame+lastFrame), S2V-01 (with subjectImage)"
+                        ),
                     },
-                    "wait_for_result": {
+                    "firstFrame": {
+                        "type": "string",
+                        "description": "First frame image (URL or local path). Enables I2V mode.",
+                    },
+                    "lastFrame": {
+                        "type": "string",
+                        "description": "Last frame image (URL or local path). Enables SEF interpolation mode. Requires firstFrame.",
+                    },
+                    "subjectImage": {
+                        "type": "string",
+                        "description": "Subject reference image for character consistency (URL or local path). Switches to S2V-01.",
+                    },
+                    "callbackUrl": {
+                        "type": "string",
+                        "description": "Webhook URL for completion notification",
+                    },
+                    "noWait": {
                         "type": "boolean",
-                        "description": "Whether to wait for the video to finish generating (may take several minutes). Default false.",
+                        "description": "Return task_id immediately without waiting for completion. Default false (waits).",
                         "default": False,
+                    },
+                    "pollInterval": {
+                        "type": "integer",
+                        "description": "Polling interval in seconds when waiting (default: 5)",
+                        "default": 5,
                     },
                 },
                 "required": ["prompt"],
@@ -51,15 +95,44 @@ class GenerateVideoTool(FunctionTool):
         prompt = kwargs.get("prompt", "")
         if not prompt:
             return ToolExecResult(
-                json.dumps(
-                    {"ok": False, "error": "缺少 prompt 参数"}, ensure_ascii=False
+                _hint_json(
+                    "缺少 prompt 参数",
+                    "prompt 为必需参数，请描述你想要生成的视频内容",
+                    {"prompt": "A cat playing piano, cinematic lighting"},
                 )
             )
+
+        first_frame = kwargs.get("firstFrame")
+        last_frame = kwargs.get("lastFrame")
+        subject_image = kwargs.get("subjectImage")
+        model = kwargs.get("model")
+        callback_url = kwargs.get("callbackUrl")
+        no_wait = kwargs.get("noWait", False)
+        poll_interval = kwargs.get("pollInterval") or self._poll_interval
+
+        # 校验 SEF 模式
+        if last_frame and not first_frame:
+            return ToolExecResult(
+                _hint_json(
+                    "SEF 模式需要同时提供 firstFrame 和 lastFrame",
+                    "请同时提供 firstFrame（起始帧）和 lastFrame（结束帧）来启用首尾帧插值模式",
+                    {"prompt": "Walk forward", "firstFrame": "start.jpg", "lastFrame": "end.jpg"},
+                )
+            )
+
+        # 构建 subject_reference
+        subject_reference = None
+        if subject_image:
+            subject_reference = [{"type": "character", "image": subject_image}]
 
         try:
             result = await self._api.generate(
                 prompt=prompt,
-                first_frame_image=kwargs.get("first_frame_image_url"),
+                model=model,
+                first_frame_image=first_frame,
+                last_frame_image=last_frame,
+                subject_reference=subject_reference,
+                callback_url=callback_url,
             )
         except Exception as e:
             logger.error(f"[mmx] 视频生成失败: {e}")
@@ -72,41 +145,50 @@ class GenerateVideoTool(FunctionTool):
         task_id = result.get("task_id", "")
         status = result.get("status", "Unknown")
 
-        if kwargs.get("wait_for_result") and task_id:
-            try:
-                final = await self._api.wait_for_completion(
-                    task_id,
-                    poll_interval=self._poll_interval,
-                    timeout=self._video_timeout,
+        if no_wait or not task_id:
+            return ToolExecResult(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "task_id": task_id,
+                        "status": status,
+                        "hint": "使用 mmx_video_task_get 工具查询进度，mmx_video_download 下载视频",
+                    },
+                    ensure_ascii=False,
                 )
-                file_id = final.get("file_id", "")
-                return ToolExecResult(
-                    json.dumps(
-                        {
-                            "ok": True,
-                            "task_id": task_id,
-                            "status": "Success",
-                            "file_id": file_id,
-                            "message": "视频生成完成",
-                        },
-                        ensure_ascii=False,
-                    )
-                )
-            except TimeoutError:
-                return ToolExecResult(
-                    json.dumps(
-                        {
-                            "ok": True,
-                            "task_id": task_id,
-                            "status": "Processing",
-                            "message": f"视频仍在生成中，task_id={task_id}，请稍后查询",
-                        },
-                        ensure_ascii=False,
-                    )
-                )
-
-        return ToolExecResult(
-            json.dumps(
-                {"ok": True, "task_id": task_id, "status": status}, ensure_ascii=False
             )
-        )
+
+        # 同步等待完成
+        try:
+            final = await self._api.wait_for_completion(
+                task_id,
+                poll_interval=poll_interval,
+                timeout=self._video_timeout,
+            )
+            file_id = final.get("file_id", "")
+            return ToolExecResult(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "task_id": task_id,
+                        "status": "Success",
+                        "file_id": file_id,
+                        "message": "视频生成完成",
+                        "hint": "使用 mmx_video_download 工具下载视频文件",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        except TimeoutError:
+            return ToolExecResult(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "task_id": task_id,
+                        "status": "Processing",
+                        "message": f"视频仍在生成中，task_id={task_id}，请稍后查询",
+                        "hint": "使用 mmx_video_task_get 工具查询进度",
+                    },
+                    ensure_ascii=False,
+                )
+            )

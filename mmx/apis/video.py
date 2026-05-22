@@ -17,17 +17,33 @@ class VideoAPI:
     def __init__(self, client: MiniMaxClient) -> None:
         self._client = client
 
+    _DEFAULT_MODEL = "MiniMax-Hailuo-2.3"
+
     async def generate(
         self,
         prompt: str,
         *,
-        model: str = "MiniMax-Hailuo-2.3",
+        model: str | None = None,
         first_frame_image: str | None = None,
         last_frame_image: str | None = None,
         subject_reference: list[dict[str, Any]] | None = None,
         callback_url: str | None = None,
     ) -> dict[str, Any]:
-        """提交视频生成任务。"""
+        """提交视频生成任务。
+
+        自动模型切换逻辑（仅当调用方未显式指定 model 时生效）：
+        - firstFrame + lastFrame → Hailuo-02（SEF 首尾帧插值）
+        - subjectImage → S2V-01（角色一致性）
+        """
+        # 自动选择模型
+        if model is None:
+            if last_frame_image and first_frame_image:
+                model = "Hailuo-02"
+            elif subject_reference:
+                model = "S2V-01"
+            else:
+                model = self._DEFAULT_MODEL
+
         body: dict[str, Any] = {
             "model": model,
             "prompt": prompt,

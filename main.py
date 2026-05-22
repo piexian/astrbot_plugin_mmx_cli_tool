@@ -24,16 +24,22 @@ from .mmx.apis.music import MusicAPI
 from .mmx.apis.search import SearchAPI
 from .mmx.apis.vision import VisionAPI
 from .mmx.apis.quota import QuotaAPI
+from .mmx.apis.speech import SpeechAPI
 from .mmx.vision_input import extract_image_input
 from .mmx.errors import MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
 from .tools import (
     GenerateImageTool,
     GenerateVideoTool,
+    QueryVideoTaskTool,
+    DownloadVideoTool,
     GenerateMusicTool,
+    MusicCoverTool,
     WebSearchTool,
     DescribeImageTool,
     CheckQuotaTool,
+    SpeechSynthesizeTool,
+    ListVoicesTool,
 )
 
 
@@ -137,6 +143,10 @@ class Main(star.Star):
         self._search = SearchAPI(self._client)
         self._vision = VisionAPI(self._client)
         self._quota = QuotaAPI(self._client)
+        self._speech = SpeechAPI(self._client)
+
+        # 插件数据目录路径（字符串）
+        _data_dir = str(self._plugin_data_dir)
 
         # 注册 LLM 工具
         context.add_llm_tools(
@@ -144,15 +154,52 @@ class Main(star.Star):
             GenerateVideoTool(
                 self._video, self._video_poll_interval, self._video_timeout
             ),
+            QueryVideoTaskTool(self._video),
+            DownloadVideoTool(self._video, _data_dir),
             GenerateMusicTool(self._music),
+            MusicCoverTool(self._music),
             WebSearchTool(self._search),
             DescribeImageTool(self._vision),
             CheckQuotaTool(self._quota),
+            SpeechSynthesizeTool(self._speech, _data_dir),
+            ListVoicesTool(self._speech),
         )
 
     async def terminate(self) -> None:
         if self._client:
             await self._client.close()
+
+    @mmx_group.command("speech")
+    async def mmx_speech(self, event: AstrMessageEvent, *, text: str = ""):
+        """语音合成。用法: /mmx speech <文本>"""
+        msg = event.message_str.strip()
+        parts = msg.split(maxsplit=1)
+        text = text or (parts[1] if len(parts) > 1 else "")
+        if not text:
+            yield event.plain_result(
+                "用法: /mmx speech <文本>\n例如: /mmx speech 你好世界"
+            )
+            return
+        try:
+            result = await self._speech.synthesize(text=text)
+        except MiniMaxError as e:
+            yield event.plain_result(friendly_message(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] Speech error: {e}")
+            yield event.plain_result(f"语音合成失败: {e}")
+            return
+
+        out_path = self._plugin_data_dir / f"mmx_speech_{int(_time.time() * 1000)}.mp3"
+        try:
+            saved_path = self._speech.save(result, str(out_path))
+        except Exception as e:
+            logger.warning(f"[mmx] 语音保存失败: {e}")
+            yield event.plain_result("语音合成完成，但保存音频失败。")
+            return
+
+        if saved_path:
+            yield event.chain_result([Record(file=saved_path)])
 
     @mmx_group.command("image")
     async def mmx_image(self, event: AstrMessageEvent, *, prompt: str = ""):
