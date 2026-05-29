@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.quota import QuotaAPI
+from .schema import object_parameters
 
 
 @dataclass
@@ -21,10 +22,7 @@ class CheckQuotaTool(FunctionTool):
         super().__init__(
             name="mmx_check_quota",
             description="Check MiniMax API quota and usage. Returns remaining usage for each model.",
-            parameters={
-                "type": "object",
-                "properties": {},
-            },
+            parameters=object_parameters({}),
         )
         self._api = api
 

@@ -12,6 +12,8 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.video import VideoAPI
 from ..mmx.utils import resolve_image
+from .schema import boolean_param, integer_param, object_parameters, string_param
+
 
 def _hint_json(error: str, hint: str, example: dict | None = None) -> str:
     """构造带提示的错误 JSON。"""
@@ -41,50 +43,35 @@ class GenerateVideoTool(FunctionTool):
                 "  S2V: subjectImage → S2V-01 (character consistency)\n"
                 "By default waits for completion. Set noWait=true to return task_id immediately."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Video description (required)",
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": (
-                            "Model ID. Auto-selected based on inputs: "
-                            "MiniMax-Hailuo-2.3 (T2V/I2V), MiniMax-Hailuo-2.3-Fast (fast I2V), "
-                            "Hailuo-02 (SEF with firstFrame+lastFrame), S2V-01 (with subjectImage)"
-                        ),
-                    },
-                    "firstFrame": {
-                        "type": "string",
-                        "description": "First frame image (URL or local path). Enables I2V mode.",
-                    },
-                    "lastFrame": {
-                        "type": "string",
-                        "description": "Last frame image (URL or local path). Enables SEF interpolation mode. Requires firstFrame.",
-                    },
-                    "subjectImage": {
-                        "type": "string",
-                        "description": "Subject reference image for character consistency (URL or local path). Switches to S2V-01.",
-                    },
-                    "callbackUrl": {
-                        "type": "string",
-                        "description": "Webhook URL for completion notification",
-                    },
-                    "noWait": {
-                        "type": "boolean",
-                        "description": "Return task_id immediately without waiting for completion. Default false (waits).",
-                        "default": False,
-                    },
-                    "pollInterval": {
-                        "type": "integer",
-                        "description": "Polling interval in seconds when waiting (default: 5)",
-                        "default": 5,
-                    },
+            parameters=object_parameters(
+                {
+                    "prompt": string_param("Video description (required)"),
+                    "model": string_param(
+                        "Model ID. Auto-selected based on inputs: "
+                        "MiniMax-Hailuo-2.3 (T2V/I2V), MiniMax-Hailuo-2.3-Fast (fast I2V), "
+                        "Hailuo-02 (SEF with firstFrame+lastFrame), S2V-01 (with subjectImage)"
+                    ),
+                    "firstFrame": string_param(
+                        "First frame image (URL or local path). Enables I2V mode."
+                    ),
+                    "lastFrame": string_param(
+                        "Last frame image (URL or local path). Enables SEF interpolation mode. Requires firstFrame."
+                    ),
+                    "subjectImage": string_param(
+                        "Subject reference image for character consistency (URL or local path). Switches to S2V-01."
+                    ),
+                    "callbackUrl": string_param(
+                        "Webhook URL for completion notification"
+                    ),
+                    "noWait": boolean_param(
+                        "Return task_id immediately without waiting for completion. Default false (waits)."
+                    ),
+                    "pollInterval": integer_param(
+                        "Polling interval in seconds when waiting (default: 5)"
+                    ),
                 },
-                "required": ["prompt"],
-            },
+                required=["prompt"],
+            ),
         )
         self._api = api
         self._poll_interval = poll_interval
@@ -117,7 +104,11 @@ class GenerateVideoTool(FunctionTool):
                 _hint_json(
                     "SEF 模式需要同时提供 firstFrame 和 lastFrame",
                     "请同时提供 firstFrame（起始帧）和 lastFrame（结束帧）来启用首尾帧插值模式",
-                    {"prompt": "Walk forward", "firstFrame": "start.jpg", "lastFrame": "end.jpg"},
+                    {
+                        "prompt": "Walk forward",
+                        "firstFrame": "start.jpg",
+                        "lastFrame": "end.jpg",
+                    },
                 )
             )
 
@@ -127,7 +118,11 @@ class GenerateVideoTool(FunctionTool):
                 _hint_json(
                     "firstFrame/lastFrame 与 subjectImage 不能同时使用",
                     "首尾帧插值（SEF）和角色一致性（S2V）是两种独立模式，请选择其一",
-                    {"prompt": "A person walking", "firstFrame": "start.jpg", "lastFrame": "end.jpg"},
+                    {
+                        "prompt": "A person walking",
+                        "firstFrame": "start.jpg",
+                        "lastFrame": "end.jpg",
+                    },
                 )
             )
 
@@ -137,7 +132,11 @@ class GenerateVideoTool(FunctionTool):
                 _hint_json(
                     f"{model} 模型需要提供 firstFrame",
                     "Fast 模型属于 I2V 模式，必须提供 firstFrame（起始帧图片）",
-                    {"prompt": "A cat running", "firstFrame": "cat.jpg", "model": model},
+                    {
+                        "prompt": "A cat running",
+                        "firstFrame": "cat.jpg",
+                        "model": model,
+                    },
                 )
             )
 

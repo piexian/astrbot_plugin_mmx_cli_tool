@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.speech import SpeechAPI
+from .schema import number_param, object_parameters, string_param
 
 
 def _language_prefix(voice_id: str) -> str:
@@ -45,44 +46,31 @@ class SpeechSynthesizeTool(FunctionTool):
                 "Supports 30+ voices, speed/pitch/volume control. Max 10k characters. "
                 "Returns the generated audio file path."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "Text to synthesize (required, max 10000 characters)",
-                    },
-                    "voice": {
-                        "type": "string",
-                        "description": "Voice ID (default: English_expressive_narrator). Use mmx_speech_voices to list available voices.",
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Model ID: speech-2.8-hd (default), speech-2.6, speech-02",
-                    },
-                    "speed": {
-                        "type": "number",
-                        "description": "Speech speed multiplier (e.g. 0.5 = half speed, 2.0 = double)",
-                    },
-                    "volume": {
-                        "type": "number",
-                        "description": "Volume level",
-                    },
-                    "pitch": {
-                        "type": "number",
-                        "description": "Pitch adjustment",
-                    },
-                    "format": {
-                        "type": "string",
-                        "description": "Audio format: mp3, pcm, flac, wav, opus (default: mp3)",
-                    },
-                    "language": {
-                        "type": "string",
-                        "description": "Language boost (e.g. english, chinese, korean)",
-                    },
+            parameters=object_parameters(
+                {
+                    "text": string_param(
+                        "Text to synthesize (required, max 10000 characters)"
+                    ),
+                    "voice": string_param(
+                        "Voice ID (default: English_expressive_narrator). Use mmx_speech_voices to list available voices."
+                    ),
+                    "model": string_param(
+                        "Model ID: speech-2.8-hd (default), speech-2.6, speech-02"
+                    ),
+                    "speed": number_param(
+                        "Speech speed multiplier (e.g. 0.5 = half speed, 2.0 = double)"
+                    ),
+                    "volume": number_param("Volume level"),
+                    "pitch": number_param("Pitch adjustment"),
+                    "format": string_param(
+                        "Audio format: mp3, pcm, flac, wav, opus (default: mp3)"
+                    ),
+                    "language": string_param(
+                        "Language boost (e.g. english, chinese, korean)"
+                    ),
                 },
-                "required": ["text"],
-            },
+                required=["text"],
+            ),
         )
         self._api = api
         self._data_dir = data_dir
@@ -98,7 +86,10 @@ class SpeechSynthesizeTool(FunctionTool):
                         "ok": False,
                         "error": "缺少 text 参数",
                         "hint": "请提供 text 参数，指定要合成的文本内容",
-                        "example": {"text": "Hello, world!", "voice": "English_expressive_narrator"},
+                        "example": {
+                            "text": "Hello, world!",
+                            "voice": "English_expressive_narrator",
+                        },
                         "docs": "https://platform.minimaxi.com/docs/api-reference/speech-t2a-http",
                     },
                     ensure_ascii=False,
@@ -131,7 +122,8 @@ class SpeechSynthesizeTool(FunctionTool):
         from pathlib import Path
 
         out_path = str(
-            Path(self._data_dir) / f"mmx_speech_{int(time.time() * 1000)}.{audio_format}"
+            Path(self._data_dir)
+            / f"mmx_speech_{int(time.time() * 1000)}.{audio_format}"
         )
 
         try:
@@ -160,16 +152,13 @@ class ListVoicesTool(FunctionTool):
         super().__init__(
             name="mmx_speech_voices",
             description="List available system voices for MiniMax TTS.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "language": {
-                        "type": "string",
-                        "description": "Client-side filter by voice ID language prefix (e.g. english, korean, japanese)",
-                    },
+            parameters=object_parameters(
+                {
+                    "language": string_param(
+                        "Client-side filter by voice ID language prefix (e.g. english, korean, japanese)"
+                    ),
                 },
-                "required": [],
-            },
+            ),
         )
         self._api = api
 

@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.vision import VisionAPI
+from .schema import object_parameters, string_param
 
 
 @dataclass
@@ -21,24 +22,19 @@ class DescribeImageTool(FunctionTool):
         super().__init__(
             name="mmx_describe_image",
             description="Analyze and describe an image using MiniMax vision AI. Provide an image URL, local file path, or pre-uploaded file ID.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "image": {
-                        "type": "string",
-                        "description": "Image URL or local file path (auto base64-encoded). Mutually exclusive with fileId.",
-                    },
-                    "fileId": {
-                        "type": "string",
-                        "description": "Pre-uploaded file ID (skips base64 conversion). Mutually exclusive with image.",
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Question about the image (default: 'Describe the image.')",
-                    },
+            parameters=object_parameters(
+                {
+                    "image": string_param(
+                        "Image URL or local file path (auto base64-encoded). Mutually exclusive with fileId."
+                    ),
+                    "fileId": string_param(
+                        "Pre-uploaded file ID (skips base64 conversion). Mutually exclusive with image."
+                    ),
+                    "prompt": string_param(
+                        "Question about the image (default: 'Describe the image.')"
+                    ),
                 },
-                "oneOf": [{"required": ["image"]}, {"required": ["fileId"]}],
-            },
+            ),
         )
         self._api = api
 
@@ -55,7 +51,10 @@ class DescribeImageTool(FunctionTool):
                         "ok": False,
                         "error": "缺少图片输入",
                         "hint": "请提供 image（图片 URL 或本地路径）或 fileId（预上传文件 ID）",
-                        "example": {"image": "https://example.com/photo.jpg", "prompt": "这张图片里有什么？"},
+                        "example": {
+                            "image": "https://example.com/photo.jpg",
+                            "prompt": "这张图片里有什么？",
+                        },
                         "docs": "https://platform.minimaxi.com/docs/api-reference/vlm",
                     },
                     ensure_ascii=False,
@@ -68,7 +67,10 @@ class DescribeImageTool(FunctionTool):
                         "ok": False,
                         "error": "image 和 fileId 不能同时提供",
                         "hint": "请只提供 image（图片 URL/本地路径）或 fileId（二选一）",
-                        "example": {"fileId": "file-123456789", "prompt": "Extract the text"},
+                        "example": {
+                            "fileId": "file-123456789",
+                            "prompt": "Extract the text",
+                        },
                     },
                     ensure_ascii=False,
                 )

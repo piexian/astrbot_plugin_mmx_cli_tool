@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.music import MusicAPI
+from .schema import boolean_param, integer_param, object_parameters, string_param
 
 
 def _hint_json(error: str, hint: str, example: dict | None = None) -> str:
@@ -42,84 +43,56 @@ class GenerateMusicTool(FunctionTool):
                 "3. Auto lyrics: set 'lyricsOptimizer' to true to auto-generate lyrics from prompt.\n"
                 "Provide at least one content, mode, or style-control parameter."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Music style description (e.g. 'cinematic orchestral, building tension'). Max 2000 chars.",
-                    },
-                    "lyrics": {
-                        "type": "string",
-                        "description": (
-                            "Song lyrics with structure tags: [Intro], [Verse], [Chorus], [Bridge], [Outro], etc. "
-                            "Max 3500 chars. Mutually exclusive with 'instrumental'."
-                        ),
-                    },
-                    "lyricsOptimizer": {
-                        "type": "boolean",
-                        "description": "Auto-generate lyrics from prompt. Cannot be used with lyrics or instrumental.",
-                    },
-                    "instrumental": {
-                        "type": "boolean",
-                        "description": "Generate instrumental music (no vocals). Cannot be used with lyrics.",
-                        "default": False,
-                    },
-                    "vocals": {
-                        "type": "string",
-                        "description": "Vocal style, e.g. 'warm male baritone', 'bright female soprano'",
-                    },
-                    "genre": {
-                        "type": "string",
-                        "description": "Music genre, e.g. folk, pop, jazz, electronic",
-                    },
-                    "mood": {
-                        "type": "string",
-                        "description": "Mood or emotion, e.g. warm, melancholic, uplifting",
-                    },
-                    "instruments": {
-                        "type": "string",
-                        "description": "Instruments to feature, e.g. 'acoustic guitar, piano, strings'",
-                    },
-                    "tempo": {
-                        "type": "string",
-                        "description": "Tempo description, e.g. fast, slow, moderate",
-                    },
-                    "bpm": {
-                        "type": "integer",
-                        "description": "Exact tempo in beats per minute",
-                    },
-                    "key": {
-                        "type": "string",
-                        "description": "Musical key, e.g. 'C major', 'A minor'",
-                    },
-                    "avoid": {
-                        "type": "string",
-                        "description": "Elements to avoid in the generated music",
-                    },
-                    "useCase": {
-                        "type": "string",
-                        "description": "Use case context, e.g. 'background music for video', 'theme song'",
-                    },
-                    "structure": {
-                        "type": "string",
-                        "description": "Song structure, e.g. 'verse-chorus-verse-bridge-chorus'",
-                    },
-                    "references": {
-                        "type": "string",
-                        "description": "Reference tracks or artists, e.g. 'similar to Ed Sheeran'",
-                    },
-                    "extra": {
-                        "type": "string",
-                        "description": "Additional fine-grained requirements not covered above",
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Model: music-2.6 (default), music-2.5+, or music-2.5",
-                    },
+            parameters=object_parameters(
+                {
+                    "prompt": string_param(
+                        "Music style description (e.g. 'cinematic orchestral, building tension'). Max 2000 chars."
+                    ),
+                    "lyrics": string_param(
+                        "Song lyrics with structure tags: [Intro], [Verse], [Chorus], [Bridge], [Outro], etc. "
+                        "Max 3500 chars. Mutually exclusive with 'instrumental'."
+                    ),
+                    "lyricsOptimizer": boolean_param(
+                        "Auto-generate lyrics from prompt. Cannot be used with lyrics or instrumental."
+                    ),
+                    "instrumental": boolean_param(
+                        "Generate instrumental music (no vocals). Cannot be used with lyrics."
+                    ),
+                    "vocals": string_param(
+                        "Vocal style, e.g. 'warm male baritone', 'bright female soprano'"
+                    ),
+                    "genre": string_param(
+                        "Music genre, e.g. folk, pop, jazz, electronic"
+                    ),
+                    "mood": string_param(
+                        "Mood or emotion, e.g. warm, melancholic, uplifting"
+                    ),
+                    "instruments": string_param(
+                        "Instruments to feature, e.g. 'acoustic guitar, piano, strings'"
+                    ),
+                    "tempo": string_param(
+                        "Tempo description, e.g. fast, slow, moderate"
+                    ),
+                    "bpm": integer_param("Exact tempo in beats per minute"),
+                    "key": string_param("Musical key, e.g. 'C major', 'A minor'"),
+                    "avoid": string_param("Elements to avoid in the generated music"),
+                    "useCase": string_param(
+                        "Use case context, e.g. 'background music for video', 'theme song'"
+                    ),
+                    "structure": string_param(
+                        "Song structure, e.g. 'verse-chorus-verse-bridge-chorus'"
+                    ),
+                    "references": string_param(
+                        "Reference tracks or artists, e.g. 'similar to Ed Sheeran'"
+                    ),
+                    "extra": string_param(
+                        "Additional fine-grained requirements not covered above"
+                    ),
+                    "model": string_param(
+                        "Model: music-2.6 (default), music-2.5+, or music-2.5"
+                    ),
                 },
-                "required": [],
-            },
+            ),
         )
         self._api = api
 

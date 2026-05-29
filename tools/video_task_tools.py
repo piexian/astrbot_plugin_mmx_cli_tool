@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.video import VideoAPI
+from .schema import object_parameters, string_param
 
 
 @dataclass
@@ -21,16 +22,14 @@ class QueryVideoTaskTool(FunctionTool):
         super().__init__(
             name="mmx_video_task_get",
             description="Query the status of a video generation task. Returns status, progress, and file_id when completed.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "taskId": {
-                        "type": "string",
-                        "description": "Video generation task ID (returned by mmx_generate_video)",
-                    },
+            parameters=object_parameters(
+                {
+                    "taskId": string_param(
+                        "Video generation task ID (returned by mmx_generate_video)"
+                    ),
                 },
-                "required": ["taskId"],
-            },
+                required=["taskId"],
+            ),
         )
         self._api = api
 
@@ -84,20 +83,17 @@ class DownloadVideoTool(FunctionTool):
         super().__init__(
             name="mmx_video_download",
             description="Download a completed video by file ID. Returns the local file path.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "fileId": {
-                        "type": "string",
-                        "description": "File ID of the completed video (from mmx_video_task_get result)",
-                    },
-                    "out": {
-                        "type": "string",
-                        "description": "Output file path (optional, auto-generated if omitted)",
-                    },
+            parameters=object_parameters(
+                {
+                    "fileId": string_param(
+                        "File ID of the completed video (from mmx_video_task_get result)"
+                    ),
+                    "out": string_param(
+                        "Output file path (optional, auto-generated if omitted)"
+                    ),
                 },
-                "required": ["fileId"],
-            },
+                required=["fileId"],
+            ),
         )
         self._api = api
         self._data_dir = data_dir

@@ -1,5 +1,11 @@
 # 更新日志
 
+## 0.2.1 - 2026-05-30
+
+- 修复 `mmx_describe_image` 工具声明中使用 `oneOf` 导致部分 OpenAI 兼容层转发 Gemini 时请求 400 的问题。
+- 统一 LLM 工具参数 Schema 为更保守的跨 provider 公共子集，移除工具声明中的 `default` 与空 `required`，复杂互斥校验保留在 Python `call()` 运行时执行。
+- 新增工具 Schema 单元测试，防止后续重新引入 `oneOf`、`default`、空 `required` 或未声明 required 字段。
+
 ## 0.2.0 - 2026-05-22
 
 - **新增语音合成 (TTS) 工具**：

@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.search import SearchAPI
+from .schema import object_parameters, string_param
 
 
 @dataclass
@@ -21,16 +22,10 @@ class WebSearchTool(FunctionTool):
         super().__init__(
             name="mmx_web_search",
             description="Search the web using MiniMax's search engine. Returns relevant results with titles, URLs, and snippets.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "q": {
-                        "type": "string",
-                        "description": "Search query string",
-                    },
-                },
-                "required": ["q"],
-            },
+            parameters=object_parameters(
+                {"q": string_param("Search query string")},
+                required=["q"],
+            ),
         )
         self._api = api
 

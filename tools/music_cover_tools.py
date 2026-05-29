@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.music import MusicAPI
+from .schema import integer_param, object_parameters, string_param
 
 
 @dataclass
@@ -24,32 +25,26 @@ class MusicCoverTool(FunctionTool):
                 "Generate a cover version of a song based on reference audio. "
                 "Provide a target style prompt and a reference audio URL or local file."
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Target cover style, e.g. 'Indie folk, acoustic guitar, warm male vocal'",
-                    },
-                    "audio": {
-                        "type": "string",
-                        "description": "URL of the reference audio (mp3, wav, flac, etc. — 6s to 6min, max 50MB)",
-                    },
-                    "audioFile": {
-                        "type": "string",
-                        "description": "Local reference audio file path (auto base64-encoded)",
-                    },
-                    "lyrics": {
-                        "type": "string",
-                        "description": "Cover lyrics. If omitted, extracted from reference audio via ASR.",
-                    },
-                    "seed": {
-                        "type": "integer",
-                        "description": "Random seed 0–1000000 for reproducible results",
-                    },
+            parameters=object_parameters(
+                {
+                    "prompt": string_param(
+                        "Target cover style, e.g. 'Indie folk, acoustic guitar, warm male vocal'"
+                    ),
+                    "audio": string_param(
+                        "URL of the reference audio (mp3, wav, flac, etc. - 6s to 6min, max 50MB)"
+                    ),
+                    "audioFile": string_param(
+                        "Local reference audio file path (auto base64-encoded)"
+                    ),
+                    "lyrics": string_param(
+                        "Cover lyrics. If omitted, extracted from reference audio via ASR."
+                    ),
+                    "seed": integer_param(
+                        "Random seed 0-1000000 for reproducible results"
+                    ),
                 },
-                "required": ["prompt"],
-            },
+                required=["prompt"],
+            ),
         )
         self._api = api
 

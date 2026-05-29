@@ -12,6 +12,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.image import ImageAPI
 from ..mmx.utils import is_url, resolve_image
+from .schema import boolean_param, integer_param, object_parameters, string_param
 
 
 @dataclass
@@ -22,49 +23,34 @@ class GenerateImageTool(FunctionTool):
         super().__init__(
             name="mmx_generate_image",
             description="Generate images using MiniMax AI (image-01 / image-01-live). Provide a detailed prompt describing the image you want.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Detailed image description in English or Chinese",
-                    },
-                    "aspectRatio": {
-                        "type": "string",
-                        "description": "Image aspect ratio, e.g. '1:1', '16:9', '9:16', '4:3'. Ignored if width and height are both set.",
-                    },
-                    "n": {
-                        "type": "integer",
-                        "description": "Number of images to generate (1-9, default 1)",
-                        "default": 1,
-                    },
-                    "seed": {
-                        "type": "integer",
-                        "description": "Random seed for reproducible generation (same seed + parameters = reproducible output)",
-                    },
-                    "width": {
-                        "type": "integer",
-                        "description": "Custom width in pixels (512-2048, multiple of 8). Only for image-01. Overrides aspectRatio.",
-                    },
-                    "height": {
-                        "type": "integer",
-                        "description": "Custom height in pixels (512-2048, multiple of 8). Only for image-01. Overrides aspectRatio.",
-                    },
-                    "promptOptimizer": {
-                        "type": "boolean",
-                        "description": "Automatically optimize the prompt for better results (default: true)",
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Model: image-01 (default) or image-01-live",
-                    },
-                    "subjectRef": {
-                        "type": "string",
-                        "description": "Subject reference for character consistency. Format: image URL or local path.",
-                    },
+            parameters=object_parameters(
+                {
+                    "prompt": string_param(
+                        "Detailed image description in English or Chinese"
+                    ),
+                    "aspectRatio": string_param(
+                        "Image aspect ratio, e.g. '1:1', '16:9', '9:16', '4:3'. Ignored if width and height are both set."
+                    ),
+                    "n": integer_param("Number of images to generate (1-9, default 1)"),
+                    "seed": integer_param(
+                        "Random seed for reproducible generation (same seed + parameters = reproducible output)"
+                    ),
+                    "width": integer_param(
+                        "Custom width in pixels (512-2048, multiple of 8). Only for image-01. Overrides aspectRatio."
+                    ),
+                    "height": integer_param(
+                        "Custom height in pixels (512-2048, multiple of 8). Only for image-01. Overrides aspectRatio."
+                    ),
+                    "promptOptimizer": boolean_param(
+                        "Automatically optimize the prompt for better results (default: true)"
+                    ),
+                    "model": string_param("Model: image-01 (default) or image-01-live"),
+                    "subjectRef": string_param(
+                        "Subject reference for character consistency. Format: image URL or local path."
+                    ),
                 },
-                "required": ["prompt"],
-            },
+                required=["prompt"],
+            ),
         )
         self._api = api
 

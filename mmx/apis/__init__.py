@@ -8,4 +8,12 @@ from .vision import VisionAPI
 from .quota import QuotaAPI
 from .speech import SpeechAPI
 
-__all__ = ["ImageAPI", "VideoAPI", "MusicAPI", "SearchAPI", "VisionAPI", "QuotaAPI", "SpeechAPI"]
+__all__ = [
+    "ImageAPI",
+    "VideoAPI",
+    "MusicAPI",
+    "SearchAPI",
+    "VisionAPI",
+    "QuotaAPI",
+    "SpeechAPI",
+]
