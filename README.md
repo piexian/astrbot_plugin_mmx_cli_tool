@@ -11,7 +11,7 @@
 
 ## 功能
 
-- 11 个 LLM Tool，全面覆盖 MiniMax 多模态 API（图片/视频/音乐/语音合成/联网搜索/视觉理解）
+- 12 个 LLM Tool，全面覆盖 MiniMax 多模态 API（图片/视频/音乐/语音合成/联网搜索/视觉理解）
 - `/mmx` 命令组，用户可直接通过指令快速调用
 - 智能参数校验与纠偏机制，对 AI 友好
 - API 多 Key 轮询与额度查询
@@ -36,6 +36,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_video_download` | 通过文件 ID 下载完成的视频到本地 | 无 |
 | `mmx_generate_music` | 生成音乐（支持纯器乐、带歌词，及所有精细控制参数） | 无 |
 | `mmx_music_cover` | 基于参考音频及描述进行翻唱（支持 URL 和本地音频输入） | 无 |
+| `mmx_background_task_get` | 查询音乐生成和翻唱的后台任务状态与结果 | 无 |
 | `mmx_speech_synthesize` | 将文本合成语音（TTS），支持 30+ 种音色和语速/音量/音高控制 | 无 |
 | `mmx_speech_voices` | 查询可用 TTS 系统音色列表 | 无 |
 | `mmx_web_search` | 联网搜索信息 | 无 |
@@ -73,6 +74,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 当 AI 需要生成图片、视频、语音、音乐，或进行搜索、图片理解时，会自动调用对应工具。
 
 例如对 AI 说「帮我把这段话合成语音：你好」→ 自动调用 `mmx_speech_synthesize`。
+音乐生成与翻唱会先返回 `task_id`，可用 `mmx_background_task_get` 查询结果。
 
 ## 智能错误提示与参数规范
 
@@ -130,7 +132,10 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `lyrics` (string): 歌词（如留空则通过 ASR 自动从参考音频提取）。
 - `seed` (integer): 随机种子。
 
-#### 7. `mmx_speech_synthesize` (语音合成/TTS)
+#### 7. `mmx_background_task_get` (查询音乐后台任务)
+- `taskId` (string, 必填): `mmx_generate_music` 或 `mmx_music_cover` 返回的任务 ID。
+
+#### 8. `mmx_speech_synthesize` (语音合成/TTS)
 - `text` (string, 必填): 需要合成的文本（最大 10000 字符）。
 - `voice` (string): 音色 ID（默认 `English_expressive_narrator`）。
 - `model` (string): 模型名（如 `speech-2.8-hd`, `speech-2.6`, `speech-02`）。
@@ -138,18 +143,18 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `format` (string): 导出音频格式（如 `mp3`, `pcm`, `flac`, `wav`, `opus`）。
 - `language` (string): 语种权重。
 
-#### 8. `mmx_speech_voices` (列出 TTS 音色)
+#### 9. `mmx_speech_voices` (列出 TTS 音色)
 - `language` (string): 过滤语言（如 `english`, `chinese` 等）。
 
-#### 9. `mmx_web_search` (联网搜索)
+#### 10. `mmx_web_search` (联网搜索)
 - `q` (string, 必填): 搜索查询关键字。
 
-#### 10. `mmx_describe_image` (视觉理解)
+#### 11. `mmx_describe_image` (视觉理解)
 - `image` (string, 必填): 图片 URL 或本地绝对路径。
 - `prompt` (string): 分析要求描述。
 - `fileId` (string): 预先上传的文件 ID。
 
-#### 11. `mmx_check_quota` (额度查询)
+#### 12. `mmx_check_quota` (额度查询)
 - 无参数。查询当前所有 API Key 剩余的总额度。
 
 ## 安全设计
@@ -208,6 +213,9 @@ astrbot_plugin_mmx_cli_tool/
     ├── video_task_tools.py          # QueryVideoTaskTool & DownloadVideoTool
     ├── music_tools.py               # GenerateMusicTool
     ├── music_cover_tools.py         # MusicCoverTool
+    ├── background_task_tools.py     # QueryBackgroundTaskTool
+    ├── background_tasks.py          # 后台任务注册表
+    ├── audio_result.py              # 音频结果保存与后台调度
     ├── speech_tools.py              # SpeechSynthesizeTool & ListVoicesTool
     ├── search_tools.py              # WebSearchTool
     ├── vision_tools.py              # DescribeImageTool

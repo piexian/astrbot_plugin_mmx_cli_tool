@@ -115,7 +115,6 @@ class MusicAPI:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         if audio_hex:
-            # hex 格式：base64 解码后写入
             raw = bytes.fromhex(audio_hex)
             path.write_bytes(raw)
         elif audio_url:

@@ -1,5 +1,12 @@
 # 更新日志
 
+## 0.2.2 - 2026-06-01
+
+- 兼容 AstrBot v4.25.x 中 `ToolExecResult` 变为联合类型别名的行为，LLM 工具统一返回普通 JSON 字符串，修复 `'types.UnionType' object is not callable`。
+- 新增 `mmx_background_task_get` 统一后台任务查询工具，`mmx_generate_music` 与 `mmx_music_cover` 会返回插件内部 `task_id`、`query_tool`、`max_wait_seconds` 和 `poll_after_seconds`，避免 AI 通过 sleep 或读日志猜测任务状态。
+- 音乐生成与翻唱结果不再返回 MiniMax 原始 `audio` hex 或 `raw_data`，改为保存到插件数据目录并仅返回 `file_path` 或 `audio_url`。
+- 音乐生成与翻唱改为插件后台任务，避免长时间生成（可能数分钟）阻塞对话或触发工具超时。
+
 ## 0.2.1 - 2026-05-30
 
 - 修复 `mmx_describe_image` 工具声明中使用 `oneOf` 导致部分 OpenAI 兼容层转发 Gemini 时请求 400 的问题。

@@ -12,6 +12,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.image import ImageAPI
 from ..mmx.utils import is_url, resolve_image
+from .result import tool_result
 from .schema import boolean_param, integer_param, object_parameters, string_param
 
 
@@ -59,7 +60,7 @@ class GenerateImageTool(FunctionTool):
     ) -> ToolExecResult:
         prompt = kwargs.get("prompt", "")
         if not prompt:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -97,7 +98,7 @@ class GenerateImageTool(FunctionTool):
             )
         except Exception as e:
             logger.error(f"[mmx] 图片生成失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"图片生成失败: {e}"}, ensure_ascii=False
                 )
@@ -113,4 +114,4 @@ class GenerateImageTool(FunctionTool):
             "task_id": task_id,
             "count": len(image_urls),
         }
-        return ToolExecResult(json.dumps(resp, ensure_ascii=False))
+        return tool_result(json.dumps(resp, ensure_ascii=False))

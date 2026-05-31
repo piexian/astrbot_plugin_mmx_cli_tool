@@ -9,7 +9,7 @@
       "usage": "/mmx video <描述>"
     },
     "music": {
-      "description": "生成音乐 - 使用 MiniMax AI 生成音乐（支持纯器乐和歌词）",
+      "description": "生成音乐 - 使用 MiniMax AI 生成音乐（支持纯器乐和歌词，后台任务）",
       "usage": "/mmx music <描述> [--instrumental]"
     },
     "search": {

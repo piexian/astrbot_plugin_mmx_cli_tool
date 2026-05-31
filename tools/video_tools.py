@@ -12,6 +12,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.video import VideoAPI
 from ..mmx.utils import resolve_image
+from .result import tool_result
 from .schema import boolean_param, integer_param, object_parameters, string_param
 
 
@@ -82,7 +83,7 @@ class GenerateVideoTool(FunctionTool):
     ) -> ToolExecResult:
         prompt = kwargs.get("prompt", "")
         if not prompt:
-            return ToolExecResult(
+            return tool_result(
                 _hint_json(
                     "缺少 prompt 参数",
                     "prompt 为必需参数，请描述你想要生成的视频内容",
@@ -100,7 +101,7 @@ class GenerateVideoTool(FunctionTool):
 
         # 校验 SEF 模式：lastFrame 需要 firstFrame
         if last_frame and not first_frame:
-            return ToolExecResult(
+            return tool_result(
                 _hint_json(
                     "SEF 模式需要同时提供 firstFrame 和 lastFrame",
                     "请同时提供 firstFrame（起始帧）和 lastFrame（结束帧）来启用首尾帧插值模式",
@@ -114,7 +115,7 @@ class GenerateVideoTool(FunctionTool):
 
         # 校验 SEF 与 S2V 互斥（对齐 mmx-cli）
         if (first_frame or last_frame) and subject_image:
-            return ToolExecResult(
+            return tool_result(
                 _hint_json(
                     "firstFrame/lastFrame 与 subjectImage 不能同时使用",
                     "首尾帧插值（SEF）和角色一致性（S2V）是两种独立模式，请选择其一",
@@ -128,7 +129,7 @@ class GenerateVideoTool(FunctionTool):
 
         # 校验 Fast 模型需要 firstFrame（对齐 mmx-cli）
         if model and "Fast" in model and not first_frame:
-            return ToolExecResult(
+            return tool_result(
                 _hint_json(
                     f"{model} 模型需要提供 firstFrame",
                     "Fast 模型属于 I2V 模式，必须提供 firstFrame（起始帧图片）",
@@ -161,7 +162,7 @@ class GenerateVideoTool(FunctionTool):
             )
         except Exception as e:
             logger.error(f"[mmx] 视频生成失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"视频生成失败: {e}"}, ensure_ascii=False
                 )
@@ -171,7 +172,7 @@ class GenerateVideoTool(FunctionTool):
         status = result.get("status", "Unknown")
 
         if no_wait or not task_id:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": True,
@@ -191,7 +192,7 @@ class GenerateVideoTool(FunctionTool):
                 timeout=self._video_timeout,
             )
             file_id = final.get("file_id", "")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": True,
@@ -205,7 +206,7 @@ class GenerateVideoTool(FunctionTool):
                 )
             )
         except TimeoutError:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": True,

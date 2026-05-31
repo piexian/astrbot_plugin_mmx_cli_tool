@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.search import SearchAPI
+from .result import tool_result
 from .schema import object_parameters, string_param
 
 
@@ -34,7 +35,7 @@ class WebSearchTool(FunctionTool):
     ) -> ToolExecResult:
         query = kwargs.get("q", "")
         if not query:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -50,10 +51,10 @@ class WebSearchTool(FunctionTool):
             result = await self._api.query(query)
         except Exception as e:
             logger.error(f"[mmx] 搜索失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps({"ok": False, "error": f"搜索失败: {e}"}, ensure_ascii=False)
             )
 
-        return ToolExecResult(
+        return tool_result(
             json.dumps({"ok": True, "data": result}, ensure_ascii=False)
         )

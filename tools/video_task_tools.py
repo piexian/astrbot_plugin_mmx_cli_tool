@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.video import VideoAPI
+from .result import tool_result
 from .schema import object_parameters, string_param
 
 
@@ -38,7 +39,7 @@ class QueryVideoTaskTool(FunctionTool):
     ) -> ToolExecResult:
         task_id = kwargs.get("taskId", "")
         if not task_id:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -54,7 +55,7 @@ class QueryVideoTaskTool(FunctionTool):
             result = await self._api.get_task(task_id)
         except Exception as e:
             logger.error(f"[mmx] 视频任务查询失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"视频任务查询失败: {e}"},
                     ensure_ascii=False,
@@ -72,7 +73,7 @@ class QueryVideoTaskTool(FunctionTool):
         elif status == "Failed":
             resp["ok"] = False
             resp["error"] = "视频生成失败"
-        return ToolExecResult(json.dumps(resp, ensure_ascii=False))
+        return tool_result(json.dumps(resp, ensure_ascii=False))
 
 
 @dataclass
@@ -103,7 +104,7 @@ class DownloadVideoTool(FunctionTool):
     ) -> ToolExecResult:
         file_id = kwargs.get("fileId", "")
         if not file_id:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -126,14 +127,14 @@ class DownloadVideoTool(FunctionTool):
             saved = await self._api.download(file_id, out_path)
         except Exception as e:
             logger.error(f"[mmx] 视频下载失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"视频下载失败: {e}"},
                     ensure_ascii=False,
                 )
             )
 
-        return ToolExecResult(
+        return tool_result(
             json.dumps(
                 {"ok": True, "file_path": saved, "message": "视频下载完成"},
                 ensure_ascii=False,

@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.quota import QuotaAPI
+from .result import tool_result
 from .schema import object_parameters
 
 
@@ -33,7 +34,7 @@ class CheckQuotaTool(FunctionTool):
             result = await self._api.info()
         except Exception as e:
             logger.error(f"[mmx] 额度查询失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"额度查询失败: {e}"}, ensure_ascii=False
                 )
@@ -56,7 +57,7 @@ class CheckQuotaTool(FunctionTool):
                 }
             )
 
-        return ToolExecResult(
+        return tool_result(
             json.dumps(
                 {"ok": True, "models": summary, "raw": result}, ensure_ascii=False
             )

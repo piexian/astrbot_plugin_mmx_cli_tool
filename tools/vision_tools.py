@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.vision import VisionAPI
+from .result import tool_result
 from .schema import object_parameters, string_param
 
 
@@ -45,7 +46,7 @@ class DescribeImageTool(FunctionTool):
         file_id = kwargs.get("fileId")
 
         if not image and not file_id:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -61,7 +62,7 @@ class DescribeImageTool(FunctionTool):
                 )
             )
         if image and file_id:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -84,12 +85,12 @@ class DescribeImageTool(FunctionTool):
             )
         except Exception as e:
             logger.error(f"[mmx] 图片理解失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"图片理解失败: {e}"}, ensure_ascii=False
                 )
             )
 
-        return ToolExecResult(
+        return tool_result(
             json.dumps({"ok": True, "data": result}, ensure_ascii=False)
         )

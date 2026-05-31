@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from dataclasses import dataclass
 
 from astrbot.api import FunctionTool, logger
@@ -11,6 +12,8 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.music import MusicAPI
+from .audio_result import saved_audio_result, schedule_audio_result_to_agent
+from .result import tool_result
 from .schema import integer_param, object_parameters, string_param
 
 
@@ -18,12 +21,13 @@ from .schema import integer_param, object_parameters, string_param
 class MusicCoverTool(FunctionTool):
     """LLM 工具：基于参考音频生成翻唱版本。"""
 
-    def __init__(self, api: MusicAPI):
+    def __init__(self, api: MusicAPI, data_dir: str = "."):
         super().__init__(
             name="mmx_music_cover",
             description=(
-                "Generate a cover version of a song based on reference audio. "
-                "Provide a target style prompt and a reference audio URL or local file."
+                "Start a MiniMax cover generation in the background. "
+                "Provide a target style prompt and a reference audio URL or local file. "
+                "Returns task_id, query_tool, max_wait_seconds, and poll_after_seconds when accepted."
             ),
             parameters=object_parameters(
                 {
@@ -47,6 +51,10 @@ class MusicCoverTool(FunctionTool):
             ),
         )
         self._api = api
+        self._data_dir = data_dir
+        self._tasks: set[asyncio.Task] = set()
+        self._max_wait_seconds = 900
+        self._poll_after_seconds = 60
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -57,7 +65,7 @@ class MusicCoverTool(FunctionTool):
 
         # prompt 必填（对齐 mmx-cli）
         if not prompt:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -75,7 +83,7 @@ class MusicCoverTool(FunctionTool):
 
         # audio 和 audioFile 互斥（对齐 mmx-cli）
         if audio and audio_file:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -93,7 +101,7 @@ class MusicCoverTool(FunctionTool):
 
         # 至少需要一个音频来源
         if not audio and not audio_file:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -109,7 +117,7 @@ class MusicCoverTool(FunctionTool):
                 )
             )
 
-        try:
+        async def generate_and_save() -> str:
             result = await self._api.cover(
                 prompt=prompt,
                 audio=audio,
@@ -117,15 +125,47 @@ class MusicCoverTool(FunctionTool):
                 lyrics=kwargs.get("lyrics"),
                 seed=kwargs.get("seed"),
             )
+            return saved_audio_result(
+                self._api,
+                result,
+                data_dir=self._data_dir,
+                prefix="mmx_music_cover",
+                success_message="翻唱生成完成",
+                save_error_label="翻唱保存失败",
+            )
+
+        task_id = schedule_audio_result_to_agent(
+            context,
+            tasks=self._tasks,
+            label="翻唱生成",
+            tool_name=self.name,
+            tool_args=dict(kwargs),
+            max_wait_seconds=self._max_wait_seconds,
+            poll_after_seconds=self._poll_after_seconds,
+            work=generate_and_save,
+        )
+        if task_id:
+            return tool_result(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "background": True,
+                        "task_id": task_id,
+                        "status": "started",
+                        "query_tool": "mmx_background_task_get",
+                        "max_wait_seconds": self._max_wait_seconds,
+                        "poll_after_seconds": self._poll_after_seconds,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        try:
+            return tool_result(await generate_and_save())
         except Exception as e:
             logger.error(f"[mmx] 翻唱生成失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"翻唱生成失败: {e}"}, ensure_ascii=False
                 )
             )
-
-        data = result.get("data", {})
-        audio_url = data.get("audio_url", "")
-        resp: dict = {"ok": True, "audio_url": audio_url, "raw_data": data}
-        return ToolExecResult(json.dumps(resp, ensure_ascii=False))

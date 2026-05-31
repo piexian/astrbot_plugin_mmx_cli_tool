@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from dataclasses import dataclass
 
 from astrbot.api import FunctionTool, logger
@@ -11,6 +12,8 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.music import MusicAPI
+from .audio_result import saved_audio_result, schedule_audio_result_to_agent
+from .result import tool_result
 from .schema import boolean_param, integer_param, object_parameters, string_param
 
 
@@ -33,15 +36,16 @@ class GenerateMusicTool(FunctionTool):
     3. lyricsOptimizer — 根据 prompt 自动生成歌词
     """
 
-    def __init__(self, api: MusicAPI):
+    def __init__(self, api: MusicAPI, data_dir: str = "."):
         super().__init__(
             name="mmx_generate_music",
             description=(
-                "Generate music using MiniMax AI. Three modes (mutually exclusive):\n"
+                "Start MiniMax music generation in the background. Three modes (mutually exclusive):\n"
                 "1. With lyrics: provide 'lyrics' with structure tags like [Verse], [Chorus], etc.\n"
                 "2. Instrumental: set 'instrumental' to true for music without vocals.\n"
                 "3. Auto lyrics: set 'lyricsOptimizer' to true to auto-generate lyrics from prompt.\n"
-                "Provide at least one content, mode, or style-control parameter."
+                "Provide at least one content, mode, or style-control parameter. "
+                "Returns task_id, query_tool, max_wait_seconds, and poll_after_seconds when accepted."
             ),
             parameters=object_parameters(
                 {
@@ -95,6 +99,10 @@ class GenerateMusicTool(FunctionTool):
             ),
         )
         self._api = api
+        self._data_dir = data_dir
+        self._tasks: set[asyncio.Task] = set()
+        self._max_wait_seconds = 900
+        self._poll_after_seconds = 60
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -122,7 +130,7 @@ class GenerateMusicTool(FunctionTool):
             kwargs.get("extra"),
         )
         if not any(bool(value) for value in generation_inputs):
-            return ToolExecResult(
+            return tool_result(
                 _hint_json(
                     "缺少音乐生成参数",
                     "请至少提供 prompt、lyrics、instrumental、lyricsOptimizer 或一个风格控制参数",
@@ -132,7 +140,7 @@ class GenerateMusicTool(FunctionTool):
 
         # 互斥校验
         if lyrics and is_instrumental:
-            return ToolExecResult(
+            return tool_result(
                 _hint_json(
                     "lyrics 和 instrumental 互斥，不能同时使用",
                     "如果要生成带歌词的歌曲，请只提供 lyrics；如果要纯器乐，请只设置 instrumental=true",
@@ -140,7 +148,7 @@ class GenerateMusicTool(FunctionTool):
                 )
             )
         if lyrics_optimizer and (lyrics or is_instrumental):
-            return ToolExecResult(
+            return tool_result(
                 _hint_json(
                     "lyricsOptimizer 不能与 lyrics 或 instrumental 同时使用",
                     "lyricsOptimizer 会根据 prompt 自动生成歌词，无需手动提供 lyrics",
@@ -150,7 +158,7 @@ class GenerateMusicTool(FunctionTool):
 
         # 非纯器乐且未开启自动歌词时，lyrics 必填（对齐 mmx-cli）
         if not is_instrumental and not lyrics_optimizer and not lyrics:
-            return ToolExecResult(
+            return tool_result(
                 _hint_json(
                     "缺少 lyrics 参数",
                     "非纯器乐模式必须提供 lyrics（歌词）。"
@@ -160,7 +168,7 @@ class GenerateMusicTool(FunctionTool):
                 )
             )
 
-        try:
+        async def generate_and_save() -> str:
             result = await self._api.generate(
                 prompt=kwargs.get("prompt"),
                 lyrics=lyrics,
@@ -180,15 +188,47 @@ class GenerateMusicTool(FunctionTool):
                 extra=kwargs.get("extra"),
                 model=kwargs.get("model", "music-2.6"),
             )
+            return saved_audio_result(
+                self._api,
+                result,
+                data_dir=self._data_dir,
+                prefix="mmx_music",
+                success_message="音乐生成完成",
+                save_error_label="音乐保存失败",
+            )
+
+        task_id = schedule_audio_result_to_agent(
+            context,
+            tasks=self._tasks,
+            label="音乐生成",
+            tool_name=self.name,
+            tool_args=dict(kwargs),
+            max_wait_seconds=self._max_wait_seconds,
+            poll_after_seconds=self._poll_after_seconds,
+            work=generate_and_save,
+        )
+        if task_id:
+            return tool_result(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "background": True,
+                        "task_id": task_id,
+                        "status": "started",
+                        "query_tool": "mmx_background_task_get",
+                        "max_wait_seconds": self._max_wait_seconds,
+                        "poll_after_seconds": self._poll_after_seconds,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        try:
+            return tool_result(await generate_and_save())
         except Exception as e:
             logger.error(f"[mmx] 音乐生成失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"音乐生成失败: {e}"}, ensure_ascii=False
                 )
             )
-
-        data = result.get("data", {})
-        audio_url = data.get("audio_url", "")
-        resp: dict = {"ok": True, "audio_url": audio_url, "raw_data": data}
-        return ToolExecResult(json.dumps(resp, ensure_ascii=False))

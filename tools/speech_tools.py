@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.speech import SpeechAPI
+from .result import tool_result
 from .schema import number_param, object_parameters, string_param
 
 
@@ -80,7 +81,7 @@ class SpeechSynthesizeTool(FunctionTool):
     ) -> ToolExecResult:
         text = kwargs.get("text", "")
         if not text:
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {
                         "ok": False,
@@ -111,7 +112,7 @@ class SpeechSynthesizeTool(FunctionTool):
             )
         except Exception as e:
             logger.error(f"[mmx] 语音合成失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"语音合成失败: {e}"}, ensure_ascii=False
                 )
@@ -130,13 +131,13 @@ class SpeechSynthesizeTool(FunctionTool):
             saved = self._api.save(result, out_path)
         except Exception as e:
             logger.warning(f"[mmx] 语音保存失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"语音保存失败: {e}"}, ensure_ascii=False
                 )
             )
 
-        return ToolExecResult(
+        return tool_result(
             json.dumps(
                 {"ok": True, "file_path": saved, "message": "语音合成完成"},
                 ensure_ascii=False,
@@ -169,7 +170,7 @@ class ListVoicesTool(FunctionTool):
             result = await self._api.list_voices()
         except Exception as e:
             logger.error(f"[mmx] 音色列表查询失败: {e}")
-            return ToolExecResult(
+            return tool_result(
                 json.dumps(
                     {"ok": False, "error": f"音色列表查询失败: {e}"},
                     ensure_ascii=False,
@@ -184,6 +185,6 @@ class ListVoicesTool(FunctionTool):
                 data["system_voice"] = _filter_voices_by_language(voices, language)
             result = data
 
-        return ToolExecResult(
+        return tool_result(
             json.dumps({"ok": True, "data": result}, ensure_ascii=False)
         )
