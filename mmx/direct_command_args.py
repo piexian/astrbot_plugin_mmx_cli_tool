@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-import shlex
 from dataclasses import dataclass
+
+from .utils import split_command_tokens
 
 
 class DirectCommandError(ValueError):
@@ -152,7 +153,15 @@ def parse_speech_command(raw: str) -> SpeechCommandArgs:
     _coerce_numbers(values, ("speed", "volume", "pitch"))
     _coerce_ints(values, ("sample_rate", "bitrate", "channels"))
     args = SpeechCommandArgs(**values)
-    if args.audio_format not in {"mp3", "pcm", "flac", "wav", "pcmu_raw", "pcmu_wav", "opus"}:
+    if args.audio_format not in {
+        "mp3",
+        "pcm",
+        "flac",
+        "wav",
+        "pcmu_raw",
+        "pcmu_wav",
+        "opus",
+    }:
         raise DirectCommandError("--format 参数不支持")
     return args
 
@@ -240,7 +249,9 @@ def parse_video_command(raw: str) -> VideoCommandArgs:
     if args.last_frame and not args.first_frame:
         raise DirectCommandError("--last-frame 需要同时提供 --first-frame")
     if args.subject_image and (args.first_frame or args.last_frame):
-        raise DirectCommandError("--subject-image 不能与 --first-frame/--last-frame 同时使用")
+        raise DirectCommandError(
+            "--subject-image 不能与 --first-frame/--last-frame 同时使用"
+        )
     return args
 
 
@@ -257,11 +268,13 @@ def _parse_cli_args(
     all_flags = [*bool_flags, *value_flags, *unsupported]
     if optional_value_flags:
         all_flags.extend(optional_value_flags)
-    names = sorted((flag.removeprefix("--") for flag in all_flags), key=len, reverse=True)
+    names = sorted(
+        (flag.removeprefix("--") for flag in all_flags), key=len, reverse=True
+    )
     pattern = re.compile(rf"(?<!\s)(--(?:{'|'.join(map(re.escape, names))})\b)")
     text = pattern.sub(r" \1", raw.strip())
     try:
-        tokens = shlex.split(text)
+        tokens = split_command_tokens(text)
     except ValueError as exc:
         raise DirectCommandError(f"参数解析失败: {exc}\n\n{usage}") from exc
 
@@ -278,7 +291,9 @@ def _parse_cli_args(
         if flag in unsupported:
             raise DirectCommandError(unsupported[flag])
         if flag in bool_flags:
-            values[bool_flags[flag]] = _parse_bool(inline_value) if inline_value else True
+            values[bool_flags[flag]] = (
+                _parse_bool(inline_value) if inline_value else True
+            )
             index += 1
             continue
         if flag not in value_flags:

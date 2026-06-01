@@ -353,9 +353,14 @@ class Main(star.Star):
             first_frame_ref = args.first_frame
             last_frame_ref = args.last_frame
             subject_image_ref = args.subject_image
-            frame_flags_present = args.first_frame is not None or args.last_frame is not None
+            frame_flags_present = (
+                args.first_frame is not None or args.last_frame is not None
+            )
             image_refs: list[str] = []
-            if any(value == "" for value in (args.first_frame, args.last_frame, args.subject_image)):
+            if any(
+                value == ""
+                for value in (args.first_frame, args.last_frame, args.subject_image)
+            ):
                 image_refs, _ = await extract_image_inputs(
                     event.get_messages(),
                     image_type=Comp.Image,
@@ -400,10 +405,17 @@ class Main(star.Star):
             if last_frame_ref and not first_frame_ref:
                 yield event.plain_result("--last-frame 需要同时提供 --first-frame")
                 return
-            first_frame = await resolve_image(first_frame_ref) if first_frame_ref else None
+            first_frame = (
+                await resolve_image(first_frame_ref) if first_frame_ref else None
+            )
             last_frame = await resolve_image(last_frame_ref) if last_frame_ref else None
             subject_reference = (
-                [{"type": "character", "image": [await resolve_image(subject_image_ref)]}]
+                [
+                    {
+                        "type": "character",
+                        "image": [await resolve_image(subject_image_ref)],
+                    }
+                ]
                 if subject_image_ref
                 else None
             )
@@ -524,7 +536,10 @@ class Main(star.Star):
             return
 
         saved_path = None
-        out_path = self._plugin_data_dir / f"mmx_music_{int(_time.time() * 1000)}.mp3"
+        out_path = (
+            self._plugin_data_dir
+            / f"mmx_music_{int(_time.time() * 1000)}.{args.audio_format}"
+        )
         try:
             saved_path = self._music.save(result, str(out_path))
         except Exception as e:

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-import shlex
 from dataclasses import dataclass
+
+from .utils import split_command_tokens
 
 
 class MusicCommandError(ValueError):
@@ -84,7 +85,9 @@ _FLAG_NAMES = sorted(
     key=len,
     reverse=True,
 )
-_EMBEDDED_FLAG_RE = re.compile(rf"(?<!\s)(--(?:{'|'.join(map(re.escape, _FLAG_NAMES))})\b)")
+_EMBEDDED_FLAG_RE = re.compile(
+    rf"(?<!\s)(--(?:{'|'.join(map(re.escape, _FLAG_NAMES))})\b)"
+)
 
 
 def parse_music_command(raw: str) -> MusicCommandArgs:
@@ -94,7 +97,7 @@ def parse_music_command(raw: str) -> MusicCommandArgs:
         raise MusicCommandError(_usage())
 
     try:
-        tokens = shlex.split(text)
+        tokens = split_command_tokens(text)
     except ValueError as exc:
         raise MusicCommandError(f"参数解析失败: {exc}\n\n{_usage()}") from exc
 
@@ -203,9 +206,7 @@ def _validate(args: MusicCommandArgs) -> None:
 
     valid_models = {"music-2.6", "music-2.6-free", "music-2.5+", "music-2.5"}
     if args.model and args.model not in valid_models:
-        raise MusicCommandError(
-            f"--model 只支持: {', '.join(sorted(valid_models))}"
-        )
+        raise MusicCommandError(f"--model 只支持: {', '.join(sorted(valid_models))}")
 
 
 def _usage() -> str:
@@ -213,5 +214,5 @@ def _usage() -> str:
         "用法: /mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)\n"
         "例如: /mmx music 欢乐电子乐 --lyrics-optimizer\n"
         "例如: /mmx music 电影感管弦乐 --instrumental\n"
-        "例如: /mmx music --prompt \"Upbeat pop\" --lyrics \"[Verse] La la la\""
+        '例如: /mmx music --prompt "Upbeat pop" --lyrics "[Verse] La la la"'
     )

@@ -5,7 +5,34 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+import shlex
 from pathlib import Path
+
+
+def split_command_tokens(text: str) -> list[str]:
+    """按 shell 语义切分命令参数，仅将双引号视为引用符。
+
+    标准 ``shlex.split`` 在 POSIX 模式下会把单引号当作成对引用符，
+    导致 prompt 中常见的英文撇号（如 ``cat's``、``rock 'n' roll``）触发
+    ``ValueError: No closing quotation``。这里禁用单引号引用，让撇号可
+    自由出现在提示词中，同时保留双引号包裹带空格参数的能力。
+    """
+    lexer = shlex.shlex(text, posix=True)
+    lexer.whitespace_split = True
+    lexer.quotes = '"'
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def is_safe_data_path(base_dir: str, path: str) -> bool:
+    """校验 ``path`` 解析后是否位于 ``base_dir`` 之内（防止路径穿越）。
+
+    用于约束由 LLM 工具参数或外部输入提供的本地文件路径，拒绝绝对路径
+    逃逸与 ``..`` 段穿越，避免读取受信任数据目录之外的任意宿主文件。
+    """
+    base = Path(base_dir).resolve()
+    target = (base / path).resolve()
+    return target == base or base in target.parents
 
 
 def is_url(s: str) -> bool:

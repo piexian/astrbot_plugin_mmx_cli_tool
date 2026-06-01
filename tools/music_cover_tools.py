@@ -13,6 +13,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.music import MusicAPI
+from ..mmx.utils import is_safe_data_path
 from .audio_result import saved_audio_result, schedule_audio_result_to_agent
 from .result import tool_result
 from .schema import integer_param, object_parameters, string_param
@@ -130,6 +131,22 @@ class MusicCoverTool(FunctionTool):
                 )
             )
 
+        # lyricsFile 路径必须位于受信任的数据目录内（防止 LLM 注入诱导任意文件读取）
+        safe_lyrics_file: Path | None = None
+        if lyrics_file:
+            if not is_safe_data_path(self._data_dir, str(lyrics_file)):
+                return tool_result(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "lyricsFile 路径不合法",
+                            "hint": f"lyricsFile 必须位于数据目录内：{self._data_dir}，不允许绝对路径或 .. 穿越",
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            safe_lyrics_file = (Path(self._data_dir) / str(lyrics_file)).resolve()
+
         # 至少需要一个音频来源
         if not audio and not audio_file:
             return tool_result(
@@ -150,9 +167,9 @@ class MusicCoverTool(FunctionTool):
 
         async def generate_and_save() -> str:
             resolved_lyrics = lyrics
-            if lyrics_file:
+            if safe_lyrics_file is not None:
                 resolved_lyrics = await asyncio.to_thread(
-                    Path(str(lyrics_file)).read_text, encoding="utf-8"
+                    safe_lyrics_file.read_text, encoding="utf-8"
                 )
             result = await self._api.cover(
                 model=kwargs.get("model") or self._default_model or None,
