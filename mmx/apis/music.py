@@ -18,7 +18,7 @@ class MusicAPI:
     async def generate(
         self,
         *,
-        model: str = "music-2.6",
+        model: str | None = None,
         prompt: str | None = None,
         lyrics: str | None = None,
         is_instrumental: bool = False,
@@ -39,10 +39,10 @@ class MusicAPI:
         audio_format: str = "mp3",
         sample_rate: int = 44100,
         bitrate: int = 256000,
+        aigc_watermark: bool = False,
     ) -> dict[str, Any]:
         """生成音乐。对齐 mmx-cli TS SDK 的请求格式。"""
         body: dict[str, Any] = {
-            "model": model,
             "output_format": output_format,
             "audio_setting": {
                 "format": audio_format,
@@ -50,6 +50,8 @@ class MusicAPI:
                 "bitrate": bitrate,
             },
         }
+        if model:
+            body["model"] = model
 
         # 按 TS SDK buildPrompt 逻辑构建结构化 prompt
         structured: list[str] = []
@@ -78,15 +80,14 @@ class MusicAPI:
         if extra:
             structured.append(f"Extra: {extra}")
 
-        # 纯器乐 → 占位歌词 + 风格标记
-        if is_instrumental or (not lyrics and not lyrics_optimizer and not prompt):
+        if is_instrumental:
             body["is_instrumental"] = True
-            body["lyrics"] = "[intro] [outro]"
-            structured.append("Style: instrumental, no vocals, pure music")
         elif lyrics_optimizer:
             body["lyrics_optimizer"] = True
         elif lyrics:
             body["lyrics"] = lyrics
+        if aigc_watermark:
+            body["aigc_watermark"] = True
 
         # 拼接最终 prompt
         if structured:
@@ -131,7 +132,7 @@ class MusicAPI:
     async def cover(
         self,
         *,
-        model: str = "music-cover",
+        model: str | None = None,
         prompt: str | None = None,
         audio: str | None = None,
         audio_file: str | None = None,
@@ -144,7 +145,6 @@ class MusicAPI:
     ) -> dict[str, Any]:
         """生成翻唱版本。基于参考音频和风格提示词生成 Cover。"""
         body: dict[str, Any] = {
-            "model": model,
             "audio_setting": {
                 "format": audio_format,
                 "sample_rate": sample_rate,
@@ -152,6 +152,8 @@ class MusicAPI:
                 "channel": channel,
             },
         }
+        if model:
+            body["model"] = model
         if prompt:
             body["prompt"] = prompt
         if audio:

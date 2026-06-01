@@ -335,6 +335,34 @@ async def extract_image_input(
     event: Any | None = None,
 ) -> tuple[str | None, bool]:
     """从当前消息链或引用消息链中提取第一张本地图片路径。"""
+    images, saw_image = await extract_image_inputs(
+        messages,
+        image_type=image_type,
+        reply_type=reply_type,
+        event=event,
+        limit=1,
+    )
+    return (images[0] if images else None), saw_image
+
+
+async def extract_image_inputs(
+    messages: list[Any],
+    *,
+    image_type: type[Any],
+    reply_type: type[Any],
+    event: Any | None = None,
+    limit: int = 2,
+) -> tuple[list[str], bool]:
+    """从当前消息链或引用消息链中提取本地图片路径。"""
+
+    max_count = max(1, limit)
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str | None) -> None:
+        if value and value not in seen and len(found) < max_count:
+            seen.add(value)
+            found.append(value)
 
     async def _scan(segments: list[Any]) -> tuple[str | None, bool, bool]:
         saw_image = False
@@ -349,7 +377,9 @@ async def extract_image_input(
                 event=event,
             )
             if image_input:
-                return image_input, True, saw_reply
+                _add(image_input)
+                if len(found) >= max_count:
+                    return image_input, True, saw_reply
 
             if isinstance(seg, reply_type):
                 saw_reply = True
@@ -361,13 +391,13 @@ async def extract_image_input(
                         )
                         saw_image = saw_image or nested_saw_image
                         saw_reply = saw_reply or nested_saw_reply
-                        if image_input:
+                        if image_input and len(found) >= max_count:
                             return image_input, True, saw_reply
-        return None, saw_image, saw_reply
+        return (found[0] if found else None), saw_image, saw_reply
 
-    image_input, saw_image, saw_reply = await _scan(list(messages or []))
-    if image_input or not event or not saw_reply:
-        return image_input, saw_image
+    _, saw_image, saw_reply = await _scan(list(messages or []))
+    if len(found) >= max_count or not event or not saw_reply:
+        return found, saw_image
 
     quoted_refs = await _extract_quoted_message_image_refs(event)
     if quoted_refs:
@@ -375,6 +405,8 @@ async def extract_image_input(
     for ref in quoted_refs:
         resolved = await _resolve_ref_to_local(ref, event=event)
         if resolved:
-            return resolved, True
+            _add(resolved)
+            if len(found) >= max_count:
+                return found, True
 
-    return None, saw_image
+    return found, saw_image

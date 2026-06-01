@@ -1,5 +1,19 @@
 # 更新日志
 
+## 0.2.4 - 2026-06-01
+
+- 补齐 `/mmx image`、`/mmx video`、`/mmx speech` 直接指令的常用本地 `mmx` CLI 参数。
+- `mmx_generate_image` 新增 `aigcWatermark` 与 `responseFormat`，并支持 `type=character,image=...` 形式的 `subjectRef`。
+- `mmx_speech_synthesize` 新增 `sampleRate`、`bitrate`、`channels`、`subtitles` 参数。
+- `mmx_music_cover` 新增 `model`、`lyricsFile`、`format`、`sampleRate`、`bitrate`、`channel` 参数，并补 `/mmx music cover` 直接指令。
+- 图片、视频与翻唱直接指令支持从当前消息或引用消息中解析图片/音频附件。
+- 图片、视频、语音、音乐与翻唱默认模型统一读取插件配置，不在代码里硬编码模型默认值。
+
+## 0.2.3 - 2026-06-01
+
+- 补齐 `/mmx music` 直接指令参数，对齐本地 `mmx music generate` 的 `--lyrics`、`--lyrics-optimizer`、`--instrumental` 以及风格/音频控制参数。
+- `mmx_generate_music` 新增 `aigcWatermark` 参数，并透传为 MiniMax 请求中的 `aigc_watermark`。
+
 ## 0.2.2 - 2026-06-01
 
 - 兼容 AstrBot v4.25.x 中 `ToolExecResult` 变为联合类型别名的行为，LLM 工具统一返回普通 JSON 字符串，修复 `'types.UnionType' object is not callable`。

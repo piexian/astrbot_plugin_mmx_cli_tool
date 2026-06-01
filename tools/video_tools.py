@@ -32,43 +32,47 @@ class GenerateVideoTool(FunctionTool):
     支持 T2V、I2V、SEF（首尾帧插值）、S2V（角色一致性）四种模式。
     """
 
-    def __init__(self, api: VideoAPI, poll_interval: int = 5, video_timeout: int = 600):
+    def __init__(
+        self,
+        api: VideoAPI,
+        poll_interval: int = 5,
+        video_timeout: int = 600,
+        default_model: str = "",
+        default_sef_model: str = "",
+        default_subject_model: str = "",
+    ):
         super().__init__(
             name="mmx_generate_video",
             description=(
                 "Generate a video using MiniMax AI.\n"
                 "Modes:\n"
-                "  T2V: text prompt only → Hailuo-2.3\n"
-                "  I2V: firstFrame image → Hailuo-2.3 (or Hailuo-2.3-Fast)\n"
-                "  SEF: firstFrame + lastFrame → Hailuo-02 (start-end frame interpolation)\n"
-                "  S2V: subjectImage → S2V-01 (character consistency)\n"
-                "By default waits for completion. Set noWait=true to return task_id immediately."
+                "  T2V: text prompt only\n"
+                "  I2V: firstFrame image\n"
+                "  SEF: firstFrame + lastFrame (start-end frame interpolation)\n"
+                "  S2V: subjectImage (character consistency)\n"
+                "Model selection follows plugin configuration unless explicitly set."
             ),
             parameters=object_parameters(
                 {
                     "prompt": string_param("Video description (required)"),
                     "model": string_param(
-                        "Model ID. Auto-selected based on inputs: "
-                        "MiniMax-Hailuo-2.3 (T2V/I2V), MiniMax-Hailuo-2.3-Fast (fast I2V), "
-                        "Hailuo-02 (SEF with firstFrame+lastFrame), S2V-01 (with subjectImage)"
+                        "Model override. Omit to use plugin default_video_model or the configured SEF/S2V model."
                     ),
-                    "firstFrame": string_param(
-                        "First frame image (URL or local path). Enables I2V mode."
-                    ),
+                    "firstFrame": string_param("First frame image (URL or local path)."),
                     "lastFrame": string_param(
-                        "Last frame image (URL or local path). Enables SEF interpolation mode. Requires firstFrame."
+                        "Last frame image (URL or local path). Requires firstFrame."
                     ),
                     "subjectImage": string_param(
-                        "Subject reference image for character consistency (URL or local path). Switches to S2V-01."
+                        "Subject reference image for character consistency (URL or local path)."
                     ),
                     "callbackUrl": string_param(
                         "Webhook URL for completion notification"
                     ),
                     "noWait": boolean_param(
-                        "Return task_id immediately without waiting for completion. Default false (waits)."
+                        "Return task_id immediately without waiting for completion."
                     ),
                     "pollInterval": integer_param(
-                        "Polling interval in seconds when waiting (default: 5)"
+                        "Polling interval in seconds when waiting."
                     ),
                 },
                 required=["prompt"],
@@ -77,6 +81,9 @@ class GenerateVideoTool(FunctionTool):
         self._api = api
         self._poll_interval = poll_interval
         self._video_timeout = video_timeout
+        self._default_model = default_model
+        self._default_sef_model = default_sef_model
+        self._default_subject_model = default_subject_model
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -150,11 +157,22 @@ class GenerateVideoTool(FunctionTool):
         # 本地路径转 Data URI（对齐 mmx-cli Rn 函数）
         resolved_first = await resolve_image(first_frame) if first_frame else None
         resolved_last = await resolve_image(last_frame) if last_frame else None
+        selected_model = (
+            model
+            or (
+                self._default_sef_model
+                if resolved_first and resolved_last
+                else self._default_subject_model
+                if subject_reference
+                else self._default_model
+            )
+            or None
+        )
 
         try:
             result = await self._api.generate(
                 prompt=prompt,
-                model=model,
+                model=selected_model,
                 first_frame_image=resolved_first,
                 last_frame_image=resolved_last,
                 subject_reference=subject_reference,
