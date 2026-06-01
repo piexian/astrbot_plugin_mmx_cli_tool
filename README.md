@@ -73,8 +73,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx quota
 ```
 
-直接指令的 flag 对齐本地 `mmx` CLI，使用 kebab-case，例如 `--lyrics-optimizer`、`--use-case`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `lyricsOptimizer`、`useCase`、`sampleRate`。
-`/mmx search`、`/mmx vision`、`/mmx quota` 保持 AstrBot 插件封装形态，分别对应搜索、当前/引用图片理解和额度查询，不暴露完整本地 CLI 子命令树。
+直接指令使用 kebab-case，例如 `--lyrics-optimizer`、`--use-case`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `lyricsOptimizer`、`useCase`、`sampleRate`。
+
 
 常用图片指令参数：
 
@@ -122,8 +122,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 | 参数 | 说明 |
 |------|------|
-| `--audio <URL>` | 参考音频 URL；省略时可从当前消息或引用消息中的音频附件解析 |
-| `--audio-file <路径>` | 本地参考音频路径；省略值时可从当前消息或引用消息中的音频/文件附件解析 |
+| `--audio <URL>` | 参考音频 URL；省略时可从引用消息中的音频附件解析 |
+| `--audio-file <路径>` | 本地参考音频路径；省略值时可从引用消息中的音频/文件附件解析 |
 | `--lyrics <歌词>` | 翻唱歌词，留空则由接口从参考音频提取 |
 | `--model <模型>` | 覆盖配置中的默认翻唱模型 |
 | `--format <mp3|wav|pcm>` | 音频格式，默认 `mp3` |
@@ -147,7 +147,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 例如对 AI 说「帮我把这段话合成语音：你好」→ 自动调用 `mmx_speech_synthesize`。
 音乐生成与翻唱会先返回 `task_id`，可用 `mmx_background_task_get` 查询结果。
-如果直接命令以 `cover` 开头，会按 `/mmx music cover` 翻唱子命令处理。
+
 
 ## 智能错误提示与参数规范
 
@@ -262,7 +262,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `default_video_sef_model` | string | `MiniMax-Hailuo-02` | 默认首尾帧视频模型 |
 | `default_video_subject_model` | string | `S2V-01` | 默认角色一致性视频模型 |
 | `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
-| `default_music_model` | string | `music-2.6` | 默认音乐生成模型 |
+| `default_music_model` | string | `music-2.6-free` | 默认音乐生成模型 |
 | `default_music_cover_model` | string | `music-cover-free` | 默认音乐翻唱模型 |
 
 ## 项目结构
