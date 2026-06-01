@@ -50,7 +50,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 ```
 /mmx image <描述>              # 生成图片
 /mmx video <描述>              # 生成视频
-/mmx music <描述> [--instrumental]  # 生成音乐
+/mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)  # 生成音乐
 /mmx speech <文本>             # 语音合成
 /mmx search <查询>             # 联网搜索
 /mmx vision <描述要求>         # 图片理解（支持当前消息带图或引用图片）
@@ -63,11 +63,32 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx image a cute cat wearing a hat, watercolor style
 /mmx video a sunset over the ocean with gentle waves
 /mmx music warm acoustic guitar, folk style --instrumental
+/mmx music 欢乐电子乐 --lyrics-optimizer
+/mmx music --prompt "Upbeat pop" --lyrics "[Verse] La la la"
 /mmx speech 欢迎使用 MiniMax 语音合成功能
 /mmx search 今天天气怎么样
 /mmx vision 描述这张图片里有什么
 /mmx quota
 ```
+
+`/mmx music` 直接指令的 flag 对齐本地 `mmx music generate`，使用 kebab-case，例如 `--lyrics-optimizer`、`--use-case`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `lyricsOptimizer`、`useCase`、`sampleRate`。
+
+常用音乐指令参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--lyrics <歌词>` | 带歌词歌曲。歌词可带 `[Verse]`、`[Chorus]` 等结构标签 |
+| `--lyrics-optimizer` | 根据描述自动生成歌词。不能和 `--lyrics`/`--instrumental` 同时使用 |
+| `--instrumental` | 生成纯音乐。不能和 `--lyrics` 同时使用 |
+| `--vocals <文本>` | 人声风格，如 `"warm male baritone"` |
+| `--genre` / `--mood` / `--instruments` / `--tempo` / `--key` | 精细控制音乐风格 |
+| `--bpm <数字>` | 指定 BPM |
+| `--avoid` / `--use-case` / `--structure` / `--references` / `--extra` | 更多结构化描述 |
+| `--model <模型>` | `music-2.6`、`music-2.6-free`、`music-2.5+` 或 `music-2.5` |
+| `--output-format <hex|url>` | 输出格式，默认 `hex` |
+| `--format <mp3|wav|pcm>` | 音频格式，默认 `mp3` |
+| `--sample-rate <数字>` / `--bitrate <数字>` | 音频采样率和码率 |
+| `--aigc-watermark` | 添加 AI 生成内容水印 |
 
 ### LLM 对话中使用
 
@@ -124,6 +145,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `bpm` (integer): 目标每分钟节拍数。
 - `vocals` (string): 人声风格偏好。
 - `genre` / `mood` / `instruments` / `tempo` / `key` / `avoid` / `useCase` / `structure` / `references` / `extra` (string): 精细控制参数。
+- `aigcWatermark` (boolean): 是否添加 AI 生成内容水印。
 
 #### 6. `mmx_music_cover` (音乐翻唱)
 - `prompt` (string): 翻唱的目标音乐风格或歌声特征描述。

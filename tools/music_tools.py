@@ -36,7 +36,7 @@ class GenerateMusicTool(FunctionTool):
     3. lyricsOptimizer — 根据 prompt 自动生成歌词
     """
 
-    def __init__(self, api: MusicAPI, data_dir: str = "."):
+    def __init__(self, api: MusicAPI, data_dir: str = ".", default_model: str = ""):
         super().__init__(
             name="mmx_generate_music",
             description=(
@@ -92,14 +92,19 @@ class GenerateMusicTool(FunctionTool):
                     "extra": string_param(
                         "Additional fine-grained requirements not covered above"
                     ),
+                    "aigcWatermark": boolean_param(
+                        "Embed AI-generated content watermark in audio for content provenance."
+                    ),
                     "model": string_param(
-                        "Model: music-2.6 (default), music-2.5+, or music-2.5"
+                        "Model override: music-2.6, music-2.6-free, music-2.5+, or music-2.5. "
+                        "Omit to use the plugin default_music_model configuration."
                     ),
                 },
             ),
         )
         self._api = api
         self._data_dir = data_dir
+        self._default_model = default_model
         self._tasks: set[asyncio.Task] = set()
         self._max_wait_seconds = 900
         self._poll_after_seconds = 60
@@ -128,6 +133,7 @@ class GenerateMusicTool(FunctionTool):
             kwargs.get("structure"),
             kwargs.get("references"),
             kwargs.get("extra"),
+            kwargs.get("aigcWatermark"),
         )
         if not any(bool(value) for value in generation_inputs):
             return tool_result(
@@ -186,7 +192,8 @@ class GenerateMusicTool(FunctionTool):
                 structure=kwargs.get("structure"),
                 references=kwargs.get("references"),
                 extra=kwargs.get("extra"),
-                model=kwargs.get("model", "music-2.6"),
+                aigc_watermark=kwargs.get("aigcWatermark", False),
+                model=kwargs.get("model") or self._default_model,
             )
             return saved_audio_result(
                 self._api,

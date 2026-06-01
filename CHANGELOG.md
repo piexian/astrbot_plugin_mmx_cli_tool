@@ -6,6 +6,8 @@
 - 新增 `mmx_background_task_get` 统一后台任务查询工具，`mmx_generate_music` 与 `mmx_music_cover` 会返回插件内部 `task_id`、`query_tool`、`max_wait_seconds` 和 `poll_after_seconds`，避免 AI 通过 sleep 或读日志猜测任务状态。
 - 音乐生成与翻唱结果不再返回 MiniMax 原始 `audio` hex 或 `raw_data`，改为保存到插件数据目录并仅返回 `file_path` 或 `audio_url`。
 - 音乐生成与翻唱改为插件后台任务，避免长时间生成（可能数分钟）阻塞对话或触发工具超时。
+- 补齐 `/mmx music` 直接指令参数，对齐本地 `mmx music generate` 的 `--lyrics`、`--lyrics-optimizer`、`--instrumental` 以及风格/音频控制参数。
+- `mmx_generate_music` 新增 `aigcWatermark` 参数，并透传为 MiniMax 请求中的 `aigc_watermark`。
 
 ## 0.2.1 - 2026-05-30
 

@@ -26,6 +26,7 @@ from .mmx.apis.vision import VisionAPI
 from .mmx.apis.quota import QuotaAPI
 from .mmx.apis.speech import SpeechAPI
 from .mmx.vision_input import extract_image_input
+from .mmx.music_command import MusicCommandError, parse_music_command
 from .mmx.errors import MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
 from .tools import (
@@ -100,6 +101,7 @@ class Main(star.Star):
         timeout = float(config.get("timeout", 300))
         self._video_poll_interval = int(config.get("video_poll_interval", 5))
         self._video_timeout = int(config.get("video_timeout", 600))
+        self._default_music_model = str(config.get("default_music_model", "")).strip()
 
         # 插件数据目录
         _plugin_name = getattr(self, "name", None) or "astrbot_plugin_mmx_cli_tool"
@@ -157,7 +159,7 @@ class Main(star.Star):
             ),
             QueryVideoTaskTool(self._video),
             DownloadVideoTool(self._video, _data_dir),
-            GenerateMusicTool(self._music, _data_dir),
+            GenerateMusicTool(self._music, _data_dir, self._default_music_model),
             MusicCoverTool(self._music, _data_dir),
             QueryBackgroundTaskTool(),
             WebSearchTool(self._search),
@@ -291,19 +293,46 @@ class Main(star.Star):
 
     @mmx_group.command("music")
     async def mmx_music(self, event: AstrMessageEvent, *, prompt: str = ""):
-        """生成音乐。用法: /mmx music <描述> [--instrumental]"""
+        """生成音乐。用法: /mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)"""
         msg = event.message_str.strip()
         parts = msg.split(maxsplit=1)
-        prompt = prompt or (parts[1] if len(parts) > 1 else "")
-        if not prompt:
+        raw_args = prompt or (parts[1] if len(parts) > 1 else "")
+        try:
+            args = parse_music_command(raw_args)
+        except MusicCommandError as e:
+            yield event.plain_result(str(e))
+            return
+        if not raw_args:
             yield event.plain_result(
-                "用法: /mmx music <描述>\n例如: /mmx music warm acoustic guitar, folk style\n加 --instrumental 生成纯器乐"
+                "用法: /mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)\n"
+                "例如: /mmx music 欢乐电子乐 --lyrics-optimizer\n"
+                "例如: /mmx music 电影感管弦乐 --instrumental"
             )
             return
         try:
             result = await self._music.generate(
-                prompt=prompt,
-                is_instrumental="--instrumental" in event.message_str,
+                prompt=args.prompt,
+                lyrics=args.lyrics,
+                is_instrumental=args.instrumental,
+                lyrics_optimizer=args.lyrics_optimizer,
+                vocals=args.vocals,
+                genre=args.genre,
+                mood=args.mood,
+                instruments=args.instruments,
+                tempo=args.tempo,
+                bpm=args.bpm,
+                key=args.key,
+                avoid=args.avoid,
+                use_case=args.use_case,
+                structure=args.structure,
+                references=args.references,
+                extra=args.extra,
+                model=args.model or self._default_music_model,
+                output_format=args.output_format,
+                audio_format=args.audio_format,
+                sample_rate=args.sample_rate,
+                bitrate=args.bitrate,
+                aigc_watermark=args.aigc_watermark,
             )
         except MiniMaxError as e:
             yield event.plain_result(friendly_message(e))
