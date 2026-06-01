@@ -19,7 +19,7 @@ class SpeechAPI:
         self,
         text: str,
         *,
-        model: str = "speech-2.8-hd",
+        model: str | None = None,
         voice: str = "English_expressive_narrator",
         speed: float | None = None,
         volume: float | None = None,
@@ -33,7 +33,6 @@ class SpeechAPI:
     ) -> dict[str, Any]:
         """同步 TTS 合成，最大 10k 字符。"""
         body: dict[str, Any] = {
-            "model": model,
             "text": text,
             "voice_setting": {
                 "voice_id": voice,
@@ -45,6 +44,8 @@ class SpeechAPI:
                 "channel": channels,
             },
         }
+        if model:
+            body["model"] = model
         if speed is not None:
             body["voice_setting"]["speed"] = speed
         if volume is not None:

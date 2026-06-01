@@ -36,9 +36,34 @@
     "type": "string",
     "default": "image-01"
   },
+  "default_video_model": {
+    "description": "默认视频生成模型",
+    "type": "string",
+    "default": "MiniMax-Hailuo-2.3"
+  },
+  "default_video_sef_model": {
+    "description": "默认首尾帧视频模型",
+    "type": "string",
+    "default": "MiniMax-Hailuo-02"
+  },
+  "default_video_subject_model": {
+    "description": "默认角色一致性视频模型",
+    "type": "string",
+    "default": "S2V-01"
+  },
+  "default_speech_model": {
+    "description": "默认语音合成模型",
+    "type": "string",
+    "default": "speech-2.8-hd"
+  },
   "default_music_model": {
     "description": "默认音乐生成模型",
     "type": "string",
     "default": "music-2.6"
+  },
+  "default_music_cover_model": {
+    "description": "默认音乐翻唱模型",
+    "type": "string",
+    "default": "music-cover-free"
   }
 }

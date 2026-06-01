@@ -12,7 +12,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.speech import SpeechAPI
 from .result import tool_result
-from .schema import number_param, object_parameters, string_param
+from .schema import boolean_param, number_param, object_parameters, string_param
 
 
 def _language_prefix(voice_id: str) -> str:
@@ -39,7 +39,7 @@ def _filter_voices_by_language(voices: list[dict], language: str) -> list[dict]:
 class SpeechSynthesizeTool(FunctionTool):
     """LLM 工具：调用 MiniMax 语音合成（TTS）API。"""
 
-    def __init__(self, api: SpeechAPI, data_dir: str = "."):
+    def __init__(self, api: SpeechAPI, data_dir: str = ".", default_model: str = ""):
         super().__init__(
             name="mmx_speech_synthesize",
             description=(
@@ -53,10 +53,10 @@ class SpeechSynthesizeTool(FunctionTool):
                         "Text to synthesize (required, max 10000 characters)"
                     ),
                     "voice": string_param(
-                        "Voice ID (default: English_expressive_narrator). Use mmx_speech_voices to list available voices."
+                        "Voice ID. Use mmx_speech_voices to list available voices."
                     ),
                     "model": string_param(
-                        "Model ID: speech-2.8-hd (default), speech-2.6, speech-02"
+                        "Model override: speech-2.8-hd, speech-2.6, or speech-02. Omit to use the plugin default_speech_model configuration."
                     ),
                     "speed": number_param(
                         "Speech speed multiplier (e.g. 0.5 = half speed, 2.0 = double)"
@@ -64,10 +64,16 @@ class SpeechSynthesizeTool(FunctionTool):
                     "volume": number_param("Volume level"),
                     "pitch": number_param("Pitch adjustment"),
                     "format": string_param(
-                        "Audio format: mp3, pcm, flac, wav, opus (default: mp3)"
+                        "Audio format: mp3, pcm, flac, wav, pcmu_raw, pcmu_wav, opus"
                     ),
+                    "sampleRate": number_param("Sample rate"),
+                    "bitrate": number_param("Bitrate"),
+                    "channels": number_param("Audio channels"),
                     "language": string_param(
                         "Language boost (e.g. english, chinese, korean)"
+                    ),
+                    "subtitles": boolean_param(
+                        "Include subtitle timing data when supported."
                     ),
                 },
                 required=["text"],
@@ -75,6 +81,7 @@ class SpeechSynthesizeTool(FunctionTool):
         )
         self._api = api
         self._data_dir = data_dir
+        self._default_model = default_model
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -102,13 +109,17 @@ class SpeechSynthesizeTool(FunctionTool):
         try:
             result = await self._api.synthesize(
                 text=text,
-                model=kwargs.get("model", "speech-2.8-hd"),
-                voice=kwargs.get("voice", "English_expressive_narrator"),
+                model=kwargs.get("model") or self._default_model or None,
+                voice=kwargs.get("voice") or "English_expressive_narrator",
                 speed=kwargs.get("speed"),
                 volume=kwargs.get("volume"),
                 pitch=kwargs.get("pitch"),
                 audio_format=audio_format,
+                sample_rate=kwargs.get("sampleRate") or 32000,
+                bitrate=kwargs.get("bitrate") or 128000,
+                channels=kwargs.get("channels") or 1,
                 language=kwargs.get("language"),
+                subtitles=bool(kwargs.get("subtitles", False)),
             )
         except Exception as e:
             logger.error(f"[mmx] 语音合成失败: {e}")

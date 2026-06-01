@@ -48,10 +48,11 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 ### 指令
 
 ```
-/mmx image <描述>              # 生成图片
-/mmx video <描述>              # 生成视频
+/mmx image <描述> [--aspect-ratio 16:9] [--seed 42]  # 生成图片，可用 --subject-ref 引用图片
+/mmx video <描述> [--first-frame <图片>] [--no-wait]  # 生成视频，可附带或引用图片
 /mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)  # 生成音乐
-/mmx speech <文本>             # 语音合成
+/mmx music cover <风格描述> --audio <URL>  # 生成翻唱，可附带或引用音频
+/mmx speech <文本> [--voice <音色>] [--format mp3]  # 语音合成
 /mmx search <查询>             # 联网搜索
 /mmx vision <描述要求>         # 图片理解（支持当前消息带图或引用图片）
 /mmx quota                    # 查询额度
@@ -60,18 +61,45 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 ### 示例
 
 ```
-/mmx image a cute cat wearing a hat, watercolor style
-/mmx video a sunset over the ocean with gentle waves
+/mmx image a cute cat wearing a hat, watercolor style --aspect-ratio 1:1 --aigc-watermark
+/mmx video a sunset over the ocean with gentle waves --first-frame --no-wait
 /mmx music warm acoustic guitar, folk style --instrumental
 /mmx music 欢乐电子乐 --lyrics-optimizer
 /mmx music --prompt "Upbeat pop" --lyrics "[Verse] La la la"
-/mmx speech 欢迎使用 MiniMax 语音合成功能
+/mmx music cover indie folk, acoustic guitar, warm male vocal
+/mmx speech 欢迎使用 MiniMax 语音合成功能 --speed 1.1 --subtitles
 /mmx search 今天天气怎么样
 /mmx vision 描述这张图片里有什么
 /mmx quota
 ```
 
-`/mmx music` 直接指令的 flag 对齐本地 `mmx music generate`，使用 kebab-case，例如 `--lyrics-optimizer`、`--use-case`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `lyricsOptimizer`、`useCase`、`sampleRate`。
+直接指令的 flag 对齐本地 `mmx` CLI，使用 kebab-case，例如 `--lyrics-optimizer`、`--use-case`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `lyricsOptimizer`、`useCase`、`sampleRate`。
+`/mmx search`、`/mmx vision`、`/mmx quota` 保持 AstrBot 插件封装形态，分别对应搜索、当前/引用图片理解和额度查询，不暴露完整本地 CLI 子命令树。
+
+常用图片指令参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--aspect-ratio <比例>` | 图片比例，如 `1:1`、`16:9` |
+| `--n <数量>` | 生成张数，1-9 |
+| `--seed <数字>` | 随机种子 |
+| `--width` / `--height` | 自定义尺寸，需同时提供，512-2048 且为 8 的倍数 |
+| `--prompt-optimizer` | 启用提示词优化 |
+| `--aigc-watermark` | 添加 AI 生成内容水印 |
+| `--subject-ref <参数>` | 角色参考，支持 `type=character,image=path-or-url`；省略值时使用当前消息或引用消息中的图片 |
+| `--response-format <url|base64>` | 返回格式，默认 `url` |
+
+常用视频指令参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--model <模型>` | 指定视频模型；通常可省略并由插件自动选择 |
+| `--first-frame <图片>` | 起始帧图片，支持 URL、本地路径、当前消息图片或引用图片 |
+| `--last-frame <图片>` | 结束帧图片，需同时提供 `--first-frame`；省略值时可取第二张附件图 |
+| `--subject-image <图片>` | 角色一致性参考图；省略值时使用当前消息或引用消息中的图片 |
+| `--callback-url <URL>` | 完成回调地址 |
+| `--no-wait` / `--async` | 提交任务后立即返回 `task_id` |
+| `--poll-interval <秒>` | 等待生成时的轮询间隔 |
 
 常用音乐指令参数：
 
@@ -90,12 +118,36 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `--sample-rate <数字>` / `--bitrate <数字>` | 音频采样率和码率 |
 | `--aigc-watermark` | 添加 AI 生成内容水印 |
 
+常用翻唱指令参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--audio <URL>` | 参考音频 URL；省略时可从当前消息或引用消息中的音频附件解析 |
+| `--audio-file <路径>` | 本地参考音频路径；省略值时可从当前消息或引用消息中的音频/文件附件解析 |
+| `--lyrics <歌词>` | 翻唱歌词，留空则由接口从参考音频提取 |
+| `--model <模型>` | 覆盖配置中的默认翻唱模型 |
+| `--format <mp3|wav|pcm>` | 音频格式，默认 `mp3` |
+| `--sample-rate <数字>` / `--bitrate <数字>` / `--channel <1|2>` | 音频采样率、码率、声道数 |
+
+常用语音指令参数：
+
+| 参数 | 说明 |
+|------|------|
+| `--model <模型>` | TTS 模型，如 `speech-2.8-hd` |
+| `--voice <音色>` | 音色 ID |
+| `--speed` / `--volume` / `--pitch` | 语速、音量、音高 |
+| `--format <格式>` | `mp3`、`pcm`、`flac`、`wav`、`pcmu_raw`、`pcmu_wav`、`opus` |
+| `--sample-rate <数字>` / `--bitrate <数字>` / `--channels <数字>` | 音频采样率、码率、声道数 |
+| `--language <语言>` | 语种增强 |
+| `--subtitles` | 请求字幕时间信息 |
+
 ### LLM 对话中使用
 
 当 AI 需要生成图片、视频、语音、音乐，或进行搜索、图片理解时，会自动调用对应工具。
 
 例如对 AI 说「帮我把这段话合成语音：你好」→ 自动调用 `mmx_speech_synthesize`。
 音乐生成与翻唱会先返回 `task_id`，可用 `mmx_background_task_get` 查询结果。
+如果直接命令以 `cover` 开头，会按 `/mmx music cover` 翻唱子命令处理。
 
 ## 智能错误提示与参数规范
 
@@ -119,7 +171,9 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `seed` (integer): 随机种子。
 - `width` / `height` (integer): 自定义宽高像素（覆盖 `aspectRatio`）。
 - `promptOptimizer` (boolean): 是否自动优化提示词（默认 `true`）。
-- `subjectRef` (string): 角色一致性参考图（URL 或本地路径）。
+- `aigcWatermark` (boolean): 是否添加 AI 生成内容水印。
+- `responseFormat` (string): 返回格式，`url` 或 `base64`。
+- `subjectRef` (string): 角色一致性参考图，支持 URL、本地路径或 `type=character,image=path-or-url`。
 
 #### 2. `mmx_generate_video` (视频生成)
 - `prompt` (string, 必填): 视频画面描述。
@@ -153,6 +207,9 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `audioFile` (string): 本地参考音频文件路径。与 `audio` 选填其一。
 - `lyrics` (string): 歌词（如留空则通过 ASR 自动从参考音频提取）。
 - `seed` (integer): 随机种子。
+- `model` (string): 模型名，`music-cover` 或 `music-cover-free`。
+- `lyricsFile` (string): 本地歌词文件路径。与 `lyrics` 互斥。
+- `format` / `sampleRate` / `bitrate` / `channel`: 音频格式、采样率、码率、声道数。
 
 #### 7. `mmx_background_task_get` (查询音乐后台任务)
 - `taskId` (string, 必填): `mmx_generate_music` 或 `mmx_music_cover` 返回的任务 ID。
@@ -162,8 +219,10 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `voice` (string): 音色 ID（默认 `English_expressive_narrator`）。
 - `model` (string): 模型名（如 `speech-2.8-hd`, `speech-2.6`, `speech-02`）。
 - `speed` / `volume` / `pitch` (number): 语速倍率（0.5-2.0）/ 音量 / 音高微调。
-- `format` (string): 导出音频格式（如 `mp3`, `pcm`, `flac`, `wav`, `opus`）。
+- `format` (string): 导出音频格式（如 `mp3`, `pcm`, `flac`, `wav`, `pcmu_raw`, `pcmu_wav`, `opus`）。
+- `sampleRate` / `bitrate` / `channels` (number): 采样率、码率、声道数。
 - `language` (string): 语种权重。
+- `subtitles` (boolean): 是否请求字幕时间信息。
 
 #### 9. `mmx_speech_voices` (列出 TTS 音色)
 - `language` (string): 过滤语言（如 `english`, `chinese` 等）。
@@ -199,7 +258,12 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `video_poll_interval` | int | `5` | 视频生成轮询间隔（秒） |
 | `video_timeout` | int | `600` | 视频生成超时（秒） |
 | `default_image_model` | string | `image-01` | 默认图片生成模型 |
+| `default_video_model` | string | `MiniMax-Hailuo-2.3` | 默认视频生成模型 |
+| `default_video_sef_model` | string | `MiniMax-Hailuo-02` | 默认首尾帧视频模型 |
+| `default_video_subject_model` | string | `S2V-01` | 默认角色一致性视频模型 |
+| `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
 | `default_music_model` | string | `music-2.6` | 默认音乐生成模型 |
+| `default_music_cover_model` | string | `music-cover-free` | 默认音乐翻唱模型 |
 
 ## 项目结构
 

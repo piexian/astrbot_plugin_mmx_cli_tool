@@ -11,7 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.image import ImageAPI
-from ..mmx.utils import is_url, resolve_image
+from ..mmx.utils import resolve_subject_reference
 from .result import tool_result
 from .schema import boolean_param, integer_param, object_parameters, string_param
 
@@ -20,10 +20,10 @@ from .schema import boolean_param, integer_param, object_parameters, string_para
 class GenerateImageTool(FunctionTool):
     """LLM 工具：调用 MiniMax 图片生成 API。"""
 
-    def __init__(self, api: ImageAPI):
+    def __init__(self, api: ImageAPI, default_model: str = ""):
         super().__init__(
             name="mmx_generate_image",
-            description="Generate images using MiniMax AI (image-01 / image-01-live). Provide a detailed prompt describing the image you want.",
+            description="Generate images using MiniMax AI. Provide a detailed prompt describing the image you want.",
             parameters=object_parameters(
                 {
                     "prompt": string_param(
@@ -45,15 +45,24 @@ class GenerateImageTool(FunctionTool):
                     "promptOptimizer": boolean_param(
                         "Automatically optimize the prompt for better results (default: true)"
                     ),
-                    "model": string_param("Model: image-01 (default) or image-01-live"),
+                    "aigcWatermark": boolean_param(
+                        "Embed AI-generated content watermark in the output image."
+                    ),
+                    "responseFormat": string_param(
+                        "Response format: url (default) or base64."
+                    ),
+                    "model": string_param(
+                        "Model override: image-01 or image-01-live. Omit to use the plugin default_image_model configuration."
+                    ),
                     "subjectRef": string_param(
-                        "Subject reference for character consistency. Format: image URL or local path."
+                        "Subject reference for character consistency. Format: image URL/local path, or type=character,image=path-or-url."
                     ),
                 },
                 required=["prompt"],
             ),
         )
         self._api = api
+        self._default_model = default_model
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -74,25 +83,22 @@ class GenerateImageTool(FunctionTool):
 
         aspect_ratio = kwargs.get("aspectRatio")
 
-        # 构建 subject_reference（对齐 mmx-cli：URL → image_url，本地 → image_file）
         subject_reference = None
         subject_ref = kwargs.get("subjectRef")
         if subject_ref:
-            if is_url(subject_ref):
-                subject_reference = [{"type": "character", "image_url": subject_ref}]
-            else:
-                data_uri = await resolve_image(subject_ref)
-                subject_reference = [{"type": "character", "image_file": data_uri}]
+            subject_reference = await resolve_subject_reference(subject_ref)
 
         try:
             result = await self._api.generate(
                 prompt=prompt,
-                model=kwargs.get("model", "image-01"),
+                model=kwargs.get("model") or self._default_model or None,
                 n=kwargs.get("n", 1),
                 aspect_ratio=aspect_ratio,
                 width=kwargs.get("width"),
                 height=kwargs.get("height"),
                 prompt_optimizer=kwargs.get("promptOptimizer", True),
+                aigc_watermark=kwargs.get("aigcWatermark", False),
+                response_format=kwargs.get("responseFormat", "url"),
                 subject_reference=subject_reference,
                 seed=kwargs.get("seed"),
             )

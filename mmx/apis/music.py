@@ -132,7 +132,7 @@ class MusicAPI:
     async def cover(
         self,
         *,
-        model: str = "music-cover",
+        model: str | None = None,
         prompt: str | None = None,
         audio: str | None = None,
         audio_file: str | None = None,
@@ -145,7 +145,6 @@ class MusicAPI:
     ) -> dict[str, Any]:
         """生成翻唱版本。基于参考音频和风格提示词生成 Cover。"""
         body: dict[str, Any] = {
-            "model": model,
             "audio_setting": {
                 "format": audio_format,
                 "sample_rate": sample_rate,
@@ -153,6 +152,8 @@ class MusicAPI:
                 "channel": channel,
             },
         }
+        if model:
+            body["model"] = model
         if prompt:
             body["prompt"] = prompt
         if audio:

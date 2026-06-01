@@ -23,24 +23,28 @@ class ImageAPI:
         self,
         prompt: str,
         *,
-        model: str = "image-01",
+        model: str | None = None,
         n: int = 1,
         aspect_ratio: str | None = None,
         width: int | None = None,
         height: int | None = None,
         response_format: str = "url",
         prompt_optimizer: bool = True,
+        aigc_watermark: bool = False,
         subject_reference: list[dict[str, Any]] | None = None,
         seed: int | None = None,
     ) -> dict[str, Any]:
         """生成图片。"""
         body: dict[str, Any] = {
-            "model": model,
             "prompt": prompt,
             "n": n,
             "response_format": response_format,
             "prompt_optimizer": prompt_optimizer,
         }
+        if model:
+            body["model"] = model
+        if aigc_watermark:
+            body["aigc_watermark"] = True
         if aspect_ratio:
             body["aspect_ratio"] = aspect_ratio
         if width and height:

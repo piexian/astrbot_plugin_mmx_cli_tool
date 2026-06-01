@@ -47,3 +47,25 @@ async def resolve_image(image: str) -> str:
 
     raw = await asyncio.to_thread(p.read_bytes)
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+async def resolve_subject_reference(subject_ref: str) -> list[dict[str, str]]:
+    """Build MiniMax subject_reference from mmx-cli-style subject-ref input."""
+    params = _parse_subject_ref_params(subject_ref)
+    ref_type = params.get("type") or "character"
+    image = params.get("image") or subject_ref
+    item: dict[str, str] = {"type": ref_type}
+    if is_url(image):
+        item["image_url"] = image
+    else:
+        item["image_file"] = await resolve_image(image)
+    return [item]
+
+
+def _parse_subject_ref_params(value: str) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for part in value.split(","):
+        key, sep, raw = part.partition("=")
+        if sep:
+            params[key.strip()] = raw.strip()
+    return params

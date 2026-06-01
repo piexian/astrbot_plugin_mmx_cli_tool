@@ -193,7 +193,7 @@ class GenerateMusicTool(FunctionTool):
                 references=kwargs.get("references"),
                 extra=kwargs.get("extra"),
                 aigc_watermark=kwargs.get("aigcWatermark", False),
-                model=kwargs.get("model") or self._default_model,
+                model=kwargs.get("model") or self._default_model or None,
             )
             return saved_audio_result(
                 self._api,

@@ -25,10 +25,19 @@ from .mmx.apis.search import SearchAPI
 from .mmx.apis.vision import VisionAPI
 from .mmx.apis.quota import QuotaAPI
 from .mmx.apis.speech import SpeechAPI
-from .mmx.vision_input import extract_image_input
+from .mmx.attachment_input import extract_first_audio_input
+from .mmx.vision_input import extract_image_input, extract_image_inputs
+from .mmx.direct_command_args import (
+    DirectCommandError,
+    parse_image_command,
+    parse_music_cover_command,
+    parse_speech_command,
+    parse_video_command,
+)
 from .mmx.music_command import MusicCommandError, parse_music_command
 from .mmx.errors import MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
+from .mmx.utils import is_url, resolve_image, resolve_subject_reference
 from .tools import (
     GenerateImageTool,
     GenerateVideoTool,
@@ -101,7 +110,19 @@ class Main(star.Star):
         timeout = float(config.get("timeout", 300))
         self._video_poll_interval = int(config.get("video_poll_interval", 5))
         self._video_timeout = int(config.get("video_timeout", 600))
+        self._default_image_model = str(config.get("default_image_model", "")).strip()
+        self._default_video_model = str(config.get("default_video_model", "")).strip()
+        self._default_video_sef_model = str(
+            config.get("default_video_sef_model", "")
+        ).strip()
+        self._default_video_subject_model = str(
+            config.get("default_video_subject_model", "")
+        ).strip()
+        self._default_speech_model = str(config.get("default_speech_model", "")).strip()
         self._default_music_model = str(config.get("default_music_model", "")).strip()
+        self._default_music_cover_model = str(
+            config.get("default_music_cover_model", "")
+        ).strip()
 
         # 插件数据目录
         _plugin_name = getattr(self, "name", None) or "astrbot_plugin_mmx_cli_tool"
@@ -153,19 +174,24 @@ class Main(star.Star):
 
         # 注册 LLM 工具
         context.add_llm_tools(
-            GenerateImageTool(self._image),
+            GenerateImageTool(self._image, self._default_image_model),
             GenerateVideoTool(
-                self._video, self._video_poll_interval, self._video_timeout
+                self._video,
+                self._video_poll_interval,
+                self._video_timeout,
+                self._default_video_model,
+                self._default_video_sef_model,
+                self._default_video_subject_model,
             ),
             QueryVideoTaskTool(self._video),
             DownloadVideoTool(self._video, _data_dir),
             GenerateMusicTool(self._music, _data_dir, self._default_music_model),
-            MusicCoverTool(self._music, _data_dir),
+            MusicCoverTool(self._music, _data_dir, self._default_music_cover_model),
             QueryBackgroundTaskTool(),
             WebSearchTool(self._search),
             DescribeImageTool(self._vision),
             CheckQuotaTool(self._quota),
-            SpeechSynthesizeTool(self._speech, _data_dir),
+            SpeechSynthesizeTool(self._speech, _data_dir, self._default_speech_model),
             ListVoicesTool(self._speech),
         )
 
@@ -175,17 +201,36 @@ class Main(star.Star):
 
     @mmx_group.command("speech")
     async def mmx_speech(self, event: AstrMessageEvent, *, text: str = ""):
-        """语音合成。用法: /mmx speech <文本>"""
+        """语音合成。用法: /mmx speech <文本> [--voice <音色>] [--format mp3]"""
         msg = event.message_str.strip()
         parts = msg.split(maxsplit=1)
-        text = text or (parts[1] if len(parts) > 1 else "")
-        if not text:
+        raw_args = text or (parts[1] if len(parts) > 1 else "")
+        try:
+            args = parse_speech_command(raw_args)
+        except DirectCommandError as e:
+            yield event.plain_result(str(e))
+            return
+        if not raw_args:
             yield event.plain_result(
-                "用法: /mmx speech <文本>\n例如: /mmx speech 你好世界"
+                "用法: /mmx speech <文本> [--voice <音色>] [--format mp3]\n"
+                "例如: /mmx speech 你好世界 --speed 1.1 --subtitles"
             )
             return
         try:
-            result = await self._speech.synthesize(text=text)
+            result = await self._speech.synthesize(
+                text=args.text,
+                model=args.model or self._default_speech_model,
+                voice=args.voice,
+                speed=args.speed,
+                volume=args.volume,
+                pitch=args.pitch,
+                audio_format=args.audio_format,
+                sample_rate=args.sample_rate,
+                bitrate=args.bitrate,
+                channels=args.channels,
+                language=args.language,
+                subtitles=args.subtitles,
+            )
         except MiniMaxError as e:
             yield event.plain_result(friendly_message(e))
             return
@@ -194,7 +239,10 @@ class Main(star.Star):
             yield event.plain_result(f"语音合成失败: {e}")
             return
 
-        out_path = self._plugin_data_dir / f"mmx_speech_{int(_time.time() * 1000)}.mp3"
+        out_path = (
+            self._plugin_data_dir
+            / f"mmx_speech_{int(_time.time() * 1000)}.{args.audio_format}"
+        )
         try:
             saved_path = self._speech.save(result, str(out_path))
         except Exception as e:
@@ -207,17 +255,56 @@ class Main(star.Star):
 
     @mmx_group.command("image")
     async def mmx_image(self, event: AstrMessageEvent, *, prompt: str = ""):
-        """生成图片。用法: /mmx image <描述>"""
+        """生成图片。用法: /mmx image <描述> [--aspect-ratio 16:9] [--seed 42]"""
         msg = event.message_str.strip()
         parts = msg.split(maxsplit=1)
-        prompt = prompt or (parts[1] if len(parts) > 1 else "")
-        if not prompt:
+        raw_args = prompt or (parts[1] if len(parts) > 1 else "")
+        try:
+            args = parse_image_command(raw_args)
+        except DirectCommandError as e:
+            yield event.plain_result(str(e))
+            return
+        if not raw_args:
             yield event.plain_result(
-                "用法: /mmx image <描述>。例如: /mmx image a cute cat"
+                "用法: /mmx image <描述> [--aspect-ratio 16:9] [--seed 42]\n"
+                "例如: /mmx image a cute cat --aigc-watermark"
             )
             return
         try:
-            result = await self._image.generate(prompt=prompt)
+            messages = event.get_messages()
+            subject_ref_value = args.subject_ref
+            if subject_ref_value == "":
+                subject_refs, _ = await extract_image_inputs(
+                    messages,
+                    image_type=Comp.Image,
+                    reply_type=Comp.Reply,
+                    event=event,
+                    limit=1,
+                )
+                subject_ref_value = subject_refs[0] if subject_refs else None
+                if not subject_ref_value:
+                    yield event.plain_result(
+                        "请为 --subject-ref 提供图片路径/URL，或附带/引用一张图片后重试。"
+                    )
+                    return
+            subject_reference = (
+                await resolve_subject_reference(subject_ref_value)
+                if subject_ref_value
+                else None
+            )
+            result = await self._image.generate(
+                prompt=args.prompt,
+                model=args.model or self._default_image_model or None,
+                n=args.n,
+                aspect_ratio=args.aspect_ratio,
+                width=args.width,
+                height=args.height,
+                response_format=args.response_format,
+                prompt_optimizer=args.prompt_optimizer,
+                aigc_watermark=args.aigc_watermark,
+                subject_reference=subject_reference,
+                seed=args.seed,
+            )
         except MiniMaxError as e:
             yield event.plain_result(friendly_message(e))
             return
@@ -228,7 +315,8 @@ class Main(star.Star):
 
         data = result.get("data", {})
         urls = data.get("image_urls", [])
-        if not urls:
+        base64_images = data.get("image_base64", [])
+        if not urls and not base64_images:
             yield event.plain_result("图片生成失败：未返回链接。")
             return
 
@@ -242,29 +330,117 @@ class Main(star.Star):
             yield event.image_result(saved[0])
             return
 
-        yield event.image_result(urls[0])
+        if urls:
+            yield event.image_result(urls[0])
 
     @mmx_group.command("video")
     async def mmx_video(self, event: AstrMessageEvent, *, prompt: str = ""):
-        """生成视频。用法: /mmx video <描述>"""
+        """生成视频。用法: /mmx video <描述> [--first-frame <图片>] [--no-wait]"""
         msg = event.message_str.strip()
         parts = msg.split(maxsplit=1)
-        prompt = prompt or (parts[1] if len(parts) > 1 else "")
-        if not prompt:
-            yield event.plain_result("用法: /mmx video <描述>")
+        raw_args = prompt or (parts[1] if len(parts) > 1 else "")
+        try:
+            args = parse_video_command(raw_args)
+        except DirectCommandError as e:
+            yield event.plain_result(str(e))
+            return
+        if not raw_args:
+            yield event.plain_result(
+                "用法: /mmx video <描述> [--first-frame <图片>] [--no-wait]"
+            )
             return
         try:
-            result = await self._video.generate(prompt=prompt)
+            first_frame_ref = args.first_frame
+            last_frame_ref = args.last_frame
+            subject_image_ref = args.subject_image
+            frame_flags_present = args.first_frame is not None or args.last_frame is not None
+            image_refs: list[str] = []
+            if any(value == "" for value in (args.first_frame, args.last_frame, args.subject_image)):
+                image_refs, _ = await extract_image_inputs(
+                    event.get_messages(),
+                    image_type=Comp.Image,
+                    reply_type=Comp.Reply,
+                    event=event,
+                    limit=2,
+                )
+            if args.subject_image == "":
+                if frame_flags_present:
+                    yield event.plain_result(
+                        "--subject-image 不能与 --first-frame/--last-frame 同时使用"
+                    )
+                    return
+                if image_refs:
+                    subject_image_ref = image_refs.pop(0)
+                else:
+                    yield event.plain_result(
+                        "请为 --subject-image 提供图片路径/URL，或附带/引用图片后重试。"
+                    )
+                    return
+            if args.first_frame == "":
+                if image_refs:
+                    first_frame_ref = image_refs.pop(0)
+                if not first_frame_ref:
+                    yield event.plain_result(
+                        "请为 --first-frame 提供图片路径/URL，或附带/引用图片后重试。"
+                    )
+                    return
+            if args.last_frame == "":
+                if image_refs:
+                    last_frame_ref = image_refs.pop(0)
+                if not last_frame_ref:
+                    yield event.plain_result(
+                        "请为 --last-frame 提供图片路径/URL，或附带/引用图片后重试。"
+                    )
+                    return
+            if args.subject_image is not None and frame_flags_present:
+                yield event.plain_result(
+                    "--subject-image 不能与 --first-frame/--last-frame 同时使用"
+                )
+                return
+            if last_frame_ref and not first_frame_ref:
+                yield event.plain_result("--last-frame 需要同时提供 --first-frame")
+                return
+            first_frame = await resolve_image(first_frame_ref) if first_frame_ref else None
+            last_frame = await resolve_image(last_frame_ref) if last_frame_ref else None
+            subject_reference = (
+                [{"type": "character", "image": [await resolve_image(subject_image_ref)]}]
+                if subject_image_ref
+                else None
+            )
+            selected_model = (
+                args.model
+                or (
+                    self._default_video_sef_model
+                    if first_frame and last_frame
+                    else self._default_video_subject_model
+                    if subject_reference
+                    else self._default_video_model
+                )
+                or None
+            )
+            result = await self._video.generate(
+                prompt=args.prompt,
+                model=selected_model,
+                first_frame_image=first_frame,
+                last_frame_image=last_frame,
+                subject_reference=subject_reference,
+                callback_url=args.callback_url,
+            )
             task_id = result.get("task_id", "")
             if not task_id:
                 yield event.plain_result("视频任务提交失败：未返回任务 ID。")
+                return
+            if args.no_wait:
+                yield event.plain_result(
+                    f"视频任务已提交。task_id={task_id}，可稍后查询生成结果。"
+                )
                 return
 
             yield event.plain_result(f"⏳ 视频生成中（最长 {self._video_timeout}s）...")
             try:
                 final = await self._video.wait_for_completion(
                     task_id,
-                    poll_interval=self._video_poll_interval,
+                    poll_interval=args.poll_interval or self._video_poll_interval,
                     timeout=self._video_timeout,
                 )
                 fid = final.get("file_id", "")
@@ -297,6 +473,11 @@ class Main(star.Star):
         msg = event.message_str.strip()
         parts = msg.split(maxsplit=1)
         raw_args = prompt or (parts[1] if len(parts) > 1 else "")
+        stripped = raw_args.strip()
+        if stripped == "cover" or stripped.startswith("cover "):
+            async for result in self._handle_music_cover(event, raw_args):
+                yield result
+            return
         try:
             args = parse_music_command(raw_args)
         except MusicCommandError as e:
@@ -327,7 +508,7 @@ class Main(star.Star):
                 structure=args.structure,
                 references=args.references,
                 extra=args.extra,
-                model=args.model or self._default_music_model,
+                model=args.model or self._default_music_model or None,
                 output_format=args.output_format,
                 audio_format=args.audio_format,
                 sample_rate=args.sample_rate,
@@ -353,6 +534,77 @@ class Main(star.Star):
                 yield event.chain_result([Record(file=audio_url)])
                 return
             yield event.plain_result("音乐生成完成，但未返回可发送音频。")
+            return
+
+        if saved_path:
+            yield event.chain_result([Record(file=saved_path)])
+
+    async def _handle_music_cover(self, event: AstrMessageEvent, raw_args: str):
+        text = raw_args.strip()
+        if text == "cover":
+            cover_args_text = ""
+        else:
+            cover_args_text = text[5:].strip() if text.startswith("cover ") else ""
+        try:
+            args = parse_music_cover_command(cover_args_text)
+        except DirectCommandError as e:
+            yield event.plain_result(str(e))
+            return
+        try:
+            audio_ref = args.audio
+            audio_file_ref = args.audio_file
+            if not audio_ref and not audio_file_ref:
+                attachment_ref, _ = await extract_first_audio_input(
+                    event.get_messages(),
+                    record_type=Comp.Record,
+                    file_type=Comp.File,
+                    reply_type=Comp.Reply,
+                    event=event,
+                )
+                if attachment_ref:
+                    if is_url(attachment_ref):
+                        audio_ref = attachment_ref
+                    else:
+                        audio_file_ref = attachment_ref
+            if not audio_ref and not audio_file_ref:
+                yield event.plain_result(
+                    "请提供 --audio <URL>，或附带/引用一个音频文件后使用 /mmx music cover。"
+                )
+                return
+            result = await self._music.cover(
+                model=args.model or self._default_music_cover_model or None,
+                prompt=args.prompt,
+                audio=audio_ref,
+                audio_file=audio_file_ref,
+                lyrics=args.lyrics,
+                seed=args.seed,
+                audio_format=args.audio_format,
+                sample_rate=args.sample_rate,
+                bitrate=args.bitrate,
+                channel=args.channel,
+            )
+        except MiniMaxError as e:
+            yield event.plain_result(friendly_message(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] Music cover error: {e}")
+            yield event.plain_result(f"翻唱生成失败: {e}")
+            return
+
+        saved_path = None
+        out_path = (
+            self._plugin_data_dir
+            / f"mmx_music_cover_{int(_time.time() * 1000)}.{args.audio_format}"
+        )
+        try:
+            saved_path = self._music.save(result, str(out_path))
+        except Exception as e:
+            logger.warning(f"[mmx] 翻唱保存失败: {e}")
+            audio_url = result.get("data", {}).get("audio_url", "")
+            if audio_url:
+                yield event.chain_result([Record(file=audio_url)])
+                return
+            yield event.plain_result("翻唱生成完成，但未返回可发送音频。")
             return
 
         if saved_path:
