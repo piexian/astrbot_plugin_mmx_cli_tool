@@ -228,7 +228,7 @@ def parse_music_cover_command(raw: str) -> MusicCoverCommandArgs:
 
 
 def parse_file_command(raw: str) -> FileCommandArgs:
-    text = raw.strip()
+    text = _normalize_file_command_args(raw)
     if not text:
         raise DirectCommandError(_file_usage())
 
@@ -274,6 +274,24 @@ def parse_file_command(raw: str) -> FileCommandArgs:
         return FileCommandArgs(action="delete", file_id=file_id)
 
     raise DirectCommandError(f"不支持的 file 子命令: {action}\n\n{_file_usage()}")
+
+
+def _normalize_file_command_args(raw: str) -> str:
+    text = raw.strip()
+    if not text:
+        return ""
+
+    parts = text.split(maxsplit=2)
+    first = parts[0].lstrip("/").lower()
+    if first == "mmx":
+        if len(parts) >= 2 and parts[1].lower() == "file":
+            return parts[2].strip() if len(parts) > 2 else ""
+        rest = text.split(maxsplit=1)
+        return rest[1].strip() if len(rest) > 1 else ""
+    if first == "file":
+        rest = text.split(maxsplit=1)
+        return rest[1].strip() if len(rest) > 1 else ""
+    return text
 
 
 def parse_video_command(raw: str) -> VideoCommandArgs:

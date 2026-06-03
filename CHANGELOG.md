@@ -3,7 +3,7 @@
 ## 0.2.5 - 2026-06-03
 
 - 同步本地 `mmx-cli@1.0.16` 的 Token Plan 额度查询逻辑，优先使用 `/v1/api/openplatform/coding_plan/remains`，并保留旧端点回退。
-- 额度展示统一解析当前周期额度与周额度，支持 `remaining_count` 与无限周额度场景。
+- 额度展示区分普通模型与视频额度：普通模型显示已用百分比，视频额度显示已用/剩余（上限），当前周期文案改为五小时额度，有限额度附带重置倒计时；无限额度直接显示 `∞`，有明确计数字段时优先按计数字段计算百分比。`/mmx quota` 多 Key 默认逐 Key 分页展示，每页最多 3 个，新增 `/mmx quota page <页码>` 翻页；LLM 工具继续返回合并额度并提示 Key 数量。
 - 音乐生成默认模型更新为 `music-2.6`，显式 `model` 参数有效值同步为 `music-2.6`、`music-2.5+`、`music-2.5`。
 - 音乐翻唱默认模型更新为 `music-cover`，显式 `model` 参数有效值同步为 `music-cover`。
 - `/mmx speech` 与 `mmx_speech_synthesize` 新增 `pronunciation` 支持，自动转换为 MiniMax `pronunciation_dict`。

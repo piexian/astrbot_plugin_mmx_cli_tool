@@ -5,6 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 
+VIDEO_QUOTA_MODEL_KEYWORDS = ("video", "hailuo", "t2v", "i2v", "s2v", "视频")
+
+
+def is_video_quota_model(model: object) -> bool:
+    name = str(model or "").lower()
+    return any(keyword in name for keyword in VIDEO_QUOTA_MODEL_KEYWORDS)
+
+
 def _to_int(value: Any) -> int | None:
     if value is None or value == "":
         return None
@@ -19,6 +27,79 @@ def _to_percent(value: Any) -> int | None:
     if number is None:
         return None
     return max(0, min(100, number))
+
+
+def _computed_remaining_percent(window: dict[str, int | None]) -> int | None:
+    total = window.get("total")
+    remaining = window.get("remaining")
+    if isinstance(total, int) and total > 0 and isinstance(remaining, int):
+        return max(0, min(100, int(remaining / total * 100)))
+    return None
+
+
+def resolve_remaining_percent(
+    upstream_percent: Any,
+    window: dict[str, int | None],
+) -> int | None:
+    """Prefer count-derived remaining percent when counts are available."""
+    computed = _computed_remaining_percent(window)
+    if computed is not None:
+        return computed
+    return _to_percent(upstream_percent)
+
+
+def resolve_used_percent(window: dict[str, Any]) -> int | None:
+    total = window.get("total")
+    used = window.get("used")
+    if isinstance(total, int) and total > 0 and isinstance(used, int):
+        return max(0, min(100, int(used / total * 100)))
+
+    remaining_percent = window.get("remaining_percent")
+    if isinstance(remaining_percent, int):
+        return max(0, min(100, 100 - remaining_percent))
+    return None
+
+
+def merge_quota_window(target: dict[str, Any], source: dict[str, Any]) -> None:
+    for key in ("total", "used", "remaining"):
+        value = source.get(key)
+        if isinstance(value, int):
+            target[key] = (target.get(key) or 0) + value
+    reset_time = source.get("remains_time")
+    if isinstance(reset_time, int):
+        current_reset_time = target.get("remains_time")
+        target["remains_time"] = (
+            min(current_reset_time, reset_time)
+            if isinstance(current_reset_time, int)
+            else reset_time
+        )
+    if source.get("unlimited") is True:
+        target["unlimited"] = True
+
+
+def finalize_merged_quota_window(window: dict[str, Any]) -> dict[str, Any]:
+    if window.get("unlimited") is True:
+        window["remaining_percent"] = 100
+        return window
+    total = window.get("total")
+    remaining = window.get("remaining")
+    if isinstance(total, int) and total > 0 and isinstance(remaining, int):
+        window["remaining_percent"] = max(0, min(100, int(remaining / total * 100)))
+    return window
+
+
+def merge_quota_models(models: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for model in models:
+        name = str(model.get("model", "unknown"))
+        target = merged.setdefault(name, {"current": {}, "weekly": {}})
+        merge_quota_window(target["current"], model["current"])
+        merge_quota_window(target["weekly"], model["weekly"])
+
+    for model in merged.values():
+        finalize_merged_quota_window(model["current"])
+        finalize_merged_quota_window(model["weekly"])
+    return merged
 
 
 def resolve_window_quota(
@@ -90,8 +171,9 @@ def normalize_model_quota(item: dict[str, Any]) -> dict[str, Any]:
         "model": item.get("model_name", "unknown"),
         "current": {
             **current,
-            "remaining_percent": _to_percent(
-                item.get("current_interval_remaining_percent")
+            "remaining_percent": resolve_remaining_percent(
+                item.get("current_interval_remaining_percent"),
+                current,
             ),
             "status": _to_int(item.get("current_interval_status")),
             "remains_time": _to_int(item.get("remains_time")),
@@ -100,8 +182,9 @@ def normalize_model_quota(item: dict[str, Any]) -> dict[str, Any]:
         },
         "weekly": {
             **weekly,
-            "remaining_percent": _to_percent(
-                item.get("current_weekly_remaining_percent")
+            "remaining_percent": resolve_remaining_percent(
+                item.get("current_weekly_remaining_percent"),
+                weekly,
             )
             if not weekly_unlimited
             else 100,

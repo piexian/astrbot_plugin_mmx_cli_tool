@@ -39,7 +39,11 @@ from .mmx.direct_command_args import (
 from .mmx.music_command import MusicCommandError, parse_music_command
 from .mmx.errors import MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
-from .mmx.quota_usage import normalize_quota_models
+from .mmx.quota_usage import (
+    is_video_quota_model,
+    normalize_quota_models,
+    resolve_used_percent,
+)
 from .mmx.utils import is_url, resolve_image, resolve_subject_reference
 from .tools import (
     GenerateImageTool,
@@ -110,24 +114,52 @@ def _file_payload(result: dict) -> dict:
     return item if isinstance(item, dict) else result
 
 
-def _quota_count_text(value: object, *, unlimited: bool = False) -> str:
-    if unlimited:
-        return "无限"
+def _quota_number_text(value: object) -> str:
     if isinstance(value, int):
         return str(value)
     return "未知"
 
 
-def _format_quota_window(label: str, window: dict) -> str:
-    unlimited = window.get("unlimited") is True
-    used = _quota_count_text(window.get("used"))
-    total = _quota_count_text(window.get("total"), unlimited=unlimited)
-    remaining = _quota_count_text(window.get("remaining"), unlimited=unlimited)
-    text = f"{label}: 已用 {used} / 总计 {total} (剩余 {remaining})"
-    percent = window.get("remaining_percent")
-    if isinstance(percent, int):
-        text += f"，剩余率 {percent}%"
+def _format_video_quota_window(window: dict) -> str:
+    has_counts = any(
+        isinstance(window.get(key), int) for key in ("used", "remaining", "total")
+    )
+    if not has_counts:
+        return "未知"
+    used = _quota_number_text(window.get("used"))
+    remaining = _quota_number_text(window.get("remaining"))
+    total = _quota_number_text(window.get("total"))
+    return f"{used} / {remaining}（{total}）"
+
+
+def _format_quota_window(label: str, window: dict, *, is_video: bool = False) -> str:
+    if window.get("unlimited") is True:
+        return f"{label}: ∞"
+    if is_video:
+        text = f"{label}: {_format_video_quota_window(window)}"
+    else:
+        percent = resolve_used_percent(window)
+        if isinstance(percent, int):
+            text = f"{label}: 已用{percent}%"
+        else:
+            text = f"{label}: 未知"
+    reset = _format_quota_reset_time(window.get("remains_time"))
+    if reset:
+        text += f"（{reset}后重置）"
     return text
+
+
+def _format_quota_reset_time(value: object) -> str | None:
+    if not isinstance(value, int) or value <= 0:
+        return None
+    total_minutes = value // 60000
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    if hours > 0 and minutes > 0:
+        return f"{hours}小时{minutes}分钟"
+    if hours > 0:
+        return f"{hours}小时"
+    return f"{minutes}分钟"
 
 
 def _merge_quota_window(target: dict, source: dict) -> None:
@@ -135,6 +167,14 @@ def _merge_quota_window(target: dict, source: dict) -> None:
         value = source.get(key)
         if isinstance(value, int):
             target[key] = (target.get(key) or 0) + value
+    reset_time = source.get("remains_time")
+    if isinstance(reset_time, int):
+        current_reset_time = target.get("remains_time")
+        target["remains_time"] = (
+            min(current_reset_time, reset_time)
+            if isinstance(current_reset_time, int)
+            else reset_time
+        )
     if source.get("unlimited") is True:
         target["unlimited"] = True
 
@@ -162,6 +202,24 @@ def _merge_quota_models(models: list[dict]) -> dict[str, dict]:
         _finalize_merged_quota_window(model["current"])
         _finalize_merged_quota_window(model["weekly"])
     return merged
+
+
+def _normalize_quota_command_args(raw: str) -> str:
+    text = raw.strip()
+    if not text:
+        return ""
+
+    parts = text.split(maxsplit=2)
+    first = parts[0].lstrip("/").lower()
+    if first == "mmx":
+        if len(parts) >= 2 and parts[1].lower() == "quota":
+            return parts[2].strip() if len(parts) > 2 else ""
+        rest = text.split(maxsplit=1)
+        return rest[1].strip() if len(rest) > 1 else ""
+    if first == "quota":
+        rest = text.split(maxsplit=1)
+        return rest[1].strip() if len(rest) > 1 else ""
+    return text
 
 
 @filter.command_group("mmx")
@@ -268,7 +326,7 @@ class Main(star.Star):
             QueryBackgroundTaskTool(),
             WebSearchTool(self._search),
             DescribeImageTool(self._vision),
-            CheckQuotaTool(self._quota),
+            CheckQuotaTool(self._quota, keys),
             SpeechSynthesizeTool(self._speech, _data_dir, self._default_speech_model),
             ListVoicesTool(self._speech),
             UploadFileTool(self._files, _data_dir),
@@ -338,9 +396,7 @@ class Main(star.Star):
     @mmx_group.command("file")
     async def mmx_file(self, event: AstrMessageEvent, *, args: str = ""):
         """文件管理。用法: /mmx file upload|list|delete"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        raw_args = args or (parts[1] if len(parts) > 1 else "")
+        raw_args = args or event.message_str
         try:
             parsed = parse_file_command(raw_args)
         except DirectCommandError as e:
@@ -850,31 +906,65 @@ class Main(star.Star):
 
     @mmx_group.command("quota")
     async def mmx_quota(self, event: AstrMessageEvent, *, index: str = ""):
-        """查询 MiniMax API 额度。用法: /mmx quota [序号]
-        不带参数显示所有 Key 统合额度。带序号（如 /mmx quota 1）显示指定 Key 详情。
+        """查询 MiniMax API 额度。用法: /mmx quota [序号] 或 /mmx quota page <页码>
+        不带参数分页显示 Key 详情。带序号（如 /mmx quota 1）显示指定 Key 详情。
         """
         # 收集所有 Key
-        keys_to_check: list[tuple[int, str]] = []  # (index, key)
+        all_keys: list[tuple[int, str]] = []  # (index, key)
         if self._key_pool is not None:
             for s in self._key_pool._states:
-                keys_to_check.append((s.index, s.key))
+                all_keys.append((s.index, s.key))
         else:
-            keys_to_check.append((0, self._client._api_key or ""))
+            all_keys.append((0, self._client._api_key or ""))
+
+        page_size = 3
+        raw_args = _normalize_quota_command_args(index or event.message_str)
+        page = 1
+        selected_index: int | None = None
+
+        if raw_args:
+            parts = raw_args.split()
+            command = parts[0].lower()
+            if command in {"page", "p"}:
+                if len(parts) > 2:
+                    yield event.plain_result("用法: /mmx quota page <页码>")
+                    return
+                if len(parts) == 2:
+                    try:
+                        page = int(parts[1])
+                    except ValueError:
+                        yield event.plain_result("页码无效，请输入数字。如 /mmx quota page 2")
+                        return
+                if page < 1:
+                    yield event.plain_result("页码必须大于 0。")
+                    return
+            else:
+                try:
+                    selected_index = int(raw_args) - 1
+                except ValueError:
+                    yield event.plain_result(
+                        "序号无效，请输入数字。如 /mmx quota 1；翻页用 /mmx quota page 2"
+                    )
+                    return
 
         # 指定序号则只查该 Key
-        if index.strip():
-            try:
-                idx = int(index.strip()) - 1
-            except ValueError:
-                yield event.plain_result("序号无效，请输入数字。如 /mmx quota 1")
-                return
-            filtered = [(i, k) for i, k in keys_to_check if i == idx]
+        if selected_index is not None:
+            filtered = [(i, k) for i, k in all_keys if i == selected_index]
             if not filtered:
                 yield event.plain_result(
-                    f"Key 序号 {index} 不存在，共 {len(keys_to_check)} 个 Key。"
+                    f"Key 序号 {selected_index + 1} 不存在，共 {len(all_keys)} 个 Key。"
                 )
                 return
             keys_to_check = filtered
+        else:
+            total_pages = max(1, (len(all_keys) + page_size - 1) // page_size)
+            if page > total_pages:
+                yield event.plain_result(
+                    f"页码 {page} 不存在，共 {total_pages} 页，{len(all_keys)} 个 Key。"
+                )
+                return
+            start = (page - 1) * page_size
+            keys_to_check = all_keys[start : start + page_size]
 
         import asyncio
 
@@ -889,44 +979,38 @@ class Main(star.Star):
         tasks = [_fetch(k) for _, k in keys_to_check]
         results = await asyncio.gather(*tasks)
 
-        # 统合模式：按模型聚合所有 Key 的额度
-        if not index.strip() and len(keys_to_check) > 1:
-            merged: dict[str, dict] = {}
-            exhausted_keys: list[int] = []
+        lines: list[str] = []
+        paged_multi_key = selected_index is None and len(all_keys) > 1
+        if paged_multi_key:
+            total_pages = max(1, (len(all_keys) + page_size - 1) // page_size)
+            lines.append(
+                f"💰 MiniMax Key 额度（第 {page}/{total_pages} 页，"
+                f"每页最多 {page_size} 个，共 {len(all_keys)} 个 Key）:"
+            )
 
-            for (ki, _), model_remains in zip(keys_to_check, results):
-                if not model_remains:
-                    exhausted_keys.append(ki + 1)
-                    continue
-                for name, model in _merge_quota_models(model_remains).items():
-                    target = merged.setdefault(name, {"current": {}, "weekly": {}})
-                    _merge_quota_window(target["current"], model["current"])
-                    _merge_quota_window(target["weekly"], model["weekly"])
-
-            lines = [f"💰 MiniMax 统合额度（{len(keys_to_check)} 个 Key）:"]
-            if not merged:
-                lines.append("所有 Key 均无额度信息。")
-            else:
-                for name, m in sorted(merged.items()):
-                    current = _finalize_merged_quota_window(m["current"])
-                    weekly = _finalize_merged_quota_window(m["weekly"])
-                    lines.append(f"- {name}")
-                    lines.append(f"  {_format_quota_window('当前周期', current)}")
-                    lines.append(f"  {_format_quota_window('周额度', weekly)}")
-            if exhausted_keys:
-                lines.append(f"\n⚠️ Key 序号 {exhausted_keys} 无额度信息或查询失败。")
-            yield event.plain_result("\n".join(lines))
-            return
-
-        # 单 Key 详情模式
         for (ki, key), model_remains in zip(keys_to_check, results):
             masked = key[:4] + "..." + key[-4:] if len(key) > 8 else "***"
-            lines = [f"💰 Key [{ki + 1}] {masked} 额度:"]
+            if paged_multi_key:
+                lines.append("")
+                lines.append(f"Key [{ki + 1}] {masked}:")
+            else:
+                lines.append(f"💰 Key [{ki + 1}] {masked} 额度:")
             if not model_remains:
                 lines.append("查询失败或无额度信息。")
             else:
                 for m in model_remains:
+                    is_video = is_video_quota_model(m["model"])
                     lines.append(f"- {m['model']}")
-                    lines.append(f"  {_format_quota_window('当前周期', m['current'])}")
-                    lines.append(f"  {_format_quota_window('周额度', m['weekly'])}")
-            yield event.plain_result("\n".join(lines))
+                    lines.append(
+                        f"  {_format_quota_window('五小时额度', m['current'], is_video=is_video)}"
+                    )
+                    lines.append(
+                        f"  {_format_quota_window('周额度', m['weekly'], is_video=is_video)}"
+                    )
+        if paged_multi_key:
+            total_pages = max(1, (len(all_keys) + page_size - 1) // page_size)
+            if page < total_pages:
+                lines.append(f"\n下一页: /mmx quota page {page + 1}")
+            if page > 1:
+                lines.append(f"上一页: /mmx quota page {page - 1}")
+        yield event.plain_result("\n".join(lines))

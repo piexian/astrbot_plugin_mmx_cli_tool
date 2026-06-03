@@ -61,7 +61,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx file delete --file-id <id> # 删除文件
 /mmx search <查询>             # 联网搜索
 /mmx vision <描述要求>         # 图片理解（支持当前消息带图或引用图片）
-/mmx quota                    # 查询额度
+/mmx quota                    # 查询额度（多 Key 默认每页显示 3 个）
+/mmx quota page <页码>        # 翻页查看 Key 额度
 ```
 
 ### 示例
@@ -78,6 +79,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx search 今天天气怎么样
 /mmx vision 描述这张图片里有什么
 /mmx quota
+/mmx quota page 2
 ```
 
 直接指令使用 kebab-case，例如 `--lyrics-optimizer`、`--use-case`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `lyricsOptimizer`、`useCase`、`sampleRate`。
@@ -255,7 +257,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `fileId` (string, 必填): 要删除的文件 ID。
 
 #### 15. `mmx_check_quota` (额度查询)
-- 无参数。查询当前 API Key 的 MiniMax Token Plan 额度，返回各模型的当前周期额度与周额度。
+- 无参数。查询当前 API Key 的 MiniMax Token Plan 额度；普通模型显示已用百分比，视频额度显示已用/剩余（上限），五小时额度与周额度附带重置倒计时，无限额度显示为 `∞`。
 
 ## 安全设计
 
