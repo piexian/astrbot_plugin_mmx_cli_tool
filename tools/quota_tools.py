@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.quota import QuotaAPI
+from ..mmx.quota_usage import normalize_quota_models
 from .result import tool_result
 from .schema import object_parameters
 
@@ -43,17 +44,17 @@ class CheckQuotaTool(FunctionTool):
         # 精简为人类可读的摘要
         model_remains = result.get("model_remains", [])
         summary = []
-        for m in model_remains:
-            name = m.get("model_name", "unknown")
-            total = m.get("current_interval_total_count", 0)
-            used = m.get("current_interval_usage_count", 0)
-            remaining = total - used
+        for m in normalize_quota_models(model_remains):
+            current = m["current"]
+            weekly = m["weekly"]
             summary.append(
                 {
-                    "model": name,
-                    "total": total,
-                    "used": used,
-                    "remaining": max(remaining, 0),
+                    "model": m["model"],
+                    "total": current["total"],
+                    "used": current["used"],
+                    "remaining": current["remaining"],
+                    "current": current,
+                    "weekly": weekly,
                 }
             )
 

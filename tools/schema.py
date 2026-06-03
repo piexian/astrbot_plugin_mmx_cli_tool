@@ -36,6 +36,10 @@ def boolean_param(description: str) -> dict[str, Any]:
     return {"type": "boolean", "description": description}
 
 
+def array_param(description: str, items: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "array", "description": description, "items": items}
+
+
 def object_parameters(
     properties: dict[str, dict[str, Any]],
     *,

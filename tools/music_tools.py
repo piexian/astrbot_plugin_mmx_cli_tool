@@ -12,6 +12,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.music import MusicAPI
+from ..mmx.model_options import MUSIC_MODELS, model_options_text
 from .audio_result import saved_audio_result, schedule_audio_result_to_agent
 from .result import tool_result
 from .schema import boolean_param, integer_param, object_parameters, string_param
@@ -96,7 +97,7 @@ class GenerateMusicTool(FunctionTool):
                         "Embed AI-generated content watermark in audio for content provenance."
                     ),
                     "model": string_param(
-                        "Model override: music-2.6, music-2.6-free, music-2.5+, or music-2.5. "
+                        "Model override: music-2.6, music-2.5+, or music-2.5. "
                         "Omit to use the plugin default_music_model configuration."
                     ),
                 },
@@ -173,6 +174,20 @@ class GenerateMusicTool(FunctionTool):
                     {"prompt": "Upbeat pop", "lyricsOptimizer": True},
                 )
             )
+        explicit_model = kwargs.get("model")
+        if explicit_model and explicit_model not in MUSIC_MODELS:
+            return tool_result(
+                _hint_json(
+                    "音乐模型不支持",
+                    f"model 只支持: {model_options_text(MUSIC_MODELS)}",
+                    {
+                        "model": MUSIC_MODELS[0],
+                        "prompt": "Upbeat pop",
+                        "lyricsOptimizer": True,
+                    },
+                )
+            )
+        selected_model = explicit_model or self._default_model or None
 
         async def generate_and_save() -> str:
             result = await self._api.generate(
@@ -193,7 +208,7 @@ class GenerateMusicTool(FunctionTool):
                 references=kwargs.get("references"),
                 extra=kwargs.get("extra"),
                 aigc_watermark=kwargs.get("aigcWatermark", False),
-                model=kwargs.get("model") or self._default_model or None,
+                model=selected_model,
             )
             return saved_audio_result(
                 self._api,

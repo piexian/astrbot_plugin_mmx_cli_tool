@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
-
-import httpx
+from pathlib import Path
 
 from .client import MiniMaxClient
 from .endpoints import (
@@ -30,21 +28,13 @@ class FileAPI:
         if not p.is_file():
             raise FileNotFoundError(f"文件不存在: {file_path}")
 
-        async with httpx.AsyncClient() as cl:
-            with open(p, "rb") as f:
-                res = await cl.post(
-                    file_upload_endpoint(self._client.base_url),
-                    files={"file": (p.name, f, "application/octet-stream")},
-                    data={"purpose": purpose},
-                    headers={"Authorization": f"Bearer {self._client._api_key}"},
-                )
-            if not res.is_success:
-                from .errors import classify_error
-
-                raise classify_error(
-                    res.status_code, res, file_upload_endpoint(self._client.base_url)
-                )
-            return res.json()
+        with open(p, "rb") as f:
+            return await self._client.request_json(
+                "POST",
+                file_upload_endpoint(self._client.base_url),
+                data={"purpose": purpose},
+                files={"file": (p.name, f, "application/octet-stream")},
+            )
 
     async def list(self) -> dict[str, Any]:
         """列出已上传的文件。"""
@@ -55,10 +45,14 @@ class FileAPI:
 
     async def delete(self, file_id: str | int) -> dict[str, Any]:
         """删除指定文件。"""
+        try:
+            numeric_file_id = int(file_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"file_id 必须是数字: {file_id}") from exc
         return await self._client.request_json(
             "POST",
             file_delete_endpoint(self._client.base_url),
-            body={"file_id": int(file_id)},
+            body={"file_id": numeric_file_id},
         )
 
     async def retrieve(self, file_id: str) -> dict[str, Any]:

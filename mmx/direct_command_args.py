@@ -41,6 +41,7 @@ class SpeechCommandArgs:
     channels: int = 1
     language: str | None = None
     subtitles: bool = False
+    pronunciation: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,14 @@ class MusicCoverCommandArgs:
     sample_rate: int = 44100
     bitrate: int = 256000
     channel: int = 2
+
+
+@dataclass(frozen=True)
+class FileCommandArgs:
+    action: str
+    file: str | None = None
+    purpose: str = "retrieval"
+    file_id: str | None = None
 
 
 def parse_image_command(raw: str) -> ImageCommandArgs:
@@ -137,10 +146,11 @@ def parse_speech_command(raw: str) -> SpeechCommandArgs:
             "--bitrate": "bitrate",
             "--channels": "channels",
             "--language": "language",
+            "--pronunciation": "pronunciation",
         },
+        array_value_flags={"--pronunciation"},
         unsupported={
             "--text-file": "AstrBot 直接指令不读取服务器本地文本文件，请直接发送文本。",
-            "--pronunciation": "当前插件 API 层尚未支持 pronunciation，请先使用普通文本合成。",
             "--out": "AstrBot 会自动保存并发送语音，不支持 --out 指定服务器路径。",
             "--stream": "AstrBot 消息不支持 mmx CLI 的 --stream 原始音频流模式。",
         },
@@ -152,6 +162,12 @@ def parse_speech_command(raw: str) -> SpeechCommandArgs:
     values["text"] = text
     _coerce_numbers(values, ("speed", "volume", "pitch"))
     _coerce_ints(values, ("sample_rate", "bitrate", "channels"))
+    if "pronunciation" in values:
+        raw_pronunciation = values["pronunciation"]
+        if isinstance(raw_pronunciation, list):
+            values["pronunciation"] = tuple(str(v) for v in raw_pronunciation if v)
+        elif raw_pronunciation:
+            values["pronunciation"] = (str(raw_pronunciation),)
     args = SpeechCommandArgs(**values)
     if args.audio_format not in {
         "mp3",
@@ -206,7 +222,58 @@ def parse_music_cover_command(raw: str) -> MusicCoverCommandArgs:
         raise DirectCommandError("--sample-rate 和 --bitrate 必须大于 0")
     if args.channel not in {1, 2}:
         raise DirectCommandError("--channel 只支持 1 或 2")
+    if args.model and args.model != "music-cover":
+        raise DirectCommandError("--model 只支持: music-cover")
     return args
+
+
+def parse_file_command(raw: str) -> FileCommandArgs:
+    text = raw.strip()
+    if not text:
+        raise DirectCommandError(_file_usage())
+
+    action, _, rest = text.partition(" ")
+    action = action.strip().lower()
+    rest = rest.strip()
+
+    if action == "upload":
+        values, positional = _parse_cli_args(
+            rest,
+            bool_flags={},
+            value_flags={"--file": "file", "--purpose": "purpose"},
+            unsupported={},
+            usage=_file_usage(),
+        )
+        file_path = str(values.get("file") or " ".join(positional)).strip()
+        if not file_path:
+            raise DirectCommandError("upload 需要 --file <路径>。\n\n" + _file_usage())
+        return FileCommandArgs(
+            action="upload",
+            file=file_path,
+            purpose=str(values.get("purpose") or "retrieval").strip() or "retrieval",
+        )
+
+    if action == "list":
+        if rest:
+            raise DirectCommandError("list 不需要额外参数。\n\n" + _file_usage())
+        return FileCommandArgs(action="list")
+
+    if action == "delete":
+        values, positional = _parse_cli_args(
+            rest,
+            bool_flags={},
+            value_flags={"--file-id": "file_id", "--fileId": "file_id"},
+            unsupported={},
+            usage=_file_usage(),
+        )
+        file_id = str(values.get("file_id") or " ".join(positional)).strip()
+        if not file_id:
+            raise DirectCommandError(
+                "delete 需要 --file-id <id>。\n\n" + _file_usage()
+            )
+        return FileCommandArgs(action="delete", file_id=file_id)
+
+    raise DirectCommandError(f"不支持的 file 子命令: {action}\n\n{_file_usage()}")
 
 
 def parse_video_command(raw: str) -> VideoCommandArgs:
@@ -263,8 +330,10 @@ def _parse_cli_args(
     unsupported: dict[str, str],
     usage: str,
     optional_value_flags: set[str] | None = None,
+    array_value_flags: set[str] | None = None,
 ) -> tuple[dict[str, object], list[str]]:
     optional_value_flags = optional_value_flags or set()
+    array_value_flags = array_value_flags or set()
     all_flags = [*bool_flags, *value_flags, *unsupported]
     if optional_value_flags:
         all_flags.extend(optional_value_flags)
@@ -314,7 +383,15 @@ def _parse_cli_args(
         else:
             value = inline_value
             index += 1
-        values[attr] = value.strip()
+        value = value.strip()
+        if flag in array_value_flags:
+            existing = values.get(attr)
+            if isinstance(existing, list):
+                existing.append(value)
+            else:
+                values[attr] = [value]
+        else:
+            values[attr] = value
     return values, positional
 
 
@@ -364,7 +441,7 @@ def _image_usage() -> str:
 def _speech_usage() -> str:
     return (
         "用法: /mmx speech <文本> [--voice <音色>] [--speed 1.0] "
-        "[--format mp3] [--sample-rate 32000]"
+        "[--format mp3] [--sample-rate 32000] [--pronunciation 文本/读音]"
     )
 
 
@@ -379,4 +456,13 @@ def _music_cover_usage() -> str:
     return (
         "用法: /mmx music cover <风格描述> (--audio <URL> | --audio-file <路径>) "
         "[--lyrics <歌词>] [--format mp3]"
+    )
+
+
+def _file_usage() -> str:
+    return (
+        "用法:\n"
+        "/mmx file upload --file <路径> [--purpose retrieval]\n"
+        "/mmx file list\n"
+        "/mmx file delete --file-id <id>"
     )

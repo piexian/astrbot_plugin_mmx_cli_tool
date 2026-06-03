@@ -12,7 +12,13 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.speech import SpeechAPI
 from .result import tool_result
-from .schema import boolean_param, number_param, object_parameters, string_param
+from .schema import (
+    array_param,
+    boolean_param,
+    number_param,
+    object_parameters,
+    string_param,
+)
 
 
 def _language_prefix(voice_id: str) -> str:
@@ -75,6 +81,10 @@ class SpeechSynthesizeTool(FunctionTool):
                     "subtitles": boolean_param(
                         "Include subtitle timing data when supported."
                     ),
+                    "pronunciation": array_param(
+                        "Custom pronunciation entries. Each item uses 'text/tone', for example 'MiniMax/minimax'.",
+                        string_param("One pronunciation entry in text/tone format."),
+                    ),
                 },
                 required=["text"],
             ),
@@ -120,6 +130,7 @@ class SpeechSynthesizeTool(FunctionTool):
                 channels=kwargs.get("channels") or 1,
                 language=kwargs.get("language"),
                 subtitles=bool(kwargs.get("subtitles", False)),
+                pronunciation=kwargs.get("pronunciation"),
             )
         except Exception as e:
             logger.error(f"[mmx] 语音合成失败: {e}")

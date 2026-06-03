@@ -53,24 +53,29 @@ class MiniMaxClient:
         method: str,
         path: str,
         body: Any = None,
+        data: Any = None,
+        files: Any = None,
         headers: dict[str, str] | None = None,
         stream: bool = False,  # noqa: ARG002
         auth_style: str = "bearer",
         model: str = "",
+        api_key_override: str | None = None,
     ) -> httpx.Response:
         """发送 HTTP 请求，返回原始 Response。"""
         hdrs: dict[str, str] = {"User-Agent": "astrbot-plugin-mmx/0.1.0"}
         if headers:
             hdrs.update(headers)
 
-        api_key = await self._resolve(model)
+        api_key = api_key_override or await self._resolve(model)
 
         if auth_style == "x-api-key":
             hdrs["x-api-key"] = api_key
         else:
             hdrs["Authorization"] = f"Bearer {api_key}"
 
-        if body is not None and isinstance(body, (dict, list)):
+        if body is not None and data is None and files is None and isinstance(
+            body, (dict, list)
+        ):
             hdrs.setdefault("Content-Type", "application/json")
 
         url = (
@@ -82,8 +87,17 @@ class MiniMaxClient:
             method=method,
             url=url,
             headers=hdrs,
-            json=body if body is not None and not isinstance(body, bytes) else None,
+            json=(
+                body
+                if body is not None
+                and data is None
+                and files is None
+                and not isinstance(body, bytes)
+                else None
+            ),
             content=body if isinstance(body, bytes) else None,
+            data=data,
+            files=files,
         )
 
         if not res.is_success:
@@ -96,18 +110,24 @@ class MiniMaxClient:
         method: str,
         path: str,
         body: Any = None,
+        data: Any = None,
+        files: Any = None,
         headers: dict[str, str] | None = None,
         auth_style: str = "bearer",
         model: str = "",
+        api_key_override: str | None = None,
     ) -> Any:
         """发送请求并解析 JSON 响应体。"""
         res = await self.request(
             method=method,
             path=path,
             body=body,
+            data=data,
+            files=files,
             headers=headers,
             auth_style=auth_style,
             model=model,
+            api_key_override=api_key_override,
         )
         data: dict[str, Any] = res.json()
         base_resp = data.get("base_resp")

@@ -1,5 +1,15 @@
 # 更新日志
 
+## 0.2.5 - 2026-06-03
+
+- 同步本地 `mmx-cli@1.0.16` 的 Token Plan 额度查询逻辑，优先使用 `/v1/api/openplatform/coding_plan/remains`，并保留旧端点回退。
+- 额度展示统一解析当前周期额度与周额度，支持 `remaining_count` 与无限周额度场景。
+- 音乐生成默认模型更新为 `music-2.6`，显式 `model` 参数有效值同步为 `music-2.6`、`music-2.5+`、`music-2.5`。
+- 音乐翻唱默认模型更新为 `music-cover`，显式 `model` 参数有效值同步为 `music-cover`。
+- `/mmx speech` 与 `mmx_speech_synthesize` 新增 `pronunciation` 支持，自动转换为 MiniMax `pronunciation_dict`。
+- 新增 `mmx_file_upload`、`mmx_file_list`、`mmx_file_delete` LLM 工具，以及 `/mmx file upload|list|delete` 直接指令。
+- 文件上传改为复用共享 `MiniMaxClient` 鉴权与多 Key 选择；LLM 文件上传限制在插件数据目录内，避免任意宿主文件读取风险。
+
 ## 0.2.4 - 2026-06-01
 
 - 补齐 `/mmx image`、`/mmx video`、`/mmx speech` 直接指令的常用本地 `mmx` CLI 参数。

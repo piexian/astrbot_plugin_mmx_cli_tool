@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .model_options import MUSIC_MODELS, model_options_text
 from .utils import split_command_tokens
 
 
@@ -204,9 +205,8 @@ def _validate(args: MusicCommandArgs) -> None:
     if args.audio_format not in {"mp3", "wav", "pcm"}:
         raise MusicCommandError("--format 只支持 mp3、wav 或 pcm")
 
-    valid_models = {"music-2.6", "music-2.6-free", "music-2.5+", "music-2.5"}
-    if args.model and args.model not in valid_models:
-        raise MusicCommandError(f"--model 只支持: {', '.join(sorted(valid_models))}")
+    if args.model and args.model not in MUSIC_MODELS:
+        raise MusicCommandError(f"--model 只支持: {model_options_text(MUSIC_MODELS)}")
 
 
 def _usage() -> str:

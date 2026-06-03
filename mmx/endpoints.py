@@ -52,14 +52,46 @@ def vision_endpoint(base: str) -> str:
     return f"{base}/v1/coding_plan/vlm"
 
 
-def quota_endpoint(base: str) -> str:
-    """额度查询端点（使用 api 子域）。"""
+def _api_quota_host(base: str) -> str:
     host = (
         "https://api.minimaxi.com"
         if "minimaxi.com" in base
         else "https://api.minimax.io"
     )
-    return f"{host}/v1/token_plan/remains"
+    return host
+
+
+def _www_quota_host(base: str) -> str:
+    host = (
+        "https://www.minimaxi.com"
+        if "minimaxi.com" in base
+        else "https://www.minimax.io"
+    )
+    return host
+
+
+def quota_endpoint(base: str) -> str:
+    """额度查询端点（同步 mmx-cli 1.0.16 的 Token Plan API）。"""
+    return f"{_api_quota_host(base)}/v1/api/openplatform/coding_plan/remains"
+
+
+def legacy_quota_endpoint(base: str) -> str:
+    """旧版额度查询端点，用于兼容仍返回旧路径的部署。"""
+    return f"{_www_quota_host(base)}/v1/token_plan/remains"
+
+
+def legacy_api_quota_endpoint(base: str) -> str:
+    """插件早期使用的旧版 api 子域额度端点。"""
+    return f"{_api_quota_host(base)}/v1/token_plan/remains"
+
+
+def quota_endpoints(base: str) -> list[str]:
+    """按优先级返回额度查询候选端点。"""
+    return [
+        quota_endpoint(base),
+        legacy_quota_endpoint(base),
+        legacy_api_quota_endpoint(base),
+    ]
 
 
 def file_upload_endpoint(base: str) -> str:

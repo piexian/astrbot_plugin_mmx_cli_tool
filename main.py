@@ -25,10 +25,12 @@ from .mmx.apis.search import SearchAPI
 from .mmx.apis.vision import VisionAPI
 from .mmx.apis.quota import QuotaAPI
 from .mmx.apis.speech import SpeechAPI
+from .mmx.files import FileAPI
 from .mmx.attachment_input import extract_first_audio_input
 from .mmx.vision_input import extract_image_input, extract_image_inputs
 from .mmx.direct_command_args import (
     DirectCommandError,
+    parse_file_command,
     parse_image_command,
     parse_music_cover_command,
     parse_speech_command,
@@ -37,6 +39,7 @@ from .mmx.direct_command_args import (
 from .mmx.music_command import MusicCommandError, parse_music_command
 from .mmx.errors import MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
+from .mmx.quota_usage import normalize_quota_models
 from .mmx.utils import is_url, resolve_image, resolve_subject_reference
 from .tools import (
     GenerateImageTool,
@@ -51,6 +54,9 @@ from .tools import (
     CheckQuotaTool,
     SpeechSynthesizeTool,
     ListVoicesTool,
+    UploadFileTool,
+    ListFilesTool,
+    DeleteFileTool,
 )
 
 
@@ -85,6 +91,77 @@ def _extract_vision_text(result: dict) -> str:
                 return text
 
     return _clean_display_text(result, limit=2000)
+
+
+def _file_size_text(value: object) -> str:
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return "未知大小"
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
+
+
+def _file_payload(result: dict) -> dict:
+    item = result.get("file")
+    return item if isinstance(item, dict) else result
+
+
+def _quota_count_text(value: object, *, unlimited: bool = False) -> str:
+    if unlimited:
+        return "无限"
+    if isinstance(value, int):
+        return str(value)
+    return "未知"
+
+
+def _format_quota_window(label: str, window: dict) -> str:
+    unlimited = window.get("unlimited") is True
+    used = _quota_count_text(window.get("used"))
+    total = _quota_count_text(window.get("total"), unlimited=unlimited)
+    remaining = _quota_count_text(window.get("remaining"), unlimited=unlimited)
+    text = f"{label}: 已用 {used} / 总计 {total} (剩余 {remaining})"
+    percent = window.get("remaining_percent")
+    if isinstance(percent, int):
+        text += f"，剩余率 {percent}%"
+    return text
+
+
+def _merge_quota_window(target: dict, source: dict) -> None:
+    for key in ("total", "used", "remaining"):
+        value = source.get(key)
+        if isinstance(value, int):
+            target[key] = (target.get(key) or 0) + value
+    if source.get("unlimited") is True:
+        target["unlimited"] = True
+
+
+def _finalize_merged_quota_window(window: dict) -> dict:
+    if window.get("unlimited") is True:
+        window["remaining_percent"] = 100
+        return window
+    total = window.get("total")
+    remaining = window.get("remaining")
+    if isinstance(total, int) and total > 0 and isinstance(remaining, int):
+        window["remaining_percent"] = max(0, min(100, int(remaining / total * 100)))
+    return window
+
+
+def _merge_quota_models(models: list[dict]) -> dict[str, dict]:
+    merged: dict[str, dict] = {}
+    for model in models:
+        name = str(model.get("model", "unknown"))
+        target = merged.setdefault(name, {"current": {}, "weekly": {}})
+        _merge_quota_window(target["current"], model["current"])
+        _merge_quota_window(target["weekly"], model["weekly"])
+
+    for model in merged.values():
+        _finalize_merged_quota_window(model["current"])
+        _finalize_merged_quota_window(model["weekly"])
+    return merged
 
 
 @filter.command_group("mmx")
@@ -168,6 +245,7 @@ class Main(star.Star):
         self._vision = VisionAPI(self._client)
         self._quota = QuotaAPI(self._client)
         self._speech = SpeechAPI(self._client)
+        self._files = FileAPI(self._client)
 
         # 插件数据目录路径（字符串）
         _data_dir = str(self._plugin_data_dir)
@@ -193,6 +271,9 @@ class Main(star.Star):
             CheckQuotaTool(self._quota),
             SpeechSynthesizeTool(self._speech, _data_dir, self._default_speech_model),
             ListVoicesTool(self._speech),
+            UploadFileTool(self._files, _data_dir),
+            ListFilesTool(self._files),
+            DeleteFileTool(self._files),
         )
 
     async def terminate(self) -> None:
@@ -230,6 +311,7 @@ class Main(star.Star):
                 channels=args.channels,
                 language=args.language,
                 subtitles=args.subtitles,
+                pronunciation=args.pronunciation,
             )
         except MiniMaxError as e:
             yield event.plain_result(friendly_message(e))
@@ -252,6 +334,65 @@ class Main(star.Star):
 
         if saved_path:
             yield event.chain_result([Record(file=saved_path)])
+
+    @mmx_group.command("file")
+    async def mmx_file(self, event: AstrMessageEvent, *, args: str = ""):
+        """文件管理。用法: /mmx file upload|list|delete"""
+        msg = event.message_str.strip()
+        parts = msg.split(maxsplit=1)
+        raw_args = args or (parts[1] if len(parts) > 1 else "")
+        try:
+            parsed = parse_file_command(raw_args)
+        except DirectCommandError as e:
+            yield event.plain_result(str(e))
+            return
+
+        try:
+            if parsed.action == "upload":
+                result = await self._files.upload(
+                    parsed.file or "",
+                    purpose=parsed.purpose,
+                )
+                item = _file_payload(result)
+                file_id = item.get("file_id") or item.get("id") or "未知"
+                filename = item.get("filename") or item.get("name") or parsed.file
+                lines = [
+                    "文件上传完成。",
+                    f"file_id: {file_id}",
+                    f"filename: {filename}",
+                    f"purpose: {item.get('purpose') or parsed.purpose}",
+                ]
+                if "bytes" in item:
+                    lines.append(f"size: {_file_size_text(item.get('bytes'))}")
+                yield event.plain_result("\n".join(lines))
+                return
+
+            if parsed.action == "list":
+                result = await self._files.list()
+                files = result.get("files", [])
+                if not files:
+                    yield event.plain_result("暂无已上传文件。")
+                    return
+                lines = ["MiniMax 文件列表:"]
+                for item in files[:20]:
+                    file_id = item.get("file_id") or item.get("id") or "未知"
+                    filename = item.get("filename") or item.get("name") or "未知文件"
+                    purpose = item.get("purpose") or "-"
+                    size = _file_size_text(item.get("bytes"))
+                    lines.append(f"- {file_id} | {filename} | {purpose} | {size}")
+                if len(files) > 20:
+                    lines.append(f"... 还有 {len(files) - 20} 个文件未显示")
+                yield event.plain_result("\n".join(lines))
+                return
+
+            result = await self._files.delete(parsed.file_id or "")
+            file_id = result.get("file_id") or parsed.file_id
+            yield event.plain_result(f"文件已删除: {file_id}")
+        except MiniMaxError as e:
+            yield event.plain_result(friendly_message(e))
+        except Exception as e:
+            logger.error(f"[mmx] File command error: {e}")
+            yield event.plain_result(f"文件操作失败: {e}")
 
     @mmx_group.command("image")
     async def mmx_image(self, event: AstrMessageEvent, *, prompt: str = ""):
@@ -735,23 +876,14 @@ class Main(star.Star):
                 return
             keys_to_check = filtered
 
-        # 并发查询所有 Key 的额度
         import asyncio
-        from .mmx.endpoints import quota_endpoint
 
         async def _fetch(api_key: str):
             try:
-                import httpx
-
-                async with httpx.AsyncClient(timeout=10) as cl:
-                    r = await cl.get(
-                        quota_endpoint(self._client.base_url),
-                        headers={"Authorization": f"Bearer {api_key}"},
-                    )
-                    if r.is_success:
-                        return r.json().get("model_remains", [])
-            except Exception:
-                pass
+                result = await self._quota.info(api_key)
+                return normalize_quota_models(result.get("model_remains", []))
+            except Exception as e:
+                logger.warning(f"[mmx] 额度查询失败: {e}")
             return []
 
         tasks = [_fetch(k) for _, k in keys_to_check]
@@ -766,24 +898,21 @@ class Main(star.Star):
                 if not model_remains:
                     exhausted_keys.append(ki + 1)
                     continue
-                for m in model_remains:
-                    name = m.get("model_name", "unknown")
-                    total = m.get("current_interval_total_count", 0)
-                    used = m.get("current_interval_usage_count", 0)
-                    if name not in merged:
-                        merged[name] = {"total": 0, "used": 0, "remaining": 0}
-                    merged[name]["total"] += total
-                    merged[name]["used"] += used
-                    merged[name]["remaining"] += max(total - used, 0)
+                for name, model in _merge_quota_models(model_remains).items():
+                    target = merged.setdefault(name, {"current": {}, "weekly": {}})
+                    _merge_quota_window(target["current"], model["current"])
+                    _merge_quota_window(target["weekly"], model["weekly"])
 
             lines = [f"💰 MiniMax 统合额度（{len(keys_to_check)} 个 Key）:"]
             if not merged:
                 lines.append("所有 Key 均无额度信息。")
             else:
                 for name, m in sorted(merged.items()):
-                    lines.append(
-                        f"- {name}: 已用 {m['used']} / 总计 {m['total']} (剩余 {m['remaining']})"
-                    )
+                    current = _finalize_merged_quota_window(m["current"])
+                    weekly = _finalize_merged_quota_window(m["weekly"])
+                    lines.append(f"- {name}")
+                    lines.append(f"  {_format_quota_window('当前周期', current)}")
+                    lines.append(f"  {_format_quota_window('周额度', weekly)}")
             if exhausted_keys:
                 lines.append(f"\n⚠️ Key 序号 {exhausted_keys} 无额度信息或查询失败。")
             yield event.plain_result("\n".join(lines))
@@ -797,10 +926,7 @@ class Main(star.Star):
                 lines.append("查询失败或无额度信息。")
             else:
                 for m in model_remains:
-                    total = m.get("current_interval_total_count", 0)
-                    used = m.get("current_interval_usage_count", 0)
-                    name = m.get("model_name", "unknown")
-                    lines.append(
-                        f"- {name}: 已用 {used} / 总计 {total} (剩余 {max(total - used, 0)})"
-                    )
+                    lines.append(f"- {m['model']}")
+                    lines.append(f"  {_format_quota_window('当前周期', m['current'])}")
+                    lines.append(f"  {_format_quota_window('周额度', m['weekly'])}")
             yield event.plain_result("\n".join(lines))

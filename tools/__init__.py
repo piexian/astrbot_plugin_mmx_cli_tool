@@ -10,6 +10,7 @@ from .search_tools import WebSearchTool
 from .vision_tools import DescribeImageTool
 from .quota_tools import CheckQuotaTool
 from .speech_tools import SpeechSynthesizeTool, ListVoicesTool
+from .file_tools import UploadFileTool, ListFilesTool, DeleteFileTool
 
 __all__ = [
     "GenerateImageTool",
@@ -24,4 +25,7 @@ __all__ = [
     "CheckQuotaTool",
     "SpeechSynthesizeTool",
     "ListVoicesTool",
+    "UploadFileTool",
+    "ListFilesTool",
+    "DeleteFileTool",
 ]
