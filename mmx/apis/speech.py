@@ -9,6 +9,33 @@ from ..client import MiniMaxClient
 from ..endpoints import speech_endpoint, voices_endpoint
 
 
+def _normalize_pronunciation(
+    pronunciation: object,
+) -> list[dict[str, str]]:
+    if pronunciation is None:
+        return []
+
+    entries = pronunciation
+    if isinstance(pronunciation, str):
+        entries = [pronunciation]
+    if not isinstance(entries, (list, tuple)):
+        return []
+
+    result: list[dict[str, str]] = []
+    for item in entries:
+        if isinstance(item, dict):
+            text = str(item.get("text") or "").strip()
+            tone = str(item.get("tone") or item.get("pronunciation") or text).strip()
+        else:
+            raw = str(item).strip()
+            text, sep, tone = raw.partition("/")
+            text = text.strip()
+            tone = tone.strip() if sep else text
+        if text:
+            result.append({"text": text, "tone": tone or text})
+    return result
+
+
 class SpeechAPI:
     """MiniMax 语音合成接口。"""
 
@@ -30,6 +57,7 @@ class SpeechAPI:
         channels: int = 1,
         language: str | None = None,
         subtitles: bool = False,
+        pronunciation: object = None,
     ) -> dict[str, Any]:
         """同步 TTS 合成，最大 10k 字符。"""
         body: dict[str, Any] = {
@@ -56,6 +84,9 @@ class SpeechAPI:
             body["language_boost"] = language
         if subtitles:
             body["subtitle_enable"] = True
+        pronunciation_dict = _normalize_pronunciation(pronunciation)
+        if pronunciation_dict:
+            body["pronunciation_dict"] = pronunciation_dict
 
         return await self._client.request_json(
             "POST",

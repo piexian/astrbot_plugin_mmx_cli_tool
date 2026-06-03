@@ -11,7 +11,7 @@
 
 ## 功能
 
-- 12 个 LLM Tool，全面覆盖 MiniMax 多模态 API（图片/视频/音乐/语音合成/联网搜索/视觉理解）
+- 15 个 LLM Tool，全面覆盖 MiniMax 多模态 API（图片/视频/音乐/语音合成/联网搜索/视觉理解/文件管理）
 - `/mmx` 命令组，用户可直接通过指令快速调用
 - 智能参数校验与纠偏机制，对 AI 友好
 - API 多 Key 轮询与额度查询
@@ -34,6 +34,9 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_generate_video` | 根据文字描述及首尾帧等生成视频 | 无 |
 | `mmx_video_task_get` | 查询视频生成任务的最新状态和进度 | 无 |
 | `mmx_video_download` | 通过文件 ID 下载完成的视频到本地 | 无 |
+| `mmx_file_upload` | 上传插件数据目录内的文件到 MiniMax 存储 | 无 |
+| `mmx_file_list` | 列出已上传到 MiniMax 存储的文件 | 无 |
+| `mmx_file_delete` | 删除已上传的 MiniMax 文件 | 无 |
 | `mmx_generate_music` | 生成音乐（支持纯器乐、带歌词，及所有精细控制参数） | 无 |
 | `mmx_music_cover` | 基于参考音频及描述进行翻唱（支持 URL 和本地音频输入） | 无 |
 | `mmx_background_task_get` | 查询音乐生成和翻唱的后台任务状态与结果 | 无 |
@@ -53,9 +56,13 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)  # 生成音乐
 /mmx music cover <风格描述> --audio <URL>  # 生成翻唱，可附带或引用音频
 /mmx speech <文本> [--voice <音色>] [--format mp3]  # 语音合成
+/mmx file upload --file <路径> [--purpose retrieval]  # 上传文件
+/mmx file list                 # 列出文件
+/mmx file delete --file-id <id> # 删除文件
 /mmx search <查询>             # 联网搜索
 /mmx vision <描述要求>         # 图片理解（支持当前消息带图或引用图片）
-/mmx quota                    # 查询额度
+/mmx quota                    # 查询额度（多 Key 默认每页显示 3 个）
+/mmx quota page <页码>        # 翻页查看 Key 额度
 ```
 
 ### 示例
@@ -67,10 +74,12 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx music 欢乐电子乐 --lyrics-optimizer
 /mmx music --prompt "Upbeat pop" --lyrics "[Verse] La la la"
 /mmx music cover indie folk, acoustic guitar, warm male vocal
-/mmx speech 欢迎使用 MiniMax 语音合成功能 --speed 1.1 --subtitles
+/mmx speech 欢迎使用 MiniMax 语音合成功能 --speed 1.1 --subtitles --pronunciation MiniMax/minimax
+/mmx file list
 /mmx search 今天天气怎么样
 /mmx vision 描述这张图片里有什么
 /mmx quota
+/mmx quota page 2
 ```
 
 直接指令使用 kebab-case，例如 `--lyrics-optimizer`、`--use-case`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `lyricsOptimizer`、`useCase`、`sampleRate`。
@@ -87,7 +96,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `--prompt-optimizer` | 启用提示词优化 |
 | `--aigc-watermark` | 添加 AI 生成内容水印 |
 | `--subject-ref <参数>` | 角色参考，支持 `type=character,image=path-or-url`；省略值时使用当前消息或引用消息中的图片 |
-| `--response-format <url|base64>` | 返回格式，默认 `url` |
+| `--response-format <url\|base64>` | 返回格式，默认 `url` |
 
 常用视频指令参数：
 
@@ -112,9 +121,9 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `--genre` / `--mood` / `--instruments` / `--tempo` / `--key` | 精细控制音乐风格 |
 | `--bpm <数字>` | 指定 BPM |
 | `--avoid` / `--use-case` / `--structure` / `--references` / `--extra` | 更多结构化描述 |
-| `--model <模型>` | `music-2.6`、`music-2.6-free`、`music-2.5+` 或 `music-2.5` |
-| `--output-format <hex|url>` | 输出格式，默认 `hex` |
-| `--format <mp3|wav|pcm>` | 音频格式，默认 `mp3` |
+| `--model <模型>` | `music-2.6`、`music-2.5+` 或 `music-2.5` |
+| `--output-format <hex\|url>` | 输出格式，默认 `hex` |
+| `--format <mp3\|wav\|pcm>` | 音频格式，默认 `mp3` |
 | `--sample-rate <数字>` / `--bitrate <数字>` | 音频采样率和码率 |
 | `--aigc-watermark` | 添加 AI 生成内容水印 |
 
@@ -125,9 +134,9 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `--audio <URL>` | 参考音频 URL；省略时可从引用消息中的音频附件解析 |
 | `--audio-file <路径>` | 本地参考音频路径；省略值时可从引用消息中的音频/文件附件解析 |
 | `--lyrics <歌词>` | 翻唱歌词，留空则由接口从参考音频提取 |
-| `--model <模型>` | 覆盖配置中的默认翻唱模型 |
-| `--format <mp3|wav|pcm>` | 音频格式，默认 `mp3` |
-| `--sample-rate <数字>` / `--bitrate <数字>` / `--channel <1|2>` | 音频采样率、码率、声道数 |
+| `--model <模型>` | `music-cover` |
+| `--format <mp3\|wav\|pcm>` | 音频格式，默认 `mp3` |
+| `--sample-rate <数字>` / `--bitrate <数字>` / `--channel <1\|2>` | 音频采样率、码率、声道数 |
 
 常用语音指令参数：
 
@@ -140,6 +149,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `--sample-rate <数字>` / `--bitrate <数字>` / `--channels <数字>` | 音频采样率、码率、声道数 |
 | `--language <语言>` | 语种增强 |
 | `--subtitles` | 请求字幕时间信息 |
+| `--pronunciation <文本/读音>` | 自定义读音，可重复传入 |
 
 ### LLM 对话中使用
 
@@ -207,7 +217,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `audioFile` (string): 本地参考音频文件路径。与 `audio` 选填其一。
 - `lyrics` (string): 歌词（如留空则通过 ASR 自动从参考音频提取）。
 - `seed` (integer): 随机种子。
-- `model` (string): 模型名，`music-cover` 或 `music-cover-free`。
+- `model` (string): 模型名，`music-cover`。
 - `lyricsFile` (string): 本地歌词文件路径。与 `lyrics` 互斥。
 - `format` / `sampleRate` / `bitrate` / `channel`: 音频格式、采样率、码率、声道数。
 
@@ -223,6 +233,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `sampleRate` / `bitrate` / `channels` (number): 采样率、码率、声道数。
 - `language` (string): 语种权重。
 - `subtitles` (boolean): 是否请求字幕时间信息。
+- `pronunciation` (array): 自定义读音数组，每项格式为 `文本/读音`。
 
 #### 9. `mmx_speech_voices` (列出 TTS 音色)
 - `language` (string): 过滤语言（如 `english`, `chinese` 等）。
@@ -235,14 +246,25 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `prompt` (string): 分析要求描述。
 - `fileId` (string): 预先上传的文件 ID。
 
-#### 12. `mmx_check_quota` (额度查询)
-- 无参数。查询当前所有 API Key 剩余的总额度。
+#### 12. `mmx_file_upload` (文件上传)
+- `file` (string, 必填): 插件数据目录内的本地文件路径。LLM 工具会拒绝绝对路径和 `..` 穿越。
+- `purpose` (string): 文件用途，默认 `retrieval`。
+
+#### 13. `mmx_file_list` (文件列表)
+- 无参数。列出当前 Key 已上传的文件。
+
+#### 14. `mmx_file_delete` (文件删除)
+- `fileId` (string, 必填): 要删除的文件 ID。
+
+#### 15. `mmx_check_quota` (额度查询)
+- 无参数。查询当前 API Key 的 MiniMax Token Plan 额度；普通模型显示已用百分比，视频额度显示已用/剩余（上限），五小时额度与周额度附带重置倒计时，无限额度显示为 `∞`。
 
 ## 安全设计
 
 - **API Key 脱敏**：错误日志中自动隐藏 API Key（仅显示前 4 后 4 字符）
 - **文件名安全**：保存文件使用时间戳命名，避免路径注入
 - **输出目录限制**：媒体文件仅保存到 AstrBot 插件数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）
+- **LLM 文件上传限制**：`mmx_file_upload` 仅允许上传插件数据目录内的文件，避免模型诱导读取任意宿主文件
 - **参数验证**：工具入口处校验关键参数
 
 ## 配置
@@ -262,8 +284,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `default_video_sef_model` | string | `MiniMax-Hailuo-02` | 默认首尾帧视频模型 |
 | `default_video_subject_model` | string | `S2V-01` | 默认角色一致性视频模型 |
 | `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
-| `default_music_model` | string | `music-2.6-free` | 默认音乐生成模型 |
-| `default_music_cover_model` | string | `music-cover-free` | 默认音乐翻唱模型 |
+| `default_music_model` | string | `music-2.6` | 默认音乐生成模型 |
+| `default_music_cover_model` | string | `music-cover` | 默认音乐翻唱模型 |
 
 ## 项目结构
 
@@ -271,41 +293,44 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 astrbot_plugin_mmx_cli_tool/
 ├── main.py                          # 插件入口（Star 子类）
 ├── metadata.yaml                    # 插件元数据
-├── _conf_schema.json                # 配置 Schema
+├── _conf_schema.json                # 插件配置 Schema
 ├── requirements.txt                 # Python 依赖
-├── README.md
+├── README.md                        # 项目说明文档
 ├── .astrbot-plugin/
 │   └── i18n/
 │       └── zh-CN.json               # 中文翻译
 ├── mmx/                             # MiniMax API 客户端层
 │   ├── __init__.py
-│   ├── client.py                    # httpx.AsyncClient + 鉴权
-│   ├── endpoints.py                 # API URL builder
+│   ├── client.py                    # MiniMax HTTP 客户端与鉴权
+│   ├── endpoints.py                 # API 端点 URL 构建
 │   ├── errors.py                    # 错误分类与映射
 │   ├── sse.py                       # SSE 流式解析
-│   ├── files.py                     # 文件上传/下载
-│   └── apis/
-│       ├── image.py                 # ImageAPI
-│       ├── video.py                 # VideoAPI + 轮询
-│       ├── music.py                 # MusicAPI
-│       ├── speech.py                # SpeechAPI (TTS)
-│       ├── search.py                # SearchAPI
-│       ├── vision.py                # VisionAPI
-│       └── quota.py                 # QuotaAPI
+│   ├── files.py                     # 文件上传、列表、删除与检索
+│   ├── model_options.py             # 模型默认值与有效模型定义
+│   ├── quota_usage.py               # 额度数据标准化与汇总
+│   └── apis/                        # MiniMax API 领域封装
+│       ├── image.py                 # 图片生成 API
+│       ├── video.py                 # 视频生成与任务轮询 API
+│       ├── music.py                 # 音乐生成与翻唱 API
+│       ├── speech.py                # 语音合成 API
+│       ├── search.py                # 联网搜索 API
+│       ├── vision.py                # 视觉理解 API
+│       └── quota.py                 # 额度查询 API
 └── tools/                           # LLM 工具
     ├── __init__.py
-    ├── image_tools.py               # GenerateImageTool
-    ├── video_tools.py               # GenerateVideoTool
-    ├── video_task_tools.py          # QueryVideoTaskTool & DownloadVideoTool
-    ├── music_tools.py               # GenerateMusicTool
-    ├── music_cover_tools.py         # MusicCoverTool
-    ├── background_task_tools.py     # QueryBackgroundTaskTool
+    ├── image_tools.py               # 图片生成工具
+    ├── video_tools.py               # 视频生成工具
+    ├── video_task_tools.py          # 视频任务查询与下载工具
+    ├── music_tools.py               # 音乐生成工具
+    ├── music_cover_tools.py         # 音乐翻唱工具
+    ├── background_task_tools.py     # 后台任务查询工具
     ├── background_tasks.py          # 后台任务注册表
     ├── audio_result.py              # 音频结果保存与后台调度
-    ├── speech_tools.py              # SpeechSynthesizeTool & ListVoicesTool
-    ├── search_tools.py              # WebSearchTool
-    ├── vision_tools.py              # DescribeImageTool
-    └── quota_tools.py               # CheckQuotaTool
+    ├── speech_tools.py              # 语音合成与音色列表工具
+    ├── file_tools.py                # 文件上传、列表与删除工具
+    ├── search_tools.py              # 联网搜索工具
+    ├── vision_tools.py              # 视觉理解工具
+    └── quota_tools.py               # 额度查询工具
 ```
 
 ## 更新日志

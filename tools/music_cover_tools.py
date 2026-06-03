@@ -13,6 +13,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.music import MusicAPI
+from ..mmx.model_options import MUSIC_COVER_MODELS, model_options_text
 from ..mmx.utils import is_safe_data_path
 from .audio_result import saved_audio_result, schedule_audio_result_to_agent
 from .result import tool_result
@@ -52,7 +53,7 @@ class MusicCoverTool(FunctionTool):
                         "Random seed 0-1000000 for reproducible results"
                     ),
                     "model": string_param(
-                        "Model override: music-cover or music-cover-free."
+                        "Model override: music-cover."
                     ),
                     "format": string_param("Audio format: mp3, wav, or pcm."),
                     "sampleRate": integer_param("Sample rate, e.g. 44100."),
@@ -164,6 +165,25 @@ class MusicCoverTool(FunctionTool):
                     ensure_ascii=False,
                 )
             )
+        explicit_model = kwargs.get("model")
+        if explicit_model and explicit_model not in MUSIC_COVER_MODELS:
+            return tool_result(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "翻唱模型不支持",
+                        "hint": f"model 只支持: {model_options_text(MUSIC_COVER_MODELS)}",
+                        "example": {
+                            "model": MUSIC_COVER_MODELS[0],
+                            "prompt": "Indie folk, acoustic guitar",
+                            "audio": "https://example.com/song.mp3",
+                        },
+                        "docs": "https://platform.minimaxi.com/docs/api-reference/music-generation",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        selected_model = explicit_model or self._default_model or None
 
         async def generate_and_save() -> str:
             resolved_lyrics = lyrics
@@ -172,7 +192,7 @@ class MusicCoverTool(FunctionTool):
                     safe_lyrics_file.read_text, encoding="utf-8"
                 )
             result = await self._api.cover(
-                model=kwargs.get("model") or self._default_model or None,
+                model=selected_model,
                 prompt=prompt,
                 audio=audio,
                 audio_file=audio_file,

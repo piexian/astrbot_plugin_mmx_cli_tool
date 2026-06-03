@@ -8,6 +8,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .quota_usage import summarize_keypool_quota
+
 
 @dataclass
 class KeyState:
@@ -18,7 +20,7 @@ class KeyState:
     enabled: bool = True
     disabled_time: float = 0.0
     disabled_reason: str = ""
-    model_quotas: dict[str, dict[str, int]] = field(default_factory=dict)
+    model_quotas: dict[str, dict[str, Any]] = field(default_factory=dict)
     quota_checked_at: float = 0.0
     total_requests: int = 0
     failed_requests: int = 0
@@ -80,7 +82,8 @@ class KeyPool:
         mq = state.model_quotas.get(model)
         if mq is None:
             return -1
-        return mq.get("remaining", -1)
+        remaining = mq.get("remaining", -1)
+        return remaining if isinstance(remaining, int) else -1
 
     async def get_key(self, model: str = "") -> tuple[str, int]:
         """选择目标模型有可用额度的 Key。
@@ -180,19 +183,14 @@ class KeyPool:
                     fetcher(s.key), timeout=self.CHECK_TIMEOUT
                 )
                 model_remains = result.get("model_remains", [])
-                new_quotas: dict[str, dict[str, int]] = {}
+                new_quotas: dict[str, dict[str, Any]] = {}
                 all_zero = True
                 for m in model_remains:
                     name = m.get("model_name", "unknown")
-                    total = m.get("current_interval_total_count", 0)
-                    used = m.get("current_interval_usage_count", 0)
-                    remaining = max(total - used, 0)
-                    new_quotas[name] = {
-                        "total": total,
-                        "used": used,
-                        "remaining": remaining,
-                    }
-                    if remaining > 0:
+                    quota = summarize_keypool_quota(m)
+                    remaining = quota.get("remaining", -1)
+                    new_quotas[name] = quota
+                    if remaining == -1 or remaining > 0:
                         all_zero = False
 
                 s.model_quotas = new_quotas
