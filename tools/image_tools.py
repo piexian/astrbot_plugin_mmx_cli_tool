@@ -20,7 +20,7 @@ from .schema import boolean_param, integer_param, object_parameters, string_para
 class GenerateImageTool(FunctionTool):
     """LLM 工具：调用 MiniMax 图片生成 API。"""
 
-    def __init__(self, api: ImageAPI, default_model: str = ""):
+    def __init__(self, api: ImageAPI, default_model: str = "", data_dir: str = "."):
         super().__init__(
             name="mmx_generate_image",
             description="Generate images using MiniMax AI. Provide a detailed prompt describing the image you want.",
@@ -55,7 +55,7 @@ class GenerateImageTool(FunctionTool):
                         "Model override: image-01 or image-01-live. Omit to use the plugin default_image_model configuration."
                     ),
                     "subjectRef": string_param(
-                        "Subject reference for character consistency. Format: image URL/local path, or type=character,image=path-or-url."
+                        "Subject reference for character consistency. Format: image URL/plugin-data path, or type=character,image=path-or-url."
                     ),
                 },
                 required=["prompt"],
@@ -63,6 +63,7 @@ class GenerateImageTool(FunctionTool):
         )
         self._api = api
         self._default_model = default_model
+        self._data_dir = data_dir
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -86,7 +87,10 @@ class GenerateImageTool(FunctionTool):
         subject_reference = None
         subject_ref = kwargs.get("subjectRef")
         if subject_ref:
-            subject_reference = await resolve_subject_reference(subject_ref)
+            subject_reference = await resolve_subject_reference(
+                subject_ref,
+                data_dir=self._data_dir,
+            )
 
         try:
             result = await self._api.generate(

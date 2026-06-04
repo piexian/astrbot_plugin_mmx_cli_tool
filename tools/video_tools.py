@@ -40,6 +40,7 @@ class GenerateVideoTool(FunctionTool):
         default_model: str = "",
         default_sef_model: str = "",
         default_subject_model: str = "",
+        data_dir: str = ".",
     ):
         super().__init__(
             name="mmx_generate_video",
@@ -58,12 +59,14 @@ class GenerateVideoTool(FunctionTool):
                     "model": string_param(
                         "Model override. Omit to use plugin default_video_model or the configured SEF/S2V model."
                     ),
-                    "firstFrame": string_param("First frame image (URL or local path)."),
+                    "firstFrame": string_param(
+                        "First frame image (URL or plugin-data path)."
+                    ),
                     "lastFrame": string_param(
-                        "Last frame image (URL or local path). Requires firstFrame."
+                        "Last frame image (URL or plugin-data path). Requires firstFrame."
                     ),
                     "subjectImage": string_param(
-                        "Subject reference image for character consistency (URL or local path)."
+                        "Subject reference image for character consistency (URL or plugin-data path)."
                     ),
                     "callbackUrl": string_param(
                         "Webhook URL for completion notification"
@@ -84,6 +87,7 @@ class GenerateVideoTool(FunctionTool):
         self._default_model = default_model
         self._default_sef_model = default_sef_model
         self._default_subject_model = default_subject_model
+        self._data_dir = data_dir
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -151,12 +155,23 @@ class GenerateVideoTool(FunctionTool):
         # 构建 subject_reference（image 必须为数组，对齐 mmx-cli）
         subject_reference = None
         if subject_image:
-            converted_subject = await resolve_image(subject_image)
+            converted_subject = await resolve_image(
+                subject_image,
+                data_dir=self._data_dir,
+            )
             subject_reference = [{"type": "character", "image": [converted_subject]}]
 
-        # 本地路径转 Data URI（对齐 mmx-cli Rn 函数）
-        resolved_first = await resolve_image(first_frame) if first_frame else None
-        resolved_last = await resolve_image(last_frame) if last_frame else None
+        # 插件数据目录内路径转 Data URI（对齐 mmx-cli Rn 函数）
+        resolved_first = (
+            await resolve_image(first_frame, data_dir=self._data_dir)
+            if first_frame
+            else None
+        )
+        resolved_last = (
+            await resolve_image(last_frame, data_dir=self._data_dir)
+            if last_frame
+            else None
+        )
         selected_model = (
             model
             or (

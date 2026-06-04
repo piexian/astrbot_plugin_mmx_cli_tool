@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from astrbot.api import FunctionTool, logger
 from astrbot.core.agent.run_context import ContextWrapper
@@ -11,6 +12,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.video import VideoAPI
+from ..mmx.utils import resolve_data_path
 from .result import tool_result
 from .schema import object_parameters, string_param
 
@@ -90,7 +92,7 @@ class DownloadVideoTool(FunctionTool):
                         "File ID of the completed video (from mmx_video_task_get result)"
                     ),
                     "out": string_param(
-                        "Output file path (optional, auto-generated if omitted)"
+                        "Output file path under the plugin data directory (optional, auto-generated if omitted)"
                     ),
                 },
                 required=["fileId"],
@@ -116,15 +118,41 @@ class DownloadVideoTool(FunctionTool):
                 )
             )
 
-        import time
-        from pathlib import Path
+        out = str(kwargs.get("out") or "").strip()
+        if out:
+            out_path = resolve_data_path(self._data_dir, out)
+            if out_path is None:
+                return tool_result(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "out 路径不合法",
+                            "hint": f"out 必须位于插件数据目录内：{self._data_dir}",
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+        else:
+            import time
 
-        out_path = kwargs.get("out") or str(
-            Path(self._data_dir) / f"mmx_video_{int(time.time() * 1000)}.mp4"
-        )
+            out_path = (
+                Path(self._data_dir) / f"mmx_video_{int(time.time() * 1000)}.mp4"
+            ).resolve()
+        if out_path == Path(self._data_dir).resolve():
+            return tool_result(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error": "out 必须是文件路径",
+                        "hint": "请提供插件数据目录内的文件路径，例如 videos/output.mp4",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        out_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            saved = await self._api.download(file_id, out_path)
+            saved = await self._api.download(file_id, str(out_path))
         except Exception as e:
             logger.error(f"[mmx] 视频下载失败: {e}")
             return tool_result(

@@ -12,15 +12,34 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.files import FileAPI
-from ..mmx.utils import is_safe_data_path
+from ..mmx.utils import resolve_data_path
 from .result import tool_result
 from .schema import object_parameters, string_param
 
 
 def _safe_data_file(data_dir: str, file_path: str) -> Path | None:
-    if not file_path or not is_safe_data_path(data_dir, file_path):
+    if not file_path:
         return None
-    return (Path(data_dir) / file_path).resolve()
+    return resolve_data_path(data_dir, file_path)
+
+
+def _admin_only_error(context: ContextWrapper[AstrAgentContext]) -> str | None:
+    event = getattr(context.context, "event", None)
+    if event is not None and event.is_admin():
+        return None
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "权限不足",
+            "hint": "MiniMax 文件管理工具仅管理员可用。",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _admin_only_result(context: ContextWrapper[AstrAgentContext]) -> ToolExecResult | None:
+    error = _admin_only_error(context)
+    return tool_result(error) if error else None
 
 
 @dataclass
@@ -52,6 +71,9 @@ class UploadFileTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
+        if permission_error := _admin_only_result(context):
+            return permission_error
+
         file_path = str(kwargs.get("file") or "").strip()
         safe_path = _safe_data_file(self._data_dir, file_path)
         if safe_path is None:
@@ -98,6 +120,9 @@ class ListFilesTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
+        if permission_error := _admin_only_result(context):
+            return permission_error
+
         try:
             result = await self._api.list()
         except Exception as e:
@@ -131,6 +156,9 @@ class DeleteFileTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
+        if permission_error := _admin_only_result(context):
+            return permission_error
+
         file_id = str(kwargs.get("fileId") or "").strip()
         if not file_id:
             return tool_result(
@@ -155,4 +183,3 @@ class DeleteFileTool(FunctionTool):
                 )
             )
         return tool_result(json.dumps({"ok": True, "data": result}, ensure_ascii=False))
-

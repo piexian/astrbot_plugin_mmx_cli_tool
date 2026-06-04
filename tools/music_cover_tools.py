@@ -14,7 +14,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.music import MusicAPI
 from ..mmx.model_options import MUSIC_COVER_MODELS, model_options_text
-from ..mmx.utils import is_safe_data_path
+from ..mmx.utils import resolve_data_path
 from .audio_result import saved_audio_result, schedule_audio_result_to_agent
 from .result import tool_result
 from .schema import integer_param, object_parameters, string_param
@@ -29,7 +29,7 @@ class MusicCoverTool(FunctionTool):
             name="mmx_music_cover",
             description=(
                 "Start a MiniMax cover generation in the background. "
-                "Provide a target style prompt and a reference audio URL or local file. "
+                "Provide a target style prompt and a reference audio URL or plugin-data file. "
                 "Returns task_id, query_tool, max_wait_seconds, and poll_after_seconds when accepted."
             ),
             parameters=object_parameters(
@@ -41,13 +41,13 @@ class MusicCoverTool(FunctionTool):
                         "URL of the reference audio (mp3, wav, flac, etc. - 6s to 6min, max 50MB)"
                     ),
                     "audioFile": string_param(
-                        "Local reference audio file path (auto base64-encoded)"
+                        "Plugin data directory reference audio file path (auto base64-encoded)"
                     ),
                     "lyrics": string_param(
                         "Cover lyrics. If omitted, extracted from reference audio via ASR."
                     ),
                     "lyricsFile": string_param(
-                        "Local lyrics file path. Use only for trusted server-side files."
+                        "Plugin data directory lyrics file path."
                     ),
                     "seed": integer_param(
                         "Random seed 0-1000000 for reproducible results"
@@ -104,7 +104,7 @@ class MusicCoverTool(FunctionTool):
                     {
                         "ok": False,
                         "error": "audio 和 audioFile 不能同时使用",
-                        "hint": "请选择其一：audio 提供参考音频 URL，或 audioFile 提供本地文件路径",
+                        "hint": "请选择其一：audio 提供参考音频 URL，或 audioFile 提供插件数据目录内文件路径",
                         "example": {
                             "prompt": "Jazz piano cover",
                             "audio": "https://example.com/song.mp3",
@@ -135,7 +135,8 @@ class MusicCoverTool(FunctionTool):
         # lyricsFile 路径必须位于受信任的数据目录内（防止 LLM 注入诱导任意文件读取）
         safe_lyrics_file: Path | None = None
         if lyrics_file:
-            if not is_safe_data_path(self._data_dir, str(lyrics_file)):
+            safe_lyrics_file = resolve_data_path(self._data_dir, str(lyrics_file))
+            if safe_lyrics_file is None:
                 return tool_result(
                     json.dumps(
                         {
@@ -146,7 +147,6 @@ class MusicCoverTool(FunctionTool):
                         ensure_ascii=False,
                     )
                 )
-            safe_lyrics_file = (Path(self._data_dir) / str(lyrics_file)).resolve()
 
         # 至少需要一个音频来源
         if not audio and not audio_file:
@@ -155,7 +155,7 @@ class MusicCoverTool(FunctionTool):
                     {
                         "ok": False,
                         "error": "缺少参考音频",
-                        "hint": "请提供 audio（参考音频 URL）或 audioFile（本地文件路径）",
+                        "hint": "请提供 audio（参考音频 URL）或 audioFile（插件数据目录内文件路径）",
                         "example": {
                             "prompt": "Indie folk, acoustic guitar, warm male vocal",
                             "audio": "https://example.com/song.mp3",
@@ -198,6 +198,7 @@ class MusicCoverTool(FunctionTool):
                 audio_file=audio_file,
                 lyrics=resolved_lyrics,
                 seed=kwargs.get("seed"),
+                data_dir=self._data_dir,
                 audio_format=kwargs.get("format", "mp3"),
                 sample_rate=kwargs.get("sampleRate", 44100),
                 bitrate=kwargs.get("bitrate", 256000),

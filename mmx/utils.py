@@ -7,6 +7,7 @@ import base64
 import mimetypes
 import shlex
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 
 def split_command_tokens(text: str) -> list[str]:
@@ -30,9 +31,49 @@ def is_safe_data_path(base_dir: str, path: str) -> bool:
     用于约束由 LLM 工具参数或外部输入提供的本地文件路径，拒绝绝对路径
     逃逸与 ``..`` 段穿越，避免读取受信任数据目录之外的任意宿主文件。
     """
+    return resolve_data_path(base_dir, path) is not None
+
+
+def resolve_data_path(base_dir: str, path: str) -> Path | None:
+    """Resolve ``path`` only when it stays inside ``base_dir``."""
     base = Path(base_dir).resolve()
-    target = (base / path).resolve()
-    return target == base or base in target.parents
+    target = (base / _strip_file_scheme(path)).resolve()
+    if target == base or base in target.parents:
+        return target
+    return None
+
+
+def resolve_local_input_path(
+    path: str,
+    *,
+    data_dir: str | None = None,
+    allow_trusted_local_path: bool = False,
+    label: str = "文件",
+) -> Path:
+    """Resolve a local input file without allowing untrusted host file reads."""
+    if data_dir is not None:
+        target = resolve_data_path(data_dir, path)
+        if target is None:
+            raise ValueError(f"{label} 必须位于插件数据目录内，不允许绝对路径或 .. 穿越")
+    elif allow_trusted_local_path:
+        target = Path(_strip_file_scheme(path)).resolve()
+    else:
+        raise ValueError(f"{label} 不允许读取插件数据目录之外的本地路径")
+
+    if not target.is_file():
+        raise FileNotFoundError(f"{label}不存在: {path}")
+    return target
+
+
+def _strip_file_scheme(path: str) -> str:
+    value = str(path).strip()
+    if value.startswith("file://"):
+        parsed = urlparse(value)
+        local_path = unquote(parsed.path)
+        if parsed.netloc and parsed.netloc != "localhost":
+            return f"//{parsed.netloc}{local_path}"
+        return local_path
+    return value
 
 
 def is_url(s: str) -> bool:
@@ -40,7 +81,12 @@ def is_url(s: str) -> bool:
     return s.startswith("http://") or s.startswith("https://")
 
 
-async def resolve_image(image: str) -> str:
+async def resolve_image(
+    image: str,
+    *,
+    data_dir: str | None = None,
+    allow_trusted_local_path: bool = False,
+) -> str:
     """将图片路径或 URL 统一处理（对齐 mmx-cli Rn 函数）。
 
     - URL → 原样返回
@@ -53,20 +99,17 @@ async def resolve_image(image: str) -> str:
     if image.startswith("base64://"):
         return f"data:image/jpeg;base64,{image.removeprefix('base64://')}"
 
-    # 去除 file:// 前缀
-    if image.startswith("file:///"):
-        image = image[8:]
-    elif image.startswith("file://"):
-        image = image[7:]
-
     # URL 原样返回
     if is_url(image):
         return image
 
     # 本地文件 → Data URI
-    p = Path(image)
-    if not p.is_file():
-        raise FileNotFoundError(f"图片文件不存在: {image}")
+    p = resolve_local_input_path(
+        image,
+        data_dir=data_dir,
+        allow_trusted_local_path=allow_trusted_local_path,
+        label="图片文件",
+    )
 
     mime, _ = mimetypes.guess_type(p.name)
     if not mime:
@@ -76,7 +119,12 @@ async def resolve_image(image: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
-async def resolve_subject_reference(subject_ref: str) -> list[dict[str, str]]:
+async def resolve_subject_reference(
+    subject_ref: str,
+    *,
+    data_dir: str | None = None,
+    allow_trusted_local_path: bool = False,
+) -> list[dict[str, str]]:
     """Build MiniMax subject_reference from mmx-cli-style subject-ref input."""
     params = _parse_subject_ref_params(subject_ref)
     ref_type = params.get("type") or "character"
@@ -85,7 +133,11 @@ async def resolve_subject_reference(subject_ref: str) -> list[dict[str, str]]:
     if is_url(image):
         item["image_url"] = image
     else:
-        item["image_file"] = await resolve_image(image)
+        item["image_file"] = await resolve_image(
+            image,
+            data_dir=data_dir,
+            allow_trusted_local_path=allow_trusted_local_path,
+        )
     return [item]
 
 
