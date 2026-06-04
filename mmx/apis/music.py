@@ -7,6 +7,7 @@ from typing import Any
 
 from ..client import MiniMaxClient
 from ..endpoints import music_endpoint
+from ..utils import resolve_local_input_path
 
 
 class MusicAPI:
@@ -142,6 +143,8 @@ class MusicAPI:
         sample_rate: int = 44100,
         bitrate: int = 256000,
         channel: int = 2,
+        data_dir: str | None = None,
+        allow_trusted_local_path: bool = False,
     ) -> dict[str, Any]:
         """生成翻唱版本。基于参考音频和风格提示词生成 Cover。"""
         body: dict[str, Any] = {
@@ -162,7 +165,13 @@ class MusicAPI:
             import asyncio
             import base64
 
-            raw = await asyncio.to_thread(Path(audio_file).read_bytes)
+            path = resolve_local_input_path(
+                audio_file,
+                data_dir=data_dir,
+                allow_trusted_local_path=allow_trusted_local_path,
+                label="audioFile",
+            )
+            raw = await asyncio.to_thread(path.read_bytes)
             body["audio_base64"] = base64.b64encode(raw).decode("ascii")
         if lyrics:
             body["lyrics"] = lyrics

@@ -44,7 +44,12 @@ from .mmx.quota_usage import (
     normalize_quota_models,
     resolve_used_percent,
 )
-from .mmx.utils import is_url, resolve_image, resolve_subject_reference
+from .mmx.utils import (
+    is_url,
+    resolve_data_path,
+    resolve_image,
+    resolve_subject_reference,
+)
 from .tools import (
     GenerateImageTool,
     GenerateVideoTool,
@@ -310,7 +315,7 @@ class Main(star.Star):
 
         # 注册 LLM 工具
         context.add_llm_tools(
-            GenerateImageTool(self._image, self._default_image_model),
+            GenerateImageTool(self._image, self._default_image_model, _data_dir),
             GenerateVideoTool(
                 self._video,
                 self._video_poll_interval,
@@ -318,6 +323,7 @@ class Main(star.Star):
                 self._default_video_model,
                 self._default_video_sef_model,
                 self._default_video_subject_model,
+                _data_dir,
             ),
             QueryVideoTaskTool(self._video),
             DownloadVideoTool(self._video, _data_dir),
@@ -325,7 +331,7 @@ class Main(star.Star):
             MusicCoverTool(self._music, _data_dir, self._default_music_cover_model),
             QueryBackgroundTaskTool(),
             WebSearchTool(self._search),
-            DescribeImageTool(self._vision),
+            DescribeImageTool(self._vision, _data_dir),
             CheckQuotaTool(self._quota, keys),
             SpeechSynthesizeTool(self._speech, _data_dir, self._default_speech_model),
             ListVoicesTool(self._speech),
@@ -406,8 +412,20 @@ class Main(star.Star):
 
         try:
             if parsed.action == "upload":
-                result = await self._files.upload(
+                safe_file = resolve_data_path(
+                    str(self._plugin_data_dir),
                     parsed.file or "",
+                )
+                if safe_file is None:
+                    yield event.plain_result(
+                        f"file 必须位于插件数据目录内：{self._plugin_data_dir}"
+                    )
+                    return
+                if not safe_file.is_file():
+                    yield event.plain_result(f"文件不存在: {parsed.file}")
+                    return
+                result = await self._files.upload(
+                    str(safe_file),
                     purpose=parsed.purpose,
                 )
                 item = _file_payload(result)
@@ -471,6 +489,7 @@ class Main(star.Star):
         try:
             messages = event.get_messages()
             subject_ref_value = args.subject_ref
+            subject_ref_trusted = False
             if subject_ref_value == "":
                 subject_refs, _ = await extract_image_inputs(
                     messages,
@@ -480,13 +499,20 @@ class Main(star.Star):
                     limit=1,
                 )
                 subject_ref_value = subject_refs[0] if subject_refs else None
+                subject_ref_trusted = bool(subject_ref_value)
                 if not subject_ref_value:
                     yield event.plain_result(
-                        "请为 --subject-ref 提供图片路径/URL，或附带/引用一张图片后重试。"
+                        "请为 --subject-ref 提供图片 URL 或插件数据目录内路径，或附带/引用一张图片后重试。"
                     )
                     return
             subject_reference = (
-                await resolve_subject_reference(subject_ref_value)
+                await resolve_subject_reference(
+                    subject_ref_value,
+                    data_dir=None
+                    if subject_ref_trusted
+                    else str(self._plugin_data_dir),
+                    allow_trusted_local_path=subject_ref_trusted,
+                )
                 if subject_ref_value
                 else None
             )
@@ -551,6 +577,9 @@ class Main(star.Star):
             first_frame_ref = args.first_frame
             last_frame_ref = args.last_frame
             subject_image_ref = args.subject_image
+            first_frame_trusted = False
+            last_frame_trusted = False
+            subject_image_trusted = False
             frame_flags_present = (
                 args.first_frame is not None or args.last_frame is not None
             )
@@ -574,25 +603,28 @@ class Main(star.Star):
                     return
                 if image_refs:
                     subject_image_ref = image_refs.pop(0)
+                    subject_image_trusted = True
                 else:
                     yield event.plain_result(
-                        "请为 --subject-image 提供图片路径/URL，或附带/引用图片后重试。"
+                        "请为 --subject-image 提供图片 URL 或插件数据目录内路径，或附带/引用图片后重试。"
                     )
                     return
             if args.first_frame == "":
                 if image_refs:
                     first_frame_ref = image_refs.pop(0)
+                    first_frame_trusted = True
                 if not first_frame_ref:
                     yield event.plain_result(
-                        "请为 --first-frame 提供图片路径/URL，或附带/引用图片后重试。"
+                        "请为 --first-frame 提供图片 URL 或插件数据目录内路径，或附带/引用图片后重试。"
                     )
                     return
             if args.last_frame == "":
                 if image_refs:
                     last_frame_ref = image_refs.pop(0)
+                    last_frame_trusted = True
                 if not last_frame_ref:
                     yield event.plain_result(
-                        "请为 --last-frame 提供图片路径/URL，或附带/引用图片后重试。"
+                        "请为 --last-frame 提供图片 URL 或插件数据目录内路径，或附带/引用图片后重试。"
                     )
                     return
             if args.subject_image is not None and frame_flags_present:
@@ -604,14 +636,40 @@ class Main(star.Star):
                 yield event.plain_result("--last-frame 需要同时提供 --first-frame")
                 return
             first_frame = (
-                await resolve_image(first_frame_ref) if first_frame_ref else None
+                await resolve_image(
+                    first_frame_ref,
+                    data_dir=None
+                    if first_frame_trusted
+                    else str(self._plugin_data_dir),
+                    allow_trusted_local_path=first_frame_trusted,
+                )
+                if first_frame_ref
+                else None
             )
-            last_frame = await resolve_image(last_frame_ref) if last_frame_ref else None
+            last_frame = (
+                await resolve_image(
+                    last_frame_ref,
+                    data_dir=None
+                    if last_frame_trusted
+                    else str(self._plugin_data_dir),
+                    allow_trusted_local_path=last_frame_trusted,
+                )
+                if last_frame_ref
+                else None
+            )
             subject_reference = (
                 [
                     {
                         "type": "character",
-                        "image": [await resolve_image(subject_image_ref)],
+                        "image": [
+                            await resolve_image(
+                                subject_image_ref,
+                                data_dir=None
+                                if subject_image_trusted
+                                else str(self._plugin_data_dir),
+                                allow_trusted_local_path=subject_image_trusted,
+                            )
+                        ],
                     }
                 ]
                 if subject_image_ref
@@ -766,6 +824,7 @@ class Main(star.Star):
         try:
             audio_ref = args.audio
             audio_file_ref = args.audio_file
+            audio_file_trusted = False
             if not audio_ref and not audio_file_ref:
                 attachment_ref, _ = await extract_first_audio_input(
                     event.get_messages(),
@@ -779,6 +838,7 @@ class Main(star.Star):
                         audio_ref = attachment_ref
                     else:
                         audio_file_ref = attachment_ref
+                        audio_file_trusted = True
             if not audio_ref and not audio_file_ref:
                 yield event.plain_result(
                     "请提供 --audio <URL>，或附带/引用一个音频文件后使用 /mmx music cover。"
@@ -789,6 +849,10 @@ class Main(star.Star):
                 prompt=args.prompt,
                 audio=audio_ref,
                 audio_file=audio_file_ref,
+                data_dir=None
+                if audio_file_trusted
+                else str(self._plugin_data_dir),
+                allow_trusted_local_path=audio_file_trusted,
                 lyrics=args.lyrics,
                 seed=args.seed,
                 audio_format=args.audio_format,
@@ -893,7 +957,11 @@ class Main(star.Star):
             return
 
         try:
-            result = await self._vision.describe(image=image_input, prompt=prompt)
+            result = await self._vision.describe(
+                image=image_input,
+                prompt=prompt,
+                allow_trusted_local_path=True,
+            )
         except MiniMaxError as e:
             yield event.plain_result(friendly_message(e))
             return

@@ -103,7 +103,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | 参数 | 说明 |
 |------|------|
 | `--model <模型>` | 指定视频模型；通常可省略并由插件自动选择 |
-| `--first-frame <图片>` | 起始帧图片，支持 URL、本地路径、当前消息图片或引用图片 |
+| `--first-frame <图片>` | 起始帧图片，支持 URL、插件数据目录内路径、当前消息图片或引用图片 |
 | `--last-frame <图片>` | 结束帧图片，需同时提供 `--first-frame`；省略值时可取第二张附件图 |
 | `--subject-image <图片>` | 角色一致性参考图；省略值时使用当前消息或引用消息中的图片 |
 | `--callback-url <URL>` | 完成回调地址 |
@@ -132,7 +132,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | 参数 | 说明 |
 |------|------|
 | `--audio <URL>` | 参考音频 URL；省略时可从引用消息中的音频附件解析 |
-| `--audio-file <路径>` | 本地参考音频路径；省略值时可从引用消息中的音频/文件附件解析 |
+| `--audio-file <路径>` | 插件数据目录内参考音频路径；省略值时可从引用消息中的音频/文件附件解析 |
 | `--lyrics <歌词>` | 翻唱歌词，留空则由接口从参考音频提取 |
 | `--model <模型>` | `music-cover` |
 | `--format <mp3\|wav\|pcm>` | 音频格式，默认 `mp3` |
@@ -183,13 +183,13 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `promptOptimizer` (boolean): 是否自动优化提示词（默认 `true`）。
 - `aigcWatermark` (boolean): 是否添加 AI 生成内容水印。
 - `responseFormat` (string): 返回格式，`url` 或 `base64`。
-- `subjectRef` (string): 角色一致性参考图，支持 URL、本地路径或 `type=character,image=path-or-url`。
+- `subjectRef` (string): 角色一致性参考图，支持 URL、插件数据目录内路径或 `type=character,image=path-or-url`。
 
 #### 2. `mmx_generate_video` (视频生成)
 - `prompt` (string, 必填): 视频画面描述。
-- `firstFrame` (string): 起始帧图片（URL 或本地路径）。
-- `lastFrame` (string): 结束帧图片（需同时提供 `firstFrame`，常用于首尾帧模式）。
-- `subjectImage` (string): 角色一致性参考图（自动激活角色保持模式）。
+- `firstFrame` (string): 起始帧图片（URL 或插件数据目录内路径）。
+- `lastFrame` (string): 结束帧图片（URL 或插件数据目录内路径，需同时提供 `firstFrame`，常用于首尾帧模式）。
+- `subjectImage` (string): 角色一致性参考图（URL 或插件数据目录内路径，自动激活角色保持模式）。
 - `noWait` (boolean): `true` 时立即返回 `taskId`，不等待生成完成。
 - `callbackUrl` (string): 异步生成的回调地址。
 - *注：插件会根据传入参数自动切换模型（如 `Hailuo-02` 适用于首尾帧，`S2V-01` 适用于角色保持）。*
@@ -199,7 +199,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 #### 4. `mmx_video_download` (下载视频到本地)
 - `fileId` (string, 必填): 视频生成完成后任务返回的文件 ID。
-- `out` (string): 自定义保存路径（选填）。
+- `out` (string): 插件数据目录内的自定义保存路径（选填）。拒绝绝对路径和 `..` 穿越。
 
 #### 5. `mmx_generate_music` (音乐生成)
 - `prompt` (string): 音乐风格描述。
@@ -214,11 +214,11 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 #### 6. `mmx_music_cover` (音乐翻唱)
 - `prompt` (string): 翻唱的目标音乐风格或歌声特征描述。
 - `audio` (string): 参考音频的 URL 链接（支持 6秒~6分钟，最大 50MB）。与 `audioFile` 选填其一。
-- `audioFile` (string): 本地参考音频文件路径。与 `audio` 选填其一。
+- `audioFile` (string): 插件数据目录内的参考音频文件路径。与 `audio` 选填其一。
 - `lyrics` (string): 歌词（如留空则通过 ASR 自动从参考音频提取）。
 - `seed` (integer): 随机种子。
 - `model` (string): 模型名，`music-cover`。
-- `lyricsFile` (string): 本地歌词文件路径。与 `lyrics` 互斥。
+- `lyricsFile` (string): 插件数据目录内的歌词文件路径。与 `lyrics` 互斥。
 - `format` / `sampleRate` / `bitrate` / `channel`: 音频格式、采样率、码率、声道数。
 
 #### 7. `mmx_background_task_get` (查询音乐后台任务)
@@ -242,7 +242,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `q` (string, 必填): 搜索查询关键字。
 
 #### 11. `mmx_describe_image` (视觉理解)
-- `image` (string, 必填): 图片 URL 或本地绝对路径。
+- `image` (string, 必填): 图片 URL 或插件数据目录内路径。
 - `prompt` (string): 分析要求描述。
 - `fileId` (string): 预先上传的文件 ID。
 
@@ -269,6 +269,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - **输出目录限制**：媒体文件仅保存到 AstrBot 插件数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）
 - **文件管理权限**：`/mmx file upload|list|delete` 与 `mmx_file_upload/list/delete` 仅管理员可用
 - **LLM 文件上传限制**：`mmx_file_upload` 仅允许上传插件数据目录内的文件，避免模型诱导读取任意宿主文件
+- **本地媒体输入限制**：LLM 工具和直接指令中手写的图片/音频路径仅允许指向插件数据目录；当前消息和引用消息中的附件仍由 AstrBot 解析后提交
+- **视频下载路径限制**：`mmx_video_download` 的 `out` 仅允许写入插件数据目录内，拒绝绝对路径和 `..` 穿越
 - **参数验证**：工具入口处校验关键参数
 
 ## 配置

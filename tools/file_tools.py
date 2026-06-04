@@ -12,15 +12,15 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.files import FileAPI
-from ..mmx.utils import is_safe_data_path
+from ..mmx.utils import resolve_data_path
 from .result import tool_result
 from .schema import object_parameters, string_param
 
 
 def _safe_data_file(data_dir: str, file_path: str) -> Path | None:
-    if not file_path or not is_safe_data_path(data_dir, file_path):
+    if not file_path:
         return None
-    return (Path(data_dir) / file_path).resolve()
+    return resolve_data_path(data_dir, file_path)
 
 
 def _admin_only_error(context: ContextWrapper[AstrAgentContext]) -> str | None:

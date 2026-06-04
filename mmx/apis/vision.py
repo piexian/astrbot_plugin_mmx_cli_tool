@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import mimetypes
 from typing import Any
 
 import httpx
 
 from ..client import MiniMaxClient
 from ..endpoints import vision_endpoint
+from ..utils import is_url, resolve_local_input_path
 
 MAX_IMAGE_SIZE = 50 * 1024 * 1024  # 50 MB
 
 
-async def _to_data_uri(image: str) -> str:
+async def _to_data_uri(
+    image: str,
+    *,
+    data_dir: str | None = None,
+    allow_trusted_local_path: bool = False,
+) -> str:
     """将 URL 或本地文件路径转为 base64 数据 URI（对齐 mmx-cli TS SDK）。"""
     if image.startswith("data:"):
         return image
@@ -20,12 +29,7 @@ async def _to_data_uri(image: str) -> str:
     if image.startswith("base64://"):
         return f"data:image/jpeg;base64,{image.removeprefix('base64://')}"
 
-    if image.startswith("file:///"):
-        image = image[8:]
-    elif image.startswith("file://"):
-        image = image[7:]
-
-    if image.startswith("http://") or image.startswith("https://"):
+    if is_url(image):
         async with httpx.AsyncClient() as cl:
             r = await cl.get(image)
             r.raise_for_status()
@@ -36,22 +40,18 @@ async def _to_data_uri(image: str) -> str:
                 raise ValueError(
                     f"图片过大 ({len(data) / 1024 / 1024:.1f} MB)，最大 50 MB"
                 )
-            import base64
 
             return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
-    # 本地文件路径
-    import base64
-    import mimetypes
-    from pathlib import Path
-
-    p = Path(image)
-    if not p.is_file():
-        raise FileNotFoundError(f"图片文件不存在: {image}")
+    p = resolve_local_input_path(
+        image,
+        data_dir=data_dir,
+        allow_trusted_local_path=allow_trusted_local_path,
+        label="图片文件",
+    )
     mime, _ = mimetypes.guess_type(p.name)
     if not mime:
         mime = "image/jpeg"
-    import asyncio
 
     b64 = base64.b64encode(await asyncio.to_thread(p.read_bytes)).decode("ascii")
     return f"data:{mime};base64,{b64}"
@@ -69,12 +69,18 @@ class VisionAPI:
         prompt: str = "Describe the image.",
         *,
         file_id: str | None = None,
+        data_dir: str | None = None,
+        allow_trusted_local_path: bool = False,
     ) -> dict[str, Any]:
         """对图片进行理解和描述。"""
         if image:
             body: dict[str, Any] = {
                 "prompt": prompt,
-                "image_url": await _to_data_uri(image),
+                "image_url": await _to_data_uri(
+                    image,
+                    data_dir=data_dir,
+                    allow_trusted_local_path=allow_trusted_local_path,
+                ),
             }
         elif file_id:
             body = {
