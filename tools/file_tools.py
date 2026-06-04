@@ -25,7 +25,7 @@ def _safe_data_file(data_dir: str, file_path: str) -> Path | None:
 
 def _admin_only_error(context: ContextWrapper[AstrAgentContext]) -> str | None:
     event = getattr(context.context, "event", None)
-    if getattr(event, "role", None) == "admin":
+    if event is not None and event.is_admin():
         return None
     return json.dumps(
         {
@@ -35,6 +35,11 @@ def _admin_only_error(context: ContextWrapper[AstrAgentContext]) -> str | None:
         },
         ensure_ascii=False,
     )
+
+
+def _admin_only_result(context: ContextWrapper[AstrAgentContext]) -> ToolExecResult | None:
+    error = _admin_only_error(context)
+    return tool_result(error) if error else None
 
 
 @dataclass
@@ -66,9 +71,8 @@ class UploadFileTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        permission_error = _admin_only_error(context)
-        if permission_error:
-            return tool_result(permission_error)
+        if permission_error := _admin_only_result(context):
+            return permission_error
 
         file_path = str(kwargs.get("file") or "").strip()
         safe_path = _safe_data_file(self._data_dir, file_path)
@@ -116,9 +120,8 @@ class ListFilesTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        permission_error = _admin_only_error(context)
-        if permission_error:
-            return tool_result(permission_error)
+        if permission_error := _admin_only_result(context):
+            return permission_error
 
         try:
             result = await self._api.list()
@@ -153,9 +156,8 @@ class DeleteFileTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        permission_error = _admin_only_error(context)
-        if permission_error:
-            return tool_result(permission_error)
+        if permission_error := _admin_only_result(context):
+            return permission_error
 
         file_id = str(kwargs.get("fileId") or "").strip()
         if not file_id:
