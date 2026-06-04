@@ -34,9 +34,9 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_generate_video` | 根据文字描述及首尾帧等生成视频 | 无 |
 | `mmx_video_task_get` | 查询视频生成任务的最新状态和进度 | 无 |
 | `mmx_video_download` | 通过文件 ID 下载完成的视频到本地 | 无 |
-| `mmx_file_upload` | 上传插件数据目录内的文件到 MiniMax 存储 | 无 |
-| `mmx_file_list` | 列出已上传到 MiniMax 存储的文件 | 无 |
-| `mmx_file_delete` | 删除已上传的 MiniMax 文件 | 无 |
+| `mmx_file_upload` | 上传插件数据目录内的文件到 MiniMax 存储 | 管理员 |
+| `mmx_file_list` | 列出已上传到 MiniMax 存储的文件 | 管理员 |
+| `mmx_file_delete` | 删除已上传的 MiniMax 文件 | 管理员 |
 | `mmx_generate_music` | 生成音乐（支持纯器乐、带歌词，及所有精细控制参数） | 无 |
 | `mmx_music_cover` | 基于参考音频及描述进行翻唱（支持 URL 和本地音频输入） | 无 |
 | `mmx_background_task_get` | 查询音乐生成和翻唱的后台任务状态与结果 | 无 |
@@ -56,9 +56,9 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)  # 生成音乐
 /mmx music cover <风格描述> --audio <URL>  # 生成翻唱，可附带或引用音频
 /mmx speech <文本> [--voice <音色>] [--format mp3]  # 语音合成
-/mmx file upload --file <路径> [--purpose retrieval]  # 上传文件
-/mmx file list                 # 列出文件
-/mmx file delete --file-id <id> # 删除文件
+/mmx file upload --file <路径> [--purpose retrieval]  # 上传文件（管理员）
+/mmx file list                 # 列出文件（管理员）
+/mmx file delete --file-id <id> # 删除文件（管理员）
 /mmx search <查询>             # 联网搜索
 /mmx vision <描述要求>         # 图片理解（支持当前消息带图或引用图片）
 /mmx quota                    # 查询额度（多 Key 默认每页显示 3 个）
@@ -247,13 +247,16 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `fileId` (string): 预先上传的文件 ID。
 
 #### 12. `mmx_file_upload` (文件上传)
+- 仅管理员可用。
 - `file` (string, 必填): 插件数据目录内的本地文件路径。LLM 工具会拒绝绝对路径和 `..` 穿越。
 - `purpose` (string): 文件用途，默认 `retrieval`。
 
 #### 13. `mmx_file_list` (文件列表)
+- 仅管理员可用。
 - 无参数。列出当前 Key 已上传的文件。
 
 #### 14. `mmx_file_delete` (文件删除)
+- 仅管理员可用。
 - `fileId` (string, 必填): 要删除的文件 ID。
 
 #### 15. `mmx_check_quota` (额度查询)
@@ -264,6 +267,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - **API Key 脱敏**：错误日志中自动隐藏 API Key（仅显示前 4 后 4 字符）
 - **文件名安全**：保存文件使用时间戳命名，避免路径注入
 - **输出目录限制**：媒体文件仅保存到 AstrBot 插件数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）
+- **文件管理权限**：`/mmx file upload|list|delete` 与 `mmx_file_upload/list/delete` 仅管理员可用
 - **LLM 文件上传限制**：`mmx_file_upload` 仅允许上传插件数据目录内的文件，避免模型诱导读取任意宿主文件
 - **参数验证**：工具入口处校验关键参数
 

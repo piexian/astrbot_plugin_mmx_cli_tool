@@ -393,6 +393,7 @@ class Main(star.Star):
         if saved_path:
             yield event.chain_result([Record(file=saved_path)])
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @mmx_group.command("file")
     async def mmx_file(self, event: AstrMessageEvent, *, args: str = ""):
         """文件管理。用法: /mmx file upload|list|delete"""

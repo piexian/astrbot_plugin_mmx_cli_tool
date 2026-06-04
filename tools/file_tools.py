@@ -23,6 +23,20 @@ def _safe_data_file(data_dir: str, file_path: str) -> Path | None:
     return (Path(data_dir) / file_path).resolve()
 
 
+def _admin_only_error(context: ContextWrapper[AstrAgentContext]) -> str | None:
+    event = getattr(context.context, "event", None)
+    if getattr(event, "role", None) == "admin":
+        return None
+    return json.dumps(
+        {
+            "ok": False,
+            "error": "权限不足",
+            "hint": "MiniMax 文件管理工具仅管理员可用。",
+        },
+        ensure_ascii=False,
+    )
+
+
 @dataclass
 class UploadFileTool(FunctionTool):
     """LLM tool: upload a trusted local data-dir file to MiniMax storage."""
@@ -52,6 +66,10 @@ class UploadFileTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
+        permission_error = _admin_only_error(context)
+        if permission_error:
+            return tool_result(permission_error)
+
         file_path = str(kwargs.get("file") or "").strip()
         safe_path = _safe_data_file(self._data_dir, file_path)
         if safe_path is None:
@@ -98,6 +116,10 @@ class ListFilesTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
+        permission_error = _admin_only_error(context)
+        if permission_error:
+            return tool_result(permission_error)
+
         try:
             result = await self._api.list()
         except Exception as e:
@@ -131,6 +153,10 @@ class DeleteFileTool(FunctionTool):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
+        permission_error = _admin_only_error(context)
+        if permission_error:
+            return tool_result(permission_error)
+
         file_id = str(kwargs.get("fileId") or "").strip()
         if not file_id:
             return tool_result(
@@ -155,4 +181,3 @@ class DeleteFileTool(FunctionTool):
                 )
             )
         return tool_result(json.dumps({"ok": True, "data": result}, ensure_ascii=False))
-

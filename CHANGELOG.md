@@ -1,5 +1,9 @@
 # 更新日志
 
+## 0.2.6 - 2026-06-04
+
+- 文件管理入口收紧为管理员可用：`/mmx file upload|list|delete` 与 `mmx_file_upload/list/delete` 均会拒绝非管理员调用。
+
 ## 0.2.5 - 2026-06-03
 
 - 同步本地 `mmx-cli@1.0.16` 的 Token Plan 额度查询逻辑，优先使用 `/v1/api/openplatform/coding_plan/remains`，并保留旧端点回退。
