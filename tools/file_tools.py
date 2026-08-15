@@ -12,7 +12,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.files import FileAPI
-from ..mmx.utils import resolve_data_path
+from ..mmx.utils import resolve_existing_data_path
 from .result import tool_result
 from .schema import object_parameters, string_param
 
@@ -24,14 +24,7 @@ def _safe_data_file(
 ) -> Path | None:
     if not file_path:
         return None
-    target = resolve_data_path(data_dir, file_path)
-    if target is not None:
-        return target
-    for extra_dir in extra_allowed_dirs or ():
-        target = resolve_data_path(extra_dir, file_path)
-        if target is not None:
-            return target
-    return None
+    return resolve_existing_data_path(data_dir, file_path, extra_allowed_dirs)
 
 
 def _admin_only_error(context: ContextWrapper[AstrAgentContext]) -> str | None:

@@ -6,6 +6,9 @@
 - 生成的媒体文件（图片、视频、音乐、翻唱、语音）改为保存到 AstrBot 临时目录作为缓存，由 AstrBot 统一管理，无需自行清理；仅用户显式指定的持久化输出（`mmx_video_download` 的 `out`）仍写入插件数据目录。
 - `mmx_file_upload` 与 `/mmx file upload` 允许读取 AstrBot 临时目录内的文件，生成结果可直接再上传。
 - 修复 review 发现的回归：`mmx_music_cover` 的 `audioFile` 与 `/mmx music cover --audio-file` 可读取临时目录内已生成的音频；直接指令中手写的图片/音频路径（`--subject-ref`、视频首尾帧/角色图、`--audio-file`）同样放行 AstrBot 临时目录。
+- 新增 `allow_astrbot_temp_dir` 配置项（默认开启）：关闭后 LLM 工具与直接指令不再放行 AstrBot 临时目录读取，供需要收紧信任面的宿主使用。
+- 修复 `mmx_music_cover` 选择 wav/pcm 格式时保存文件扩展名仍为 `.mp3` 的问题。
+- 修复裸文件名（不含目录）只在插件数据目录查找、不回退到 AstrBot 临时目录的问题：路径解析现在在所有允许的根目录中优先选择真实存在的文件（`mmx/utils.py` 的 `resolve_existing_data_path`），`mmx_file_upload` 与 `/mmx file upload` 同步生效。
 
 ## 0.2.6 - 2026-06-04
 

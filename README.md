@@ -286,6 +286,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `timeout` | int | `300` | 请求超时（秒） |
 | `video_poll_interval` | int | `5` | 视频生成轮询间隔（秒） |
 | `video_timeout` | int | `600` | 视频生成超时（秒） |
+| `allow_astrbot_temp_dir` | bool | `true` | 允许读取 AstrBot 临时目录（聊天图片与生成缓存所在目录，全插件共享）；关闭可收紧信任面，但生成结果将无法再作为输入 |
 | `default_image_model` | string | `image-01` | 默认图片生成模型 |
 | `default_video_model` | string | `MiniMax-Hailuo-2.3` | 默认视频生成模型 |
 | `default_video_sef_model` | string | `MiniMax-Hailuo-02` | 默认首尾帧视频模型 |

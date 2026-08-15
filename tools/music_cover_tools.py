@@ -221,6 +221,7 @@ class MusicCoverTool(FunctionTool):
                 prefix="mmx_music_cover",
                 success_message="翻唱生成完成",
                 save_error_label="翻唱保存失败",
+                audio_format=kwargs.get("format", "mp3"),
             )
 
         task_id = schedule_audio_result_to_agent(

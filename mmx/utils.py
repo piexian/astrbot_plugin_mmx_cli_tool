@@ -62,6 +62,27 @@ def resolve_data_path(base_dir: str, path: str) -> Path | None:
     return None
 
 
+def resolve_existing_data_path(
+    base_dir: str,
+    path: str,
+    extra_allowed_dirs: Iterable[str] | None = None,
+) -> Path | None:
+    """Resolve ``path`` against each allowed root, preferring a target that exists.
+
+    ``resolve_data_path`` 只校验包含性，相对路径总是先命中 ``base_dir``
+    候选；这里依次尝试所有允许的根目录，优先返回真实存在的文件，
+    都不存在时回退到 ``base_dir`` 候选（用于报错信息）。
+    """
+    candidates = [resolve_data_path(base_dir, path)]
+    candidates.extend(
+        resolve_data_path(extra_dir, path) for extra_dir in extra_allowed_dirs or ()
+    )
+    valid = [candidate for candidate in candidates if candidate is not None]
+    if not valid:
+        return None
+    return next((candidate for candidate in valid if candidate.is_file()), valid[0])
+
+
 def resolve_local_input_path(
     path: str,
     *,
@@ -70,15 +91,15 @@ def resolve_local_input_path(
     extra_allowed_dirs: Iterable[str] | None = None,
     label: str = "文件",
 ) -> Path:
-    """Resolve a local input file without allowing untrusted host file reads."""
+    """Resolve a local input file without allowing untrusted host file reads.
+
+    ``extra_allowed_dirs`` 仅在提供 ``data_dir`` 时生效（作为数据目录之外
+    的额外允许根目录）；``data_dir=None`` 时本地路径只能由
+    ``allow_trusted_local_path=True`` 放行。
+    """
     target: Path | None = None
     if data_dir is not None:
-        target = resolve_data_path(data_dir, path)
-        if target is None:
-            for extra_dir in extra_allowed_dirs or ():
-                target = resolve_data_path(extra_dir, path)
-                if target is not None:
-                    break
+        target = resolve_existing_data_path(data_dir, path, extra_allowed_dirs)
         if target is None:
             raise ValueError(
                 f"{label} 必须位于插件数据目录或 AstrBot 临时目录内，"

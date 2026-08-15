@@ -47,7 +47,7 @@ from .mmx.quota_usage import (
 from .mmx.utils import (
     get_shared_temp_dir,
     is_url,
-    resolve_data_path,
+    resolve_existing_data_path,
     resolve_image,
     resolve_subject_reference,
 )
@@ -274,6 +274,9 @@ class Main(star.Star):
 
         # 缓存目录：生成的媒体文件只作中转，统一放 AstrBot 临时目录，无需自行清理
         self._cache_dir = Path(get_shared_temp_dir())
+        # 是否允许 LLM 工具/直接指令读取 AstrBot 临时目录（可在配置中收紧）
+        self._allow_temp_dir_reads = bool(config.get("allow_astrbot_temp_dir", True))
+        self._extra_dirs = [str(self._cache_dir)] if self._allow_temp_dir_reads else []
 
         # 创建客户端 — 支持单 Key 和多 Key 池两种模式
         if not keys:
@@ -318,7 +321,7 @@ class Main(star.Star):
         _data_dir = str(self._plugin_data_dir)
         _cache_dir = str(self._cache_dir)
         # AstrBot 临时目录：聊天图片下载后存放于此，允许 LLM 工具读取
-        _extra_dirs = [_cache_dir]
+        _extra_dirs = self._extra_dirs
 
         # 注册 LLM 工具
         context.add_llm_tools(
@@ -438,18 +441,16 @@ class Main(star.Star):
 
         try:
             if parsed.action == "upload":
-                safe_file = resolve_data_path(
+                safe_file = resolve_existing_data_path(
                     str(self._plugin_data_dir),
                     parsed.file or "",
-                ) or resolve_data_path(
-                    str(self._cache_dir),
-                    parsed.file or "",
+                    self._extra_dirs,
                 )
                 if safe_file is None:
+                    allowed = [f"- {self._plugin_data_dir}"]
+                    allowed.extend(f"- {d}" for d in self._extra_dirs)
                     yield event.plain_result(
-                        "file 必须位于插件数据目录或 AstrBot 临时目录内：\n"
-                        f"- {self._plugin_data_dir}\n"
-                        f"- {self._cache_dir}"
+                        "file 必须位于以下目录内：\n" + "\n".join(allowed)
                     )
                     return
                 if not safe_file.is_file():
@@ -543,7 +544,7 @@ class Main(star.Star):
                     if subject_ref_trusted
                     else str(self._plugin_data_dir),
                     allow_trusted_local_path=subject_ref_trusted,
-                    extra_allowed_dirs=[str(self._cache_dir)],
+                    extra_allowed_dirs=self._extra_dirs,
                 )
                 if subject_ref_value
                 else None
@@ -674,7 +675,7 @@ class Main(star.Star):
                     if first_frame_trusted
                     else str(self._plugin_data_dir),
                     allow_trusted_local_path=first_frame_trusted,
-                    extra_allowed_dirs=[str(self._cache_dir)],
+                    extra_allowed_dirs=self._extra_dirs,
                 )
                 if first_frame_ref
                 else None
@@ -686,7 +687,7 @@ class Main(star.Star):
                     if last_frame_trusted
                     else str(self._plugin_data_dir),
                     allow_trusted_local_path=last_frame_trusted,
-                    extra_allowed_dirs=[str(self._cache_dir)],
+                    extra_allowed_dirs=self._extra_dirs,
                 )
                 if last_frame_ref
                 else None
@@ -702,7 +703,7 @@ class Main(star.Star):
                                 if subject_image_trusted
                                 else str(self._plugin_data_dir),
                                 allow_trusted_local_path=subject_image_trusted,
-                                extra_allowed_dirs=[str(self._cache_dir)],
+                                extra_allowed_dirs=self._extra_dirs,
                             )
                         ],
                     }
@@ -888,7 +889,7 @@ class Main(star.Star):
                 if audio_file_trusted
                 else str(self._plugin_data_dir),
                 allow_trusted_local_path=audio_file_trusted,
-                extra_allowed_dirs=[str(self._cache_dir)],
+                extra_allowed_dirs=self._extra_dirs,
                 lyrics=args.lyrics,
                 seed=args.seed,
                 audio_format=args.audio_format,
