@@ -21,6 +21,7 @@ async def _to_data_uri(
     *,
     data_dir: str | None = None,
     allow_trusted_local_path: bool = False,
+    extra_allowed_dirs: list[str] | None = None,
 ) -> str:
     """将 URL 或本地文件路径转为 base64 数据 URI（对齐 mmx-cli TS SDK）。"""
     if image.startswith("data:"):
@@ -47,6 +48,7 @@ async def _to_data_uri(
         image,
         data_dir=data_dir,
         allow_trusted_local_path=allow_trusted_local_path,
+        extra_allowed_dirs=extra_allowed_dirs,
         label="图片文件",
     )
     mime, _ = mimetypes.guess_type(p.name)
@@ -71,6 +73,7 @@ class VisionAPI:
         file_id: str | None = None,
         data_dir: str | None = None,
         allow_trusted_local_path: bool = False,
+        extra_allowed_dirs: list[str] | None = None,
     ) -> dict[str, Any]:
         """对图片进行理解和描述。"""
         if image:
@@ -80,6 +83,7 @@ class VisionAPI:
                     image,
                     data_dir=data_dir,
                     allow_trusted_local_path=allow_trusted_local_path,
+                    extra_allowed_dirs=extra_allowed_dirs,
                 ),
             }
         elif file_id:

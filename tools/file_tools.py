@@ -12,15 +12,19 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.files import FileAPI
-from ..mmx.utils import resolve_data_path
+from ..mmx.utils import resolve_existing_data_path
 from .result import tool_result
 from .schema import object_parameters, string_param
 
 
-def _safe_data_file(data_dir: str, file_path: str) -> Path | None:
+def _safe_data_file(
+    data_dir: str,
+    file_path: str,
+    extra_allowed_dirs: list[str] | None = None,
+) -> Path | None:
     if not file_path:
         return None
-    return resolve_data_path(data_dir, file_path)
+    return resolve_existing_data_path(data_dir, file_path, extra_allowed_dirs)
 
 
 def _admin_only_error(context: ContextWrapper[AstrAgentContext]) -> str | None:
@@ -46,17 +50,22 @@ def _admin_only_result(context: ContextWrapper[AstrAgentContext]) -> ToolExecRes
 class UploadFileTool(FunctionTool):
     """LLM tool: upload a trusted local data-dir file to MiniMax storage."""
 
-    def __init__(self, api: FileAPI, data_dir: str = "."):
+    def __init__(
+        self,
+        api: FileAPI,
+        data_dir: str = ".",
+        extra_allowed_dirs: list[str] | None = None,
+    ):
         super().__init__(
             name="mmx_file_upload",
             description=(
-                "Upload a local file from the plugin data directory to MiniMax storage. "
+                "Upload a local file from the plugin data directory or the AstrBot temp directory to MiniMax storage. "
                 "Returns file metadata including file_id."
             ),
             parameters=object_parameters(
                 {
                     "file": string_param(
-                        "Path to a file under the plugin data directory. Absolute paths and '..' are rejected."
+                        "Path to a file under the plugin data directory or the AstrBot temp directory. Absolute paths and '..' are rejected."
                     ),
                     "purpose": string_param(
                         "File purpose, for example retrieval or vision. Defaults to retrieval."
@@ -67,6 +76,7 @@ class UploadFileTool(FunctionTool):
         )
         self._api = api
         self._data_dir = data_dir
+        self._extra_allowed_dirs = extra_allowed_dirs
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -75,14 +85,17 @@ class UploadFileTool(FunctionTool):
             return permission_error
 
         file_path = str(kwargs.get("file") or "").strip()
-        safe_path = _safe_data_file(self._data_dir, file_path)
+        safe_path = _safe_data_file(self._data_dir, file_path, self._extra_allowed_dirs)
         if safe_path is None:
+            allowed_dirs = "\n".join(
+                f"- {d}" for d in [self._data_dir, *(self._extra_allowed_dirs or [])]
+            )
             return tool_result(
                 json.dumps(
                     {
                         "ok": False,
                         "error": "file 路径不合法",
-                        "hint": f"file 必须位于插件数据目录内：{self._data_dir}",
+                        "hint": f"file 必须位于插件数据目录或 AstrBot 临时目录内：\n{allowed_dirs}",
                     },
                     ensure_ascii=False,
                 )

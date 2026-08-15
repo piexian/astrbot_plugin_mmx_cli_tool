@@ -24,7 +24,14 @@ from .schema import integer_param, object_parameters, string_param
 class MusicCoverTool(FunctionTool):
     """LLM 工具：基于参考音频生成翻唱版本。"""
 
-    def __init__(self, api: MusicAPI, data_dir: str = ".", default_model: str = ""):
+    def __init__(
+        self,
+        api: MusicAPI,
+        data_dir: str = ".",
+        default_model: str = "",
+        cache_dir: str | None = None,
+        extra_allowed_dirs: list[str] | None = None,
+    ):
         super().__init__(
             name="mmx_music_cover",
             description=(
@@ -66,6 +73,8 @@ class MusicCoverTool(FunctionTool):
         self._api = api
         self._data_dir = data_dir
         self._default_model = default_model
+        self._cache_dir = cache_dir or data_dir
+        self._extra_allowed_dirs = extra_allowed_dirs
         self._tasks: set[asyncio.Task] = set()
         self._max_wait_seconds = 900
         self._poll_after_seconds = 60
@@ -199,6 +208,7 @@ class MusicCoverTool(FunctionTool):
                 lyrics=resolved_lyrics,
                 seed=kwargs.get("seed"),
                 data_dir=self._data_dir,
+                extra_allowed_dirs=self._extra_allowed_dirs,
                 audio_format=kwargs.get("format", "mp3"),
                 sample_rate=kwargs.get("sampleRate", 44100),
                 bitrate=kwargs.get("bitrate", 256000),
@@ -207,10 +217,11 @@ class MusicCoverTool(FunctionTool):
             return saved_audio_result(
                 self._api,
                 result,
-                data_dir=self._data_dir,
+                save_dir=self._cache_dir,
                 prefix="mmx_music_cover",
                 success_message="翻唱生成完成",
                 save_error_label="翻唱保存失败",
+                audio_format=kwargs.get("format", "mp3"),
             )
 
         task_id = schedule_audio_result_to_agent(

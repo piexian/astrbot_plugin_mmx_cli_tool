@@ -5,9 +5,28 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+import os
 import shlex
+import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+
+def get_shared_temp_dir() -> str:
+    """返回 AstrBot 临时目录（不可用时回退到系统临时目录下的插件专属子目录）。
+
+    AstrBot 会把聊天中下载的图片保存到该目录，LLM 工具收到的本地图片路径
+    通常位于此处，因此路径安全校验需要把它列为额外允许的根目录。
+    """
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+
+        temp_dir = get_astrbot_temp_path()
+    except Exception:
+        temp_dir = os.path.join(tempfile.gettempdir(), "astrbot_plugin_mmx_cli_tool")
+    os.makedirs(temp_dir, exist_ok=True)
+    return temp_dir
 
 
 def split_command_tokens(text: str) -> list[str]:
@@ -43,18 +62,49 @@ def resolve_data_path(base_dir: str, path: str) -> Path | None:
     return None
 
 
+def resolve_existing_data_path(
+    base_dir: str,
+    path: str,
+    extra_allowed_dirs: Iterable[str] | None = None,
+) -> Path | None:
+    """Resolve ``path`` against each allowed root, preferring a target that exists.
+
+    ``resolve_data_path`` 只校验包含性，相对路径总是先命中 ``base_dir``
+    候选；这里依次尝试所有允许的根目录，优先返回真实存在的文件，
+    都不存在时回退到 ``base_dir`` 候选（用于报错信息）。
+    """
+    candidates = [resolve_data_path(base_dir, path)]
+    candidates.extend(
+        resolve_data_path(extra_dir, path) for extra_dir in extra_allowed_dirs or ()
+    )
+    valid = [candidate for candidate in candidates if candidate is not None]
+    if not valid:
+        return None
+    return next((candidate for candidate in valid if candidate.is_file()), valid[0])
+
+
 def resolve_local_input_path(
     path: str,
     *,
     data_dir: str | None = None,
     allow_trusted_local_path: bool = False,
+    extra_allowed_dirs: Iterable[str] | None = None,
     label: str = "文件",
 ) -> Path:
-    """Resolve a local input file without allowing untrusted host file reads."""
+    """Resolve a local input file without allowing untrusted host file reads.
+
+    ``extra_allowed_dirs`` 仅在提供 ``data_dir`` 时生效（作为数据目录之外
+    的额外允许根目录）；``data_dir=None`` 时本地路径只能由
+    ``allow_trusted_local_path=True`` 放行。
+    """
+    target: Path | None = None
     if data_dir is not None:
-        target = resolve_data_path(data_dir, path)
+        target = resolve_existing_data_path(data_dir, path, extra_allowed_dirs)
         if target is None:
-            raise ValueError(f"{label} 必须位于插件数据目录内，不允许绝对路径或 .. 穿越")
+            raise ValueError(
+                f"{label} 必须位于插件数据目录或 AstrBot 临时目录内，"
+                "不允许绝对路径或 .. 穿越"
+            )
     elif allow_trusted_local_path:
         target = Path(_strip_file_scheme(path)).resolve()
     else:
@@ -86,6 +136,7 @@ async def resolve_image(
     *,
     data_dir: str | None = None,
     allow_trusted_local_path: bool = False,
+    extra_allowed_dirs: Iterable[str] | None = None,
 ) -> str:
     """将图片路径或 URL 统一处理（对齐 mmx-cli Rn 函数）。
 
@@ -108,6 +159,7 @@ async def resolve_image(
         image,
         data_dir=data_dir,
         allow_trusted_local_path=allow_trusted_local_path,
+        extra_allowed_dirs=extra_allowed_dirs,
         label="图片文件",
     )
 
@@ -124,6 +176,7 @@ async def resolve_subject_reference(
     *,
     data_dir: str | None = None,
     allow_trusted_local_path: bool = False,
+    extra_allowed_dirs: Iterable[str] | None = None,
 ) -> list[dict[str, str]]:
     """Build MiniMax subject_reference from mmx-cli-style subject-ref input."""
     params = _parse_subject_ref_params(subject_ref)
@@ -137,6 +190,7 @@ async def resolve_subject_reference(
             image,
             data_dir=data_dir,
             allow_trusted_local_path=allow_trusted_local_path,
+            extra_allowed_dirs=extra_allowed_dirs,
         )
     return [item]
 

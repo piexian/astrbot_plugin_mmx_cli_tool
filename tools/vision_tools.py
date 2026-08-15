@@ -19,14 +19,19 @@ from .schema import object_parameters, string_param
 class DescribeImageTool(FunctionTool):
     """LLM 工具：调用 MiniMax 视觉理解 API 分析图片。"""
 
-    def __init__(self, api: VisionAPI, data_dir: str = "."):
+    def __init__(
+        self,
+        api: VisionAPI,
+        data_dir: str = ".",
+        extra_allowed_dirs: list[str] | None = None,
+    ):
         super().__init__(
             name="mmx_describe_image",
-            description="Analyze and describe an image using MiniMax vision AI. Provide an image URL, plugin-data path, or pre-uploaded file ID.",
+            description="Analyze and describe an image using MiniMax vision AI. Provide an image URL, plugin-data or AstrBot temp path, or pre-uploaded file ID.",
             parameters=object_parameters(
                 {
                     "image": string_param(
-                        "Image URL or plugin-data file path (auto base64-encoded). Mutually exclusive with fileId."
+                        "Image URL, plugin-data file path, or AstrBot temp file path (auto base64-encoded). Mutually exclusive with fileId."
                     ),
                     "fileId": string_param(
                         "Pre-uploaded file ID (skips base64 conversion). Mutually exclusive with image."
@@ -39,6 +44,7 @@ class DescribeImageTool(FunctionTool):
         )
         self._api = api
         self._data_dir = data_dir
+        self._extra_allowed_dirs = extra_allowed_dirs
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -52,7 +58,7 @@ class DescribeImageTool(FunctionTool):
                     {
                         "ok": False,
                         "error": "缺少图片输入",
-                        "hint": "请提供 image（图片 URL 或插件数据目录内路径）或 fileId（预上传文件 ID）",
+                        "hint": "请提供 image（图片 URL 或插件数据目录/AstrBot 临时目录内路径）或 fileId（预上传文件 ID）",
                         "example": {
                             "image": "https://example.com/photo.jpg",
                             "prompt": "这张图片里有什么？",
@@ -68,7 +74,7 @@ class DescribeImageTool(FunctionTool):
                     {
                         "ok": False,
                         "error": "image 和 fileId 不能同时提供",
-                        "hint": "请只提供 image（图片 URL/插件数据目录内路径）或 fileId（二选一）",
+                        "hint": "请只提供 image（图片 URL/插件数据目录/AstrBot 临时目录内路径）或 fileId（二选一）",
                         "example": {
                             "fileId": "file-123456789",
                             "prompt": "Extract the text",
@@ -84,6 +90,7 @@ class DescribeImageTool(FunctionTool):
                 file_id=file_id,
                 prompt=kwargs.get("prompt", "Describe the image."),
                 data_dir=self._data_dir,
+                extra_allowed_dirs=self._extra_allowed_dirs,
             )
         except Exception as e:
             logger.error(f"[mmx] 图片理解失败: {e}")

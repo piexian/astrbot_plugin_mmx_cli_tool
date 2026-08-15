@@ -22,10 +22,11 @@ def saved_audio_result(
     api: AudioSaver,
     response: dict,
     *,
-    data_dir: str,
+    save_dir: str,
     prefix: str,
     success_message: str,
     save_error_label: str,
+    audio_format: str = "mp3",
 ) -> str:
     """Save API audio data and return a compact JSON tool result."""
     data = response.get("data", {})
@@ -37,7 +38,7 @@ def saved_audio_result(
             ensure_ascii=False,
         )
 
-    out_path = Path(data_dir) / f"{prefix}_{int(_time.time() * 1000)}.mp3"
+    out_path = Path(save_dir) / f"{prefix}_{int(_time.time() * 1000)}.{audio_format}"
     try:
         saved = api.save(response, str(out_path))
     except Exception as e:

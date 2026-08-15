@@ -45,8 +45,9 @@ from .mmx.quota_usage import (
     resolve_used_percent,
 )
 from .mmx.utils import (
+    get_shared_temp_dir,
     is_url,
-    resolve_data_path,
+    resolve_existing_data_path,
     resolve_image,
     resolve_subject_reference,
 )
@@ -271,6 +272,12 @@ class Main(star.Star):
         )
         self._plugin_data_dir.mkdir(parents=True, exist_ok=True)
 
+        # 缓存目录：生成的媒体文件只作中转，统一放 AstrBot 临时目录，无需自行清理
+        self._cache_dir = Path(get_shared_temp_dir())
+        # 是否允许 LLM 工具/直接指令读取 AstrBot 临时目录（可在配置中收紧）
+        self._allow_temp_dir_reads = bool(config.get("allow_astrbot_temp_dir", True))
+        self._extra_dirs = [str(self._cache_dir)] if self._allow_temp_dir_reads else []
+
         # 创建客户端 — 支持单 Key 和多 Key 池两种模式
         if not keys:
             logger.warning("[mmx] api_key 未配置，插件将无法调用 API")
@@ -312,10 +319,18 @@ class Main(star.Star):
 
         # 插件数据目录路径（字符串）
         _data_dir = str(self._plugin_data_dir)
+        _cache_dir = str(self._cache_dir)
+        # AstrBot 临时目录：聊天图片下载后存放于此，允许 LLM 工具读取
+        _extra_dirs = self._extra_dirs
 
         # 注册 LLM 工具
         context.add_llm_tools(
-            GenerateImageTool(self._image, self._default_image_model, _data_dir),
+            GenerateImageTool(
+                self._image,
+                self._default_image_model,
+                _data_dir,
+                extra_allowed_dirs=_extra_dirs,
+            ),
             GenerateVideoTool(
                 self._video,
                 self._video_poll_interval,
@@ -324,18 +339,32 @@ class Main(star.Star):
                 self._default_video_sef_model,
                 self._default_video_subject_model,
                 _data_dir,
+                extra_allowed_dirs=_extra_dirs,
             ),
             QueryVideoTaskTool(self._video),
-            DownloadVideoTool(self._video, _data_dir),
-            GenerateMusicTool(self._music, _data_dir, self._default_music_model),
-            MusicCoverTool(self._music, _data_dir, self._default_music_cover_model),
+            DownloadVideoTool(self._video, _data_dir, cache_dir=_cache_dir),
+            GenerateMusicTool(
+                self._music, _data_dir, self._default_music_model, cache_dir=_cache_dir
+            ),
+            MusicCoverTool(
+                self._music,
+                _data_dir,
+                self._default_music_cover_model,
+                cache_dir=_cache_dir,
+                extra_allowed_dirs=_extra_dirs,
+            ),
             QueryBackgroundTaskTool(),
             WebSearchTool(self._search),
-            DescribeImageTool(self._vision, _data_dir),
+            DescribeImageTool(self._vision, _data_dir, extra_allowed_dirs=_extra_dirs),
             CheckQuotaTool(self._quota, keys),
-            SpeechSynthesizeTool(self._speech, _data_dir, self._default_speech_model),
+            SpeechSynthesizeTool(
+                self._speech,
+                _data_dir,
+                self._default_speech_model,
+                cache_dir=_cache_dir,
+            ),
             ListVoicesTool(self._speech),
-            UploadFileTool(self._files, _data_dir),
+            UploadFileTool(self._files, _data_dir, extra_allowed_dirs=_extra_dirs),
             ListFilesTool(self._files),
             DeleteFileTool(self._files),
         )
@@ -386,7 +415,7 @@ class Main(star.Star):
             return
 
         out_path = (
-            self._plugin_data_dir
+            self._cache_dir
             / f"mmx_speech_{int(_time.time() * 1000)}.{args.audio_format}"
         )
         try:
@@ -412,13 +441,16 @@ class Main(star.Star):
 
         try:
             if parsed.action == "upload":
-                safe_file = resolve_data_path(
+                safe_file = resolve_existing_data_path(
                     str(self._plugin_data_dir),
                     parsed.file or "",
+                    self._extra_dirs,
                 )
                 if safe_file is None:
+                    allowed = [f"- {self._plugin_data_dir}"]
+                    allowed.extend(f"- {d}" for d in self._extra_dirs)
                     yield event.plain_result(
-                        f"file 必须位于插件数据目录内：{self._plugin_data_dir}"
+                        "file 必须位于以下目录内：\n" + "\n".join(allowed)
                     )
                     return
                 if not safe_file.is_file():
@@ -512,6 +544,7 @@ class Main(star.Star):
                     if subject_ref_trusted
                     else str(self._plugin_data_dir),
                     allow_trusted_local_path=subject_ref_trusted,
+                    extra_allowed_dirs=self._extra_dirs,
                 )
                 if subject_ref_value
                 else None
@@ -546,7 +579,7 @@ class Main(star.Star):
 
         saved = []
         try:
-            saved = await self._image.save(result, out_dir=str(self._plugin_data_dir))
+            saved = await self._image.save(result, out_dir=str(self._cache_dir))
         except Exception as e:
             logger.warning(f"[mmx] 图片下载失败，将尝试直接发送远程图片: {e}")
 
@@ -642,6 +675,7 @@ class Main(star.Star):
                     if first_frame_trusted
                     else str(self._plugin_data_dir),
                     allow_trusted_local_path=first_frame_trusted,
+                    extra_allowed_dirs=self._extra_dirs,
                 )
                 if first_frame_ref
                 else None
@@ -653,6 +687,7 @@ class Main(star.Star):
                     if last_frame_trusted
                     else str(self._plugin_data_dir),
                     allow_trusted_local_path=last_frame_trusted,
+                    extra_allowed_dirs=self._extra_dirs,
                 )
                 if last_frame_ref
                 else None
@@ -668,6 +703,7 @@ class Main(star.Star):
                                 if subject_image_trusted
                                 else str(self._plugin_data_dir),
                                 allow_trusted_local_path=subject_image_trusted,
+                                extra_allowed_dirs=self._extra_dirs,
                             )
                         ],
                     }
@@ -717,7 +753,7 @@ class Main(star.Star):
                     return
 
                 try:
-                    video_path = str(self._plugin_data_dir / f"mmx_video_{task_id}.mp4")
+                    video_path = str(self._cache_dir / f"mmx_video_{task_id}.mp4")
                     saved = await self._video.download(fid, video_path)
                     yield event.chain_result([Video(file=saved)])
                 except Exception as e:
@@ -793,7 +829,7 @@ class Main(star.Star):
 
         saved_path = None
         out_path = (
-            self._plugin_data_dir
+            self._cache_dir
             / f"mmx_music_{int(_time.time() * 1000)}.{args.audio_format}"
         )
         try:
@@ -853,6 +889,7 @@ class Main(star.Star):
                 if audio_file_trusted
                 else str(self._plugin_data_dir),
                 allow_trusted_local_path=audio_file_trusted,
+                extra_allowed_dirs=self._extra_dirs,
                 lyrics=args.lyrics,
                 seed=args.seed,
                 audio_format=args.audio_format,
@@ -870,7 +907,7 @@ class Main(star.Star):
 
         saved_path = None
         out_path = (
-            self._plugin_data_dir
+            self._cache_dir
             / f"mmx_music_cover_{int(_time.time() * 1000)}.{args.audio_format}"
         )
         try:

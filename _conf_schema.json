@@ -21,6 +21,12 @@
     "type": "int",
     "default": 300
   },
+  "allow_astrbot_temp_dir": {
+    "description": "允许读取 AstrBot 临时目录",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后 LLM 工具和直接指令可读取 AstrBot 临时目录（聊天图片与生成缓存所在目录，由所有插件共享）内的文件；关闭可收紧信任面，但生成结果将无法再作为输入使用。"
+  },
   "video_poll_interval": {
     "description": "视频生成轮询间隔（秒）",
     "type": "int",

@@ -34,7 +34,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_generate_video` | 根据文字描述及首尾帧等生成视频 | 无 |
 | `mmx_video_task_get` | 查询视频生成任务的最新状态和进度 | 无 |
 | `mmx_video_download` | 通过文件 ID 下载完成的视频到本地 | 无 |
-| `mmx_file_upload` | 上传插件数据目录内的文件到 MiniMax 存储 | 管理员 |
+| `mmx_file_upload` | 上传插件数据目录或 AstrBot 临时目录内的文件到 MiniMax 存储 | 管理员 |
 | `mmx_file_list` | 列出已上传到 MiniMax 存储的文件 | 管理员 |
 | `mmx_file_delete` | 删除已上传的 MiniMax 文件 | 管理员 |
 | `mmx_generate_music` | 生成音乐（支持纯器乐、带歌词，及所有精细控制参数） | 无 |
@@ -183,13 +183,13 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `promptOptimizer` (boolean): 是否自动优化提示词（默认 `true`）。
 - `aigcWatermark` (boolean): 是否添加 AI 生成内容水印。
 - `responseFormat` (string): 返回格式，`url` 或 `base64`。
-- `subjectRef` (string): 角色一致性参考图，支持 URL、插件数据目录内路径或 `type=character,image=path-or-url`。
+- `subjectRef` (string): 角色一致性参考图，支持 URL、插件数据目录或 AstrBot 临时目录内路径，或 `type=character,image=path-or-url`。
 
 #### 2. `mmx_generate_video` (视频生成)
 - `prompt` (string, 必填): 视频画面描述。
-- `firstFrame` (string): 起始帧图片（URL 或插件数据目录内路径）。
-- `lastFrame` (string): 结束帧图片（URL 或插件数据目录内路径，需同时提供 `firstFrame`，常用于首尾帧模式）。
-- `subjectImage` (string): 角色一致性参考图（URL 或插件数据目录内路径，自动激活角色保持模式）。
+- `firstFrame` (string): 起始帧图片（URL、插件数据目录或 AstrBot 临时目录内路径）。
+- `lastFrame` (string): 结束帧图片（URL、插件数据目录或 AstrBot 临时目录内路径，需同时提供 `firstFrame`，常用于首尾帧模式）。
+- `subjectImage` (string): 角色一致性参考图（URL、插件数据目录或 AstrBot 临时目录内路径，自动激活角色保持模式）。
 - `noWait` (boolean): `true` 时立即返回 `taskId`，不等待生成完成。
 - `callbackUrl` (string): 异步生成的回调地址。
 - *注：插件会根据传入参数自动切换模型（如 `Hailuo-02` 适用于首尾帧，`S2V-01` 适用于角色保持）。*
@@ -199,7 +199,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 #### 4. `mmx_video_download` (下载视频到本地)
 - `fileId` (string, 必填): 视频生成完成后任务返回的文件 ID。
-- `out` (string): 插件数据目录内的自定义保存路径（选填）。拒绝绝对路径和 `..` 穿越。
+- `out` (string): 插件数据目录内的自定义保存路径（选填，省略时保存到 AstrBot 临时目录）。拒绝绝对路径和 `..` 穿越。
 
 #### 5. `mmx_generate_music` (音乐生成)
 - `prompt` (string): 音乐风格描述。
@@ -242,13 +242,13 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `q` (string, 必填): 搜索查询关键字。
 
 #### 11. `mmx_describe_image` (视觉理解)
-- `image` (string, 必填): 图片 URL 或插件数据目录内路径。
+- `image` (string, 必填): 图片 URL、插件数据目录或 AstrBot 临时目录内路径。
 - `prompt` (string): 分析要求描述。
 - `fileId` (string): 预先上传的文件 ID。
 
 #### 12. `mmx_file_upload` (文件上传)
 - 仅管理员可用。
-- `file` (string, 必填): 插件数据目录内的本地文件路径。LLM 工具会拒绝绝对路径和 `..` 穿越。
+- `file` (string, 必填): 插件数据目录或 AstrBot 临时目录内的本地文件路径。LLM 工具会拒绝绝对路径和 `..` 穿越。
 - `purpose` (string): 文件用途，默认 `retrieval`。
 
 #### 13. `mmx_file_list` (文件列表)
@@ -266,10 +266,11 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 - **API Key 脱敏**：错误日志中自动隐藏 API Key（仅显示前 4 后 4 字符）
 - **文件名安全**：保存文件使用时间戳命名，避免路径注入
-- **输出目录限制**：媒体文件仅保存到 AstrBot 插件数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）
+- **输出目录限制**：生成的媒体文件默认保存到 AstrBot 临时目录（作为缓存由 AstrBot 统一管理，无需手动清理）；仅用户显式指定的持久化输出（如 `mmx_video_download` 的 `out`）写入插件数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）
 - **文件管理权限**：`/mmx file upload|list|delete` 与 `mmx_file_upload/list/delete` 仅管理员可用
-- **LLM 文件上传限制**：`mmx_file_upload` 仅允许上传插件数据目录内的文件，避免模型诱导读取任意宿主文件
-- **本地媒体输入限制**：LLM 工具和直接指令中手写的图片/音频路径仅允许指向插件数据目录；当前消息和引用消息中的附件仍由 AstrBot 解析后提交
+- **LLM 文件上传限制**：`mmx_file_upload` 仅允许上传插件数据目录或 AstrBot 临时目录内的文件，避免模型诱导读取任意宿主文件
+- **本地媒体输入限制**：LLM 工具和直接指令中手写的图片/音频路径仅允许指向插件数据目录或 AstrBot 临时目录（聊天图片下载位置）；当前消息和引用消息中的附件仍由 AstrBot 解析后提交
+- **临时目录信任面**：AstrBot 临时目录由所有插件共享（聊天附件、其他插件的临时文件都在其中），放行该目录意味着 LLM 工具可读取其中的任意文件，并非"仅聊天图片"
 - **视频下载路径限制**：`mmx_video_download` 的 `out` 仅允许写入插件数据目录内，拒绝绝对路径和 `..` 穿越
 - **参数验证**：工具入口处校验关键参数
 
@@ -285,6 +286,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `timeout` | int | `300` | 请求超时（秒） |
 | `video_poll_interval` | int | `5` | 视频生成轮询间隔（秒） |
 | `video_timeout` | int | `600` | 视频生成超时（秒） |
+| `allow_astrbot_temp_dir` | bool | `true` | 允许读取 AstrBot 临时目录（聊天图片与生成缓存所在目录，全插件共享）；关闭可收紧信任面，但生成结果将无法再作为输入 |
 | `default_image_model` | string | `image-01` | 默认图片生成模型 |
 | `default_video_model` | string | `MiniMax-Hailuo-2.3` | 默认视频生成模型 |
 | `default_video_sef_model` | string | `MiniMax-Hailuo-02` | 默认首尾帧视频模型 |

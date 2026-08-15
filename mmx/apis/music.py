@@ -145,6 +145,7 @@ class MusicAPI:
         channel: int = 2,
         data_dir: str | None = None,
         allow_trusted_local_path: bool = False,
+        extra_allowed_dirs: list[str] | None = None,
     ) -> dict[str, Any]:
         """生成翻唱版本。基于参考音频和风格提示词生成 Cover。"""
         body: dict[str, Any] = {
@@ -169,6 +170,7 @@ class MusicAPI:
                 audio_file,
                 data_dir=data_dir,
                 allow_trusted_local_path=allow_trusted_local_path,
+                extra_allowed_dirs=extra_allowed_dirs,
                 label="audioFile",
             )
             raw = await asyncio.to_thread(path.read_bytes)

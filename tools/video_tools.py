@@ -41,6 +41,7 @@ class GenerateVideoTool(FunctionTool):
         default_sef_model: str = "",
         default_subject_model: str = "",
         data_dir: str = ".",
+        extra_allowed_dirs: list[str] | None = None,
     ):
         super().__init__(
             name="mmx_generate_video",
@@ -60,13 +61,13 @@ class GenerateVideoTool(FunctionTool):
                         "Model override. Omit to use plugin default_video_model or the configured SEF/S2V model."
                     ),
                     "firstFrame": string_param(
-                        "First frame image (URL or plugin-data path)."
+                        "First frame image (URL, plugin-data path, or AstrBot temp path)."
                     ),
                     "lastFrame": string_param(
-                        "Last frame image (URL or plugin-data path). Requires firstFrame."
+                        "Last frame image (URL, plugin-data path, or AstrBot temp path). Requires firstFrame."
                     ),
                     "subjectImage": string_param(
-                        "Subject reference image for character consistency (URL or plugin-data path)."
+                        "Subject reference image for character consistency (URL, plugin-data path, or AstrBot temp path)."
                     ),
                     "callbackUrl": string_param(
                         "Webhook URL for completion notification"
@@ -88,6 +89,7 @@ class GenerateVideoTool(FunctionTool):
         self._default_sef_model = default_sef_model
         self._default_subject_model = default_subject_model
         self._data_dir = data_dir
+        self._extra_allowed_dirs = extra_allowed_dirs
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -158,17 +160,26 @@ class GenerateVideoTool(FunctionTool):
             converted_subject = await resolve_image(
                 subject_image,
                 data_dir=self._data_dir,
+                extra_allowed_dirs=self._extra_allowed_dirs,
             )
             subject_reference = [{"type": "character", "image": [converted_subject]}]
 
         # 插件数据目录内路径转 Data URI（对齐 mmx-cli Rn 函数）
         resolved_first = (
-            await resolve_image(first_frame, data_dir=self._data_dir)
+            await resolve_image(
+                first_frame,
+                data_dir=self._data_dir,
+                extra_allowed_dirs=self._extra_allowed_dirs,
+            )
             if first_frame
             else None
         )
         resolved_last = (
-            await resolve_image(last_frame, data_dir=self._data_dir)
+            await resolve_image(
+                last_frame,
+                data_dir=self._data_dir,
+                extra_allowed_dirs=self._extra_allowed_dirs,
+            )
             if last_frame
             else None
         )
