@@ -5,9 +5,28 @@ from __future__ import annotations
 import asyncio
 import base64
 import mimetypes
+import os
 import shlex
+import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+
+def get_shared_temp_dir() -> str:
+    """返回 AstrBot 临时目录（不可用时回退到系统临时目录下的插件专属子目录）。
+
+    AstrBot 会把聊天中下载的图片保存到该目录，LLM 工具收到的本地图片路径
+    通常位于此处，因此路径安全校验需要把它列为额外允许的根目录。
+    """
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+
+        temp_dir = get_astrbot_temp_path()
+    except Exception:
+        temp_dir = os.path.join(tempfile.gettempdir(), "astrbot_plugin_mmx_cli_tool")
+    os.makedirs(temp_dir, exist_ok=True)
+    return temp_dir
 
 
 def split_command_tokens(text: str) -> list[str]:
@@ -48,13 +67,23 @@ def resolve_local_input_path(
     *,
     data_dir: str | None = None,
     allow_trusted_local_path: bool = False,
+    extra_allowed_dirs: Iterable[str] | None = None,
     label: str = "文件",
 ) -> Path:
     """Resolve a local input file without allowing untrusted host file reads."""
+    target: Path | None = None
     if data_dir is not None:
         target = resolve_data_path(data_dir, path)
         if target is None:
-            raise ValueError(f"{label} 必须位于插件数据目录内，不允许绝对路径或 .. 穿越")
+            for extra_dir in extra_allowed_dirs or ():
+                target = resolve_data_path(extra_dir, path)
+                if target is not None:
+                    break
+        if target is None:
+            raise ValueError(
+                f"{label} 必须位于插件数据目录或 AstrBot 临时目录内，"
+                "不允许绝对路径或 .. 穿越"
+            )
     elif allow_trusted_local_path:
         target = Path(_strip_file_scheme(path)).resolve()
     else:
@@ -86,6 +115,7 @@ async def resolve_image(
     *,
     data_dir: str | None = None,
     allow_trusted_local_path: bool = False,
+    extra_allowed_dirs: Iterable[str] | None = None,
 ) -> str:
     """将图片路径或 URL 统一处理（对齐 mmx-cli Rn 函数）。
 
@@ -108,6 +138,7 @@ async def resolve_image(
         image,
         data_dir=data_dir,
         allow_trusted_local_path=allow_trusted_local_path,
+        extra_allowed_dirs=extra_allowed_dirs,
         label="图片文件",
     )
 
@@ -124,6 +155,7 @@ async def resolve_subject_reference(
     *,
     data_dir: str | None = None,
     allow_trusted_local_path: bool = False,
+    extra_allowed_dirs: Iterable[str] | None = None,
 ) -> list[dict[str, str]]:
     """Build MiniMax subject_reference from mmx-cli-style subject-ref input."""
     params = _parse_subject_ref_params(subject_ref)
@@ -137,6 +169,7 @@ async def resolve_subject_reference(
             image,
             data_dir=data_dir,
             allow_trusted_local_path=allow_trusted_local_path,
+            extra_allowed_dirs=extra_allowed_dirs,
         )
     return [item]
 

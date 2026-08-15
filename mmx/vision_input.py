@@ -6,25 +6,19 @@ import base64
 import logging
 import mimetypes
 import os
-import tempfile
 import uuid
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from .utils import get_shared_temp_dir
+
 logger = logging.getLogger(__name__)
 
 
 def _get_temp_dir() -> str:
-    try:
-        from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
-
-        temp_dir = get_astrbot_temp_path()
-    except Exception:
-        temp_dir = os.path.join(tempfile.gettempdir(), "astrbot_plugin_mmx_cli_tool")
-    os.makedirs(temp_dir, exist_ok=True)
-    return temp_dir
+    return get_shared_temp_dir()
 
 
 def _looks_like_remote_ref(value: Any) -> bool:

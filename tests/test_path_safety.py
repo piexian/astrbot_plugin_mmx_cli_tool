@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from astrbot_plugin_mmx_cli_tool.mmx.utils import (  # noqa: E402
+    get_shared_temp_dir,
     resolve_data_path,
     resolve_image,
     resolve_local_input_path,
@@ -64,6 +65,50 @@ class PathSafetyTests(unittest.IsolatedAsyncioTestCase):
                 allow_trusted_local_path=True,
             ),
         )
+
+    def test_shared_temp_dir_exists(self) -> None:
+        temp_dir = get_shared_temp_dir()
+        self.assertTrue(Path(temp_dir).is_dir())
+
+    def test_local_input_allows_extra_allowed_dir(self) -> None:
+        extra = self.root / "astrbot_temp"
+        extra.mkdir()
+        temp_image = extra / "photo.jpg"
+        temp_image.write_bytes(b"temp-image")
+        self.assertEqual(
+            temp_image.resolve(),
+            resolve_local_input_path(
+                str(temp_image),
+                data_dir=str(self.data_dir),
+                extra_allowed_dirs=[str(extra)],
+            ),
+        )
+
+    def test_local_input_rejects_outside_data_and_extra_dirs(self) -> None:
+        extra = self.root / "astrbot_temp"
+        extra.mkdir()
+        with self.assertRaises(ValueError):
+            resolve_local_input_path(
+                str(self.secret),
+                data_dir=str(self.data_dir),
+                extra_allowed_dirs=[str(extra)],
+            )
+
+    async def test_resolve_image_encodes_extra_allowed_dir_file(self) -> None:
+        extra = self.root / "astrbot_temp"
+        extra.mkdir()
+        temp_image = extra / "photo.jpg"
+        temp_image.write_bytes(b"temp-image")
+
+        data_uri = await resolve_image(
+            str(temp_image),
+            data_dir=str(self.data_dir),
+            extra_allowed_dirs=[str(extra)],
+        )
+
+        prefix, encoded = data_uri.split(",", 1)
+        self.assertEqual("data:image/jpeg;base64", prefix)
+        self.assertEqual(b"temp-image", base64.b64decode(encoded))
 
     async def test_resolve_image_encodes_data_dir_file(self) -> None:
         data_uri = await resolve_image("image.jpg", data_dir=str(self.data_dir))

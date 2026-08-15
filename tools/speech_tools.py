@@ -45,7 +45,13 @@ def _filter_voices_by_language(voices: list[dict], language: str) -> list[dict]:
 class SpeechSynthesizeTool(FunctionTool):
     """LLM 工具：调用 MiniMax 语音合成（TTS）API。"""
 
-    def __init__(self, api: SpeechAPI, data_dir: str = ".", default_model: str = ""):
+    def __init__(
+        self,
+        api: SpeechAPI,
+        data_dir: str = ".",
+        default_model: str = "",
+        cache_dir: str | None = None,
+    ):
         super().__init__(
             name="mmx_speech_synthesize",
             description=(
@@ -92,6 +98,7 @@ class SpeechSynthesizeTool(FunctionTool):
         self._api = api
         self._data_dir = data_dir
         self._default_model = default_model
+        self._cache_dir = cache_dir or data_dir
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -140,12 +147,12 @@ class SpeechSynthesizeTool(FunctionTool):
                 )
             )
 
-        # 保存音频文件
+        # 保存音频文件（缓存目录，由 AstrBot 统一管理）
         import time
         from pathlib import Path
 
         out_path = str(
-            Path(self._data_dir)
+            Path(self._cache_dir)
             / f"mmx_speech_{int(time.time() * 1000)}.{audio_format}"
         )
 

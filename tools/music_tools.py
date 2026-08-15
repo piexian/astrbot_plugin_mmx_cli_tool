@@ -37,7 +37,13 @@ class GenerateMusicTool(FunctionTool):
     3. lyricsOptimizer — 根据 prompt 自动生成歌词
     """
 
-    def __init__(self, api: MusicAPI, data_dir: str = ".", default_model: str = ""):
+    def __init__(
+        self,
+        api: MusicAPI,
+        data_dir: str = ".",
+        default_model: str = "",
+        cache_dir: str | None = None,
+    ):
         super().__init__(
             name="mmx_generate_music",
             description=(
@@ -106,6 +112,7 @@ class GenerateMusicTool(FunctionTool):
         self._api = api
         self._data_dir = data_dir
         self._default_model = default_model
+        self._cache_dir = cache_dir or data_dir
         self._tasks: set[asyncio.Task] = set()
         self._max_wait_seconds = 900
         self._poll_after_seconds = 60
@@ -213,7 +220,7 @@ class GenerateMusicTool(FunctionTool):
             return saved_audio_result(
                 self._api,
                 result,
-                data_dir=self._data_dir,
+                save_dir=self._cache_dir,
                 prefix="mmx_music",
                 success_message="音乐生成完成",
                 save_error_label="音乐保存失败",

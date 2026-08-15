@@ -82,7 +82,9 @@ class QueryVideoTaskTool(FunctionTool):
 class DownloadVideoTool(FunctionTool):
     """LLM 工具：下载已完成的 MiniMax 视频。"""
 
-    def __init__(self, api: VideoAPI, data_dir: str = "."):
+    def __init__(
+        self, api: VideoAPI, data_dir: str = ".", cache_dir: str | None = None
+    ):
         super().__init__(
             name="mmx_video_download",
             description="Download a completed video by file ID. Returns the local file path.",
@@ -92,7 +94,7 @@ class DownloadVideoTool(FunctionTool):
                         "File ID of the completed video (from mmx_video_task_get result)"
                     ),
                     "out": string_param(
-                        "Output file path under the plugin data directory (optional, auto-generated if omitted)"
+                        "Output file path under the plugin data directory (optional; saves to the AstrBot temp directory if omitted)"
                     ),
                 },
                 required=["fileId"],
@@ -100,6 +102,7 @@ class DownloadVideoTool(FunctionTool):
         )
         self._api = api
         self._data_dir = data_dir
+        self._cache_dir = cache_dir or data_dir
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -136,7 +139,7 @@ class DownloadVideoTool(FunctionTool):
             import time
 
             out_path = (
-                Path(self._data_dir) / f"mmx_video_{int(time.time() * 1000)}.mp4"
+                Path(self._cache_dir) / f"mmx_video_{int(time.time() * 1000)}.mp4"
             ).resolve()
         if out_path == Path(self._data_dir).resolve():
             return tool_result(
