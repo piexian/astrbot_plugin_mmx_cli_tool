@@ -154,6 +154,24 @@ class VideoAPI:
             raise ValueError(
                 "MiniMax-H3 纯文本生成需指定具体比例（如 16:9, 9:16），不能使用 adaptive"
             )
+        # 对齐 CLI validateVideoV2Request：ratio 白名单
+        if ratio not in VIDEO_V2_RATIOS:
+            raise ValueError(
+                f"MiniMax-H3 ratio 无效：{ratio}，可选 {', '.join(sorted(VIDEO_V2_RATIOS))}"
+            )
+        # duration 校验
+        if duration is None:
+            duration = 5
+        elif not isinstance(duration, int) or not 4 <= duration <= 15:
+            raise ValueError("MiniMax-H3 duration 需为 4-15 秒的整数")
+        # 参考音频需配合参考图/视频
+        if reference_audios and not (reference_images or reference_videos):
+            raise ValueError(
+                "MiniMax-H3 referenceAudios 需配合至少一个参考图或参考视频"
+            )
+        # 帧输入与参考输入互斥
+        if has_frame_input and has_reference_input:
+            raise ValueError("MiniMax-H3 帧输入（首尾帧）与参考输入不能同时使用")
         body: dict[str, Any] = {
             "model": VIDEO_V2_MODEL,
             "content": content,
@@ -202,6 +220,10 @@ class VideoAPI:
             status = result.get("status", "Unknown")
             if is_v2:
                 if status == "succeeded":
+                    # V2 下载链接在 content.url，归一化到顶层便于下载
+                    content = result.get("content")
+                    if isinstance(content, dict) and content.get("url"):
+                        result["video_url"] = content["url"]
                     return result
                 if status in ("failed", "cancelled", "expired"):
                     raise RuntimeError(f"视频生成失败: task_id={task_id} ({status})")
@@ -214,19 +236,22 @@ class VideoAPI:
 
         raise TimeoutError(f"视频生成超时 ({timeout}s): task_id={task_id}")
 
-    async def download(self, file_id: str, out_path: str) -> str:
-        """根据 file_id 下载视频到本地。"""
-        res = await self._client.request(
-            "GET",
-            file_retrieve_endpoint(self._client.base_url, file_id),
-        )
-        data: dict[str, Any] = res.json()
-        url = data.get("file", {}).get("download_url", "")
-        if not url:
+    async def download(
+        self, file_id: str, out_path: str, *, video_url: str | None = None
+    ) -> str:
+        """下载视频到本地。V2 任务传 video_url 直接下载，V1 走 file_retrieve。"""
+        if not video_url:
+            res = await self._client.request(
+                "GET",
+                file_retrieve_endpoint(self._client.base_url, file_id),
+            )
+            data: dict[str, Any] = res.json()
+            video_url = data.get("file", {}).get("download_url", "")
+        if not video_url:
             raise RuntimeError(f"未找到下载链接: file_id={file_id}")
 
         async with httpx.AsyncClient() as cl:
-            r = await cl.get(url)
+            r = await cl.get(video_url)
             r.raise_for_status()
             from pathlib import Path
 

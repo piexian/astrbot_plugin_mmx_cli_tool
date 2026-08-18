@@ -218,6 +218,15 @@ class GenerateVideoTool(FunctionTool):
         )
         # V2 (MiniMax-H3) 模型分支
         is_v2 = selected_model == "MiniMax-H3"
+        # V2 不支持 S2V 角色一致性（对齐 mmx-cli）
+        if is_v2 and subject_image:
+            return tool_result(
+                _hint_json(
+                    "MiniMax-H3 不支持 subjectImage",
+                    "V2 模型不支持角色一致性（S2V）。请改用 referenceImages 提供参考图片，或移除 subjectImage。",
+                    {"prompt": "A detective walking", "model": "MiniMax-H3"},
+                )
+            )
 
         # V2 媒体解析：本地图片转 data URI，URL/ mm_file:// 原样
         resolved_ref_images: list[str] | None = None
@@ -298,19 +307,19 @@ class GenerateVideoTool(FunctionTool):
                 model=selected_model,
             )
             file_id = final.get("file_id", "")
-            return tool_result(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "task_id": task_id,
-                        "status": "Success",
-                        "file_id": file_id,
-                        "message": "视频生成完成",
-                        "hint": "使用 mmx_video_download 工具下载视频文件",
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            v2_url = final.get("video_url", "")
+            resp = {
+                "ok": True,
+                "task_id": task_id,
+                "status": "Success",
+                "file_id": file_id,
+                "video_url": v2_url,
+            }
+            if v2_url and not file_id:
+                resp["hint"] = "视频已完成，下载链接已返回（V2 直链）"
+            else:
+                resp["hint"] = "使用 mmx_video_download 工具下载视频文件"
+            return tool_result(json.dumps(resp, ensure_ascii=False))
         except TimeoutError:
             return tool_result(
                 json.dumps(

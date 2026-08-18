@@ -723,6 +723,11 @@ class Main(star.Star):
                 or None
             )
             is_v2_cmd = selected_model == "MiniMax-H3"
+            if is_v2_cmd and subject_reference:
+                yield event.plain_result(
+                    "MiniMax-H3 不支持角色一致性（S2V）。请改用参考图片，或移除 --subject-image。"
+                )
+                return
             if is_v2_cmd:
                 result = await self._video.generate(
                     prompt=args.prompt,
@@ -761,13 +766,14 @@ class Main(star.Star):
                     model=selected_model,
                 )
                 fid = final.get("file_id", "")
-                if not fid:
+                v2_url = final.get("video_url", "")
+                if not fid and not v2_url:
                     yield event.plain_result("视频生成完成，但未返回可下载文件。")
                     return
 
                 try:
                     video_path = str(self._cache_dir / f"mmx_video_{task_id}.mp4")
-                    saved = await self._video.download(fid, video_path)
+                    saved = await self._video.download(fid, video_path, video_url=v2_url or None)
                     yield event.chain_result([Video(file=saved)])
                 except Exception as e:
                     logger.warning(f"[mmx] 视频下载失败: {e}")

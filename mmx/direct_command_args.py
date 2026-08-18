@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .model_options import MUSIC_COVER_MODELS
 from .utils import split_command_tokens
 
 
@@ -228,8 +229,10 @@ def parse_music_cover_command(raw: str) -> MusicCoverCommandArgs:
         raise DirectCommandError("--sample-rate 和 --bitrate 必须大于 0")
     if args.channel not in {1, 2}:
         raise DirectCommandError("--channel 只支持 1 或 2")
-    if args.model and args.model != "music-cover":
-        raise DirectCommandError("--model 只支持: music-cover")
+    if args.model and args.model not in MUSIC_COVER_MODELS:
+        raise DirectCommandError(
+            f"--model 只支持: {', '.join(MUSIC_COVER_MODELS)}"
+        )
     return args
 
 
@@ -337,7 +340,7 @@ def parse_video_command(raw: str) -> VideoCommandArgs:
     if not prompt:
         raise DirectCommandError(_video_usage())
     values["prompt"] = prompt
-    _coerce_ints(values, ("poll_interval",))
+    _coerce_ints(values, ("poll_interval", "duration"))
     args = VideoCommandArgs(**values)
     if args.last_frame and not args.first_frame:
         raise DirectCommandError("--last-frame 需要同时提供 --first-frame")
