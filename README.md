@@ -121,8 +121,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `--genre` / `--mood` / `--instruments` / `--tempo` / `--key` | 精细控制音乐风格 |
 | `--bpm <数字>` | 指定 BPM |
 | `--avoid` / `--use-case` / `--structure` / `--references` / `--extra` | 更多结构化描述 |
-| `--model <模型>` | `music-2.6`、`music-2.5+` 或 `music-2.5` |
-| `--output-format <hex\|url>` | 输出格式，默认 `hex` |
+| `--model <模型>` | `music-3.0`、`music-2.6`、`music-2.6-free`、`music-2.5+` 或 `music-2.5` |
+| `--output-format <hex|url>` | 输出格式，默认 `hex` |
 | `--format <mp3\|wav\|pcm>` | 音频格式，默认 `mp3` |
 | `--sample-rate <数字>` / `--bitrate <数字>` | 音频采样率和码率 |
 | `--aigc-watermark` | 添加 AI 生成内容水印 |
@@ -134,9 +134,9 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `--audio <URL>` | 参考音频 URL；省略时可从引用消息中的音频附件解析 |
 | `--audio-file <路径>` | 插件数据目录内参考音频路径；省略值时可从引用消息中的音频/文件附件解析 |
 | `--lyrics <歌词>` | 翻唱歌词，留空则由接口从参考音频提取 |
-| `--model <模型>` | `music-cover` |
-| `--format <mp3\|wav\|pcm>` | 音频格式，默认 `mp3` |
-| `--sample-rate <数字>` / `--bitrate <数字>` / `--channel <1\|2>` | 音频采样率、码率、声道数 |
+| `--model <模型>` | `music-cover` 或 `music-cover-free` |
+| `--format <mp3|wav|pcm>` | 音频格式，默认 `mp3` |
+| `--sample-rate <数字>` / `--bitrate <数字>` / `--channel <1|2>` | 音频采样率、码率、声道数 |
 
 常用语音指令参数：
 
@@ -192,11 +192,16 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `subjectImage` (string): 角色一致性参考图（URL、插件数据目录或 AstrBot 临时目录内路径，自动激活角色保持模式）。
 - `noWait` (boolean): `true` 时立即返回 `taskId`，不等待生成完成。
 - `callbackUrl` (string): 异步生成的回调地址。
+- `model` (string): 模型覆盖。设为 `MiniMax-H3` 启用 V2 生成（2K 分辨率，支持 `duration`/`ratio`/参考媒体）。
+- `duration` (integer): 输出时长（4-15 秒），仅 MiniMax-H3。
+- `ratio` (string): 宽高比（`adaptive`/`21:9`/`16:9`/`4:3`/`1:1`/`3:4`/`9:16`），仅 MiniMax-H3。
+- `referenceImages` (array): 参考图片（URL 或本地路径，最多 9 张），仅 MiniMax-H3。
+- `referenceVideos` (array): 参考视频（URL 或 `mm_file://` ID，最多 3 个），仅 MiniMax-H3。
+- `referenceAudios` (array): 参考音频（URL 或 `mm_file://` ID，最多 3 个，需配合参考图/视频），仅 MiniMax-H3。
 - *注：插件会根据传入参数自动切换模型（如 `Hailuo-02` 适用于首尾帧，`S2V-01` 适用于角色保持）。*
-
 #### 3. `mmx_video_task_get` (查询视频生成状态)
 - `taskId` (string, 必填): `mmx_generate_video` 返回的任务 ID。
-
+- `model` (string): 生成时使用的模型。V2 任务需设为 `MiniMax-H3` 以走 V2 查询端点。
 #### 4. `mmx_video_download` (下载视频到本地)
 - `fileId` (string, 必填): 视频生成完成后任务返回的文件 ID。
 - `out` (string): 插件数据目录内的自定义保存路径（选填，省略时保存到 AstrBot 临时目录）。拒绝绝对路径和 `..` 穿越。
@@ -205,7 +210,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `prompt` (string): 音乐风格描述。
 - `lyrics` (string): 歌词（可带 `[Verse]`, `[Chorus]` 等结构标签）。与 `instrumental` 互斥。
 - `lyricsOptimizer` (boolean): `true` 时根据风格自动生成歌词。与 `lyrics`/`instrumental` 互斥。
-- `instrumental` (boolean): 是否生成纯器乐无声乐。与 `lyrics` 互斥。
+- `instrumental` (boolean): 是否生成纯器乐无声乐。与 `lyrics` 互斥。启用后自动追加 `Style: instrumental, no vocals, pure music`。
 - `bpm` (integer): 目标每分钟节拍数。
 - `vocals` (string): 人声风格偏好。
 - `genre` / `mood` / `instruments` / `tempo` / `key` / `avoid` / `useCase` / `structure` / `references` / `extra` (string): 精细控制参数。
@@ -217,7 +222,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `audioFile` (string): 插件数据目录内的参考音频文件路径。与 `audio` 选填其一。
 - `lyrics` (string): 歌词（如留空则通过 ASR 自动从参考音频提取）。
 - `seed` (integer): 随机种子。
-- `model` (string): 模型名，`music-cover`。
+- `model` (string): 模型名，`music-cover` 或 `music-cover-free`。
 - `lyricsFile` (string): 插件数据目录内的歌词文件路径。与 `lyrics` 互斥。
 - `format` / `sampleRate` / `bitrate` / `channel`: 音频格式、采样率、码率、声道数。
 
@@ -292,7 +297,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `default_video_sef_model` | string | `MiniMax-Hailuo-02` | 默认首尾帧视频模型 |
 | `default_video_subject_model` | string | `S2V-01` | 默认角色一致性视频模型 |
 | `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
-| `default_music_model` | string | `music-2.6` | 默认音乐生成模型 |
+| `default_music_model` | string | `music-3.0` | 默认音乐生成模型 |
 | `default_music_cover_model` | string | `music-cover` | 默认音乐翻唱模型 |
 
 ## 项目结构

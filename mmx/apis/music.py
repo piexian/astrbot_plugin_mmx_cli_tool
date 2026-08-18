@@ -81,6 +81,9 @@ class MusicAPI:
         if extra:
             structured.append(f"Extra: {extra}")
 
+        # 对齐 mmx-cli buildPrompt：instrumental 模式追加风格标记
+        if is_instrumental:
+            structured.append("Style: instrumental, no vocals, pure music")
         if is_instrumental:
             body["is_instrumental"] = True
         elif lyrics_optimizer:

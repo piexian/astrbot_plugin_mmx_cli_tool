@@ -103,7 +103,7 @@ class GenerateMusicTool(FunctionTool):
                         "Embed AI-generated content watermark in audio for content provenance."
                     ),
                     "model": string_param(
-                        "Model override: music-2.6, music-2.5+, or music-2.5. "
+                        "Model override: music-3.0, music-2.6, music-2.6-free, music-2.5+, or music-2.5. "
                         "Omit to use the plugin default_music_model configuration."
                     ),
                 },

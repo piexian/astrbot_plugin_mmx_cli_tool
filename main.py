@@ -722,14 +722,31 @@ class Main(star.Star):
                 )
                 or None
             )
-            result = await self._video.generate(
-                prompt=args.prompt,
-                model=selected_model,
-                first_frame_image=first_frame,
-                last_frame_image=last_frame,
-                subject_reference=subject_reference,
-                callback_url=args.callback_url,
-            )
+            is_v2_cmd = selected_model == "MiniMax-H3"
+            if is_v2_cmd and subject_reference:
+                yield event.plain_result(
+                    "MiniMax-H3 不支持角色一致性（S2V）。请改用参考图片，或移除 --subject-image。"
+                )
+                return
+            if is_v2_cmd:
+                result = await self._video.generate(
+                    prompt=args.prompt,
+                    model=selected_model,
+                    first_frame_image=first_frame,
+                    last_frame_image=last_frame,
+                    duration=args.duration,
+                    ratio=args.ratio,
+                    callback_url=args.callback_url,
+                )
+            else:
+                result = await self._video.generate(
+                    prompt=args.prompt,
+                    model=selected_model,
+                    first_frame_image=first_frame,
+                    last_frame_image=last_frame,
+                    subject_reference=subject_reference,
+                    callback_url=args.callback_url,
+                )
             task_id = result.get("task_id", "")
             if not task_id:
                 yield event.plain_result("视频任务提交失败：未返回任务 ID。")
@@ -746,15 +763,17 @@ class Main(star.Star):
                     task_id,
                     poll_interval=args.poll_interval or self._video_poll_interval,
                     timeout=self._video_timeout,
+                    model=selected_model,
                 )
                 fid = final.get("file_id", "")
-                if not fid:
+                v2_url = final.get("video_url", "")
+                if not fid and not v2_url:
                     yield event.plain_result("视频生成完成，但未返回可下载文件。")
                     return
 
                 try:
                     video_path = str(self._cache_dir / f"mmx_video_{task_id}.mp4")
-                    saved = await self._video.download(fid, video_path)
+                    saved = await self._video.download(fid, video_path, video_url=v2_url or None)
                     yield event.chain_result([Video(file=saved)])
                 except Exception as e:
                     logger.warning(f"[mmx] 视频下载失败: {e}")

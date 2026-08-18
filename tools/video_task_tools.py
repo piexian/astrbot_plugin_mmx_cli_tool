@@ -30,6 +30,9 @@ class QueryVideoTaskTool(FunctionTool):
                     "taskId": string_param(
                         "Video generation task ID (returned by mmx_generate_video)"
                     ),
+                    "model": string_param(
+                        "Model used for generation. Set to MiniMax-H3 for V2 task queries."
+                    ),
                 },
                 required=["taskId"],
             ),
@@ -54,7 +57,7 @@ class QueryVideoTaskTool(FunctionTool):
             )
 
         try:
-            result = await self._api.get_task(task_id)
+            result = await self._api.get_task(task_id, model=kwargs.get("model"))
         except Exception as e:
             logger.error(f"[mmx] 视频任务查询失败: {e}")
             return tool_result(
@@ -64,19 +67,25 @@ class QueryVideoTaskTool(FunctionTool):
                 )
             )
 
-        status = result.get("status", "Unknown")
+        status = str(result.get("status", "Unknown"))
+        status_lower = status.lower()
+        # V1: file_id + Success/Failed/Processing；V2: content.url + succeeded/failed/cancelled/expired
         file_id = result.get("file_id", "")
+        content = result.get("content")
+        video_url = content.get("url", "") if isinstance(content, dict) else ""
         resp: dict = {"ok": True, "task_id": task_id, "status": status}
-        if file_id:
-            resp["file_id"] = file_id
+        if file_id or video_url:
+            if file_id:
+                resp["file_id"] = file_id
+            if video_url:
+                resp["video_url"] = video_url
             resp["hint"] = "视频已完成，使用 mmx_video_download 工具下载"
-        elif status == "Processing":
+        elif status_lower in ("processing", "queued", "pending"):
             resp["hint"] = "视频仍在生成中，请稍后再次查询"
-        elif status == "Failed":
+        elif status_lower in ("failed", "cancelled", "expired"):
             resp["ok"] = False
-            resp["error"] = "视频生成失败"
+            resp["error"] = f"视频生成失败（{status}）"
         return tool_result(json.dumps(resp, ensure_ascii=False))
-
 
 @dataclass
 class DownloadVideoTool(FunctionTool):

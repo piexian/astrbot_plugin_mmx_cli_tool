@@ -60,7 +60,7 @@ class MusicCoverTool(FunctionTool):
                         "Random seed 0-1000000 for reproducible results"
                     ),
                     "model": string_param(
-                        "Model override: music-cover."
+                        "Model override: music-cover or music-cover-free."
                     ),
                     "format": string_param("Audio format: mp3, wav, or pcm."),
                     "sampleRate": integer_param("Sample rate, e.g. 44100."),

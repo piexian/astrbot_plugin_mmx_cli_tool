@@ -12,8 +12,8 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.video import VideoAPI
 from ..mmx.utils import resolve_image
+from .schema import array_param, boolean_param, integer_param, object_parameters, string_param
 from .result import tool_result
-from .schema import boolean_param, integer_param, object_parameters, string_param
 
 
 def _hint_json(error: str, hint: str, example: dict | None = None) -> str:
@@ -52,13 +52,15 @@ class GenerateVideoTool(FunctionTool):
                 "  I2V: firstFrame image\n"
                 "  SEF: firstFrame + lastFrame (start-end frame interpolation)\n"
                 "  S2V: subjectImage (character consistency)\n"
+                "  V2 (MiniMax-H3): set model=MiniMax-H3 for 2K generation with duration/ratio/reference media\n"
                 "Model selection follows plugin configuration unless explicitly set."
             ),
             parameters=object_parameters(
                 {
                     "prompt": string_param("Video description (required)"),
                     "model": string_param(
-                        "Model override. Omit to use plugin default_video_model or the configured SEF/S2V model."
+                        "Model override. Omit to use plugin default_video_model or the configured SEF/S2V model. "
+                        "Set to MiniMax-H3 to enable V2 generation (2K, duration/ratio/reference media)."
                     ),
                     "firstFrame": string_param(
                         "First frame image (URL, plugin-data path, or AstrBot temp path)."
@@ -77,6 +79,25 @@ class GenerateVideoTool(FunctionTool):
                     ),
                     "pollInterval": integer_param(
                         "Polling interval in seconds when waiting."
+                    ),
+                    # V2 (MiniMax-H3) 参数
+                    "duration": integer_param(
+                        "Output duration in seconds (4-15). Only for MiniMax-H3."
+                    ),
+                    "ratio": string_param(
+                        "Aspect ratio: adaptive, 21:9, 16:9, 4:3, 1:1, 3:4, 9:16. Only for MiniMax-H3."
+                    ),
+                    "referenceImages": array_param(
+                        "Reference images for MiniMax-H3 (URL, plugin-data path, or AstrBot temp path). Up to 9.",
+                        string_param("Image URL or local path."),
+                    ),
+                    "referenceVideos": array_param(
+                        "Reference videos for MiniMax-H3 (URL or mm_file:// ID). Up to 3.",
+                        string_param("Video URL or mm_file:// ID."),
+                    ),
+                    "referenceAudios": array_param(
+                        "Reference audios for MiniMax-H3 (URL or mm_file:// ID). Up to 3. Requires a reference image or video.",
+                        string_param("Audio URL or mm_file:// ID."),
                     ),
                 },
                 required=["prompt"],
@@ -141,6 +162,7 @@ class GenerateVideoTool(FunctionTool):
             )
 
         # 校验 Fast 模型需要 firstFrame（对齐 mmx-cli）
+
         if model and "Fast" in model and not first_frame:
             return tool_result(
                 _hint_json(
@@ -194,16 +216,64 @@ class GenerateVideoTool(FunctionTool):
             )
             or None
         )
+        # V2 (MiniMax-H3) 模型分支
+        is_v2 = selected_model == "MiniMax-H3"
+        # V2 不支持 S2V 角色一致性（对齐 mmx-cli）
+        if is_v2 and subject_image:
+            return tool_result(
+                _hint_json(
+                    "MiniMax-H3 不支持 subjectImage",
+                    "V2 模型不支持角色一致性（S2V）。请改用 referenceImages 提供参考图片，或移除 subjectImage。",
+                    {"prompt": "A detective walking", "model": "MiniMax-H3"},
+                )
+            )
+
+        # V2 媒体解析：本地图片转 data URI，URL/ mm_file:// 原样
+        resolved_ref_images: list[str] | None = None
+        resolved_ref_videos: list[str] | None = None
+        resolved_ref_audios: list[str] | None = None
+        if is_v2:
+            ref_images_raw = kwargs.get("referenceImages") or []
+            if ref_images_raw:
+                resolved_ref_images = [
+                    await resolve_image(
+                        str(p),
+                        data_dir=self._data_dir,
+                        extra_allowed_dirs=self._extra_allowed_dirs,
+                    )
+                    for p in ref_images_raw
+                ]
+            # 参考视频/音频：URL 或 mm_file:// ID 原样传递，本地路径暂不支持（需大文件 base64）
+            ref_videos_raw = kwargs.get("referenceVideos") or []
+            if ref_videos_raw:
+                resolved_ref_videos = [str(p) for p in ref_videos_raw]
+            ref_audios_raw = kwargs.get("referenceAudios") or []
+            if ref_audios_raw:
+                resolved_ref_audios = [str(p) for p in ref_audios_raw]
 
         try:
-            result = await self._api.generate(
-                prompt=prompt,
-                model=selected_model,
-                first_frame_image=resolved_first,
-                last_frame_image=resolved_last,
-                subject_reference=subject_reference,
-                callback_url=callback_url,
-            )
+            if is_v2:
+                result = await self._api.generate(
+                    prompt=prompt,
+                    model=selected_model,
+                    first_frame_image=resolved_first,
+                    last_frame_image=resolved_last,
+                    reference_images=resolved_ref_images,
+                    reference_videos=resolved_ref_videos,
+                    reference_audios=resolved_ref_audios,
+                    duration=kwargs.get("duration"),
+                    ratio=kwargs.get("ratio"),
+                    callback_url=callback_url,
+                )
+            else:
+                result = await self._api.generate(
+                    prompt=prompt,
+                    model=selected_model,
+                    first_frame_image=resolved_first,
+                    last_frame_image=resolved_last,
+                    subject_reference=subject_reference,
+                    callback_url=callback_url,
+                )
         except Exception as e:
             logger.error(f"[mmx] 视频生成失败: {e}")
             return tool_result(
@@ -234,21 +304,22 @@ class GenerateVideoTool(FunctionTool):
                 task_id,
                 poll_interval=poll_interval,
                 timeout=self._video_timeout,
+                model=selected_model,
             )
             file_id = final.get("file_id", "")
-            return tool_result(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "task_id": task_id,
-                        "status": "Success",
-                        "file_id": file_id,
-                        "message": "视频生成完成",
-                        "hint": "使用 mmx_video_download 工具下载视频文件",
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            v2_url = final.get("video_url", "")
+            resp = {
+                "ok": True,
+                "task_id": task_id,
+                "status": "Success",
+                "file_id": file_id,
+                "video_url": v2_url,
+            }
+            if v2_url and not file_id:
+                resp["hint"] = "视频已完成，下载链接已返回（V2 直链）"
+            else:
+                resp["hint"] = "使用 mmx_video_download 工具下载视频文件"
+            return tool_result(json.dumps(resp, ensure_ascii=False))
         except TimeoutError:
             return tool_result(
                 json.dumps(
