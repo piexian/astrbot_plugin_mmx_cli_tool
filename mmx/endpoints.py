@@ -28,14 +28,23 @@ def image_endpoint(base: str) -> str:
 
 
 def video_gen_endpoint(base: str) -> str:
-    """视频生成端点。"""
+    """视频生成端点（V1 legacy）。"""
     return f"{base}/v1/video_generation"
 
 
+def video_gen_v2_endpoint(base: str) -> str:
+    """视频生成端点（V2，MiniMax-H3）。"""
+    return f"{base}/v2/video_generation"
+
+
 def video_task_endpoint(base: str, task_id: str) -> str:
-    """视频任务查询端点。"""
+    """视频任务查询端点（V1 legacy）。"""
     return f"{base}/v1/query/video_generation?task_id={task_id}"
 
+
+def video_task_v2_endpoint(base: str, task_id: str) -> str:
+    """视频任务查询端点（V2，MiniMax-H3）。"""
+    return f"{base}/v2/query/video_generation/{task_id}"
 
 def music_endpoint(base: str) -> str:
     """音乐生成端点。"""

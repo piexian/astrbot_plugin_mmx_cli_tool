@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.3.0 - 2026-08-18
+
+- 同步 mmx-cli 1.0.19：音乐生成默认模型升级为 `music-3.0`，有效模型新增 `music-3.0`、`music-2.6-free`；音乐翻唱新增 `music-cover-free` 模型。
+- 音乐生成 `instrumental` 模式自动追加 `Style: instrumental, no vocals, pure music`（对齐 CLI buildPrompt）。
+- 视频生成新增 MiniMax-H3（Video Generation V2）支持：设 `model=MiniMax-H3` 启用 2K 生成，支持 `duration`（4-15 秒）、`ratio`（adaptive/21:9/16:9/4:3/1:1/3:4/9:16）、`referenceImages`（≤9）、`referenceVideos`（≤3）、`referenceAudios`（≤3，需配合参考图/视频）。
+- `mmx_video_task_get` 新增 `model` 参数，V2 任务设为 `MiniMax-H3` 走 V2 查询端点；`mmx_generate_video` 同步等待按模型路由 V1/V2 轮询。
+- `/mmx video` 直接指令支持 `--duration`、`--ratio` 与 `--model MiniMax-H3`。
+
 ## 0.2.7 - 2026-08-15
 
 - 修复 LLM 工具无法读取 AstrBot 临时目录图片的问题：`mmx_describe_image`、`mmx_generate_image` 的 `subjectRef`、`mmx_generate_video` 的首尾帧/角色图现在允许读取 AstrBot 临时目录（聊天图片下载位置）内的文件，其余本地路径仍被拒绝。

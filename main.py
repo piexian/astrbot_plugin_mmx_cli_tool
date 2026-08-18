@@ -722,14 +722,26 @@ class Main(star.Star):
                 )
                 or None
             )
-            result = await self._video.generate(
-                prompt=args.prompt,
-                model=selected_model,
-                first_frame_image=first_frame,
-                last_frame_image=last_frame,
-                subject_reference=subject_reference,
-                callback_url=args.callback_url,
-            )
+            is_v2_cmd = selected_model == "MiniMax-H3"
+            if is_v2_cmd:
+                result = await self._video.generate(
+                    prompt=args.prompt,
+                    model=selected_model,
+                    first_frame_image=first_frame,
+                    last_frame_image=last_frame,
+                    duration=args.duration,
+                    ratio=args.ratio,
+                    callback_url=args.callback_url,
+                )
+            else:
+                result = await self._video.generate(
+                    prompt=args.prompt,
+                    model=selected_model,
+                    first_frame_image=first_frame,
+                    last_frame_image=last_frame,
+                    subject_reference=subject_reference,
+                    callback_url=args.callback_url,
+                )
             task_id = result.get("task_id", "")
             if not task_id:
                 yield event.plain_result("视频任务提交失败：未返回任务 ID。")
@@ -746,6 +758,7 @@ class Main(star.Star):
                     task_id,
                     poll_interval=args.poll_interval or self._video_poll_interval,
                     timeout=self._video_timeout,
+                    model=selected_model,
                 )
                 fid = final.get("file_id", "")
                 if not fid:

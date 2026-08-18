@@ -54,6 +54,12 @@ class VideoCommandArgs:
     callback_url: str | None = None
     no_wait: bool = False
     poll_interval: int | None = None
+    # V2 (MiniMax-H3)
+    duration: int | None = None
+    ratio: str | None = None
+    reference_images: tuple[str, ...] = ()
+    reference_videos: tuple[str, ...] = ()
+    reference_audios: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -311,6 +317,8 @@ def parse_video_command(raw: str) -> VideoCommandArgs:
             "--callbackUrl": "callback_url",
             "--poll-interval": "poll_interval",
             "--pollInterval": "poll_interval",
+            "--duration": "duration",
+            "--ratio": "ratio",
         },
         optional_value_flags={
             "--first-frame",

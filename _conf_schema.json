@@ -65,7 +65,7 @@
   "default_music_model": {
     "description": "默认音乐生成模型",
     "type": "string",
-    "default": "music-2.6"
+    "default": "music-3.0"
   },
   "default_music_cover_model": {
     "description": "默认音乐翻唱模型",

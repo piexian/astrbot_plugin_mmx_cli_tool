@@ -30,6 +30,9 @@ class QueryVideoTaskTool(FunctionTool):
                     "taskId": string_param(
                         "Video generation task ID (returned by mmx_generate_video)"
                     ),
+                    "model": string_param(
+                        "Model used for generation. Set to MiniMax-H3 for V2 task queries."
+                    ),
                 },
                 required=["taskId"],
             ),
@@ -54,7 +57,7 @@ class QueryVideoTaskTool(FunctionTool):
             )
 
         try:
-            result = await self._api.get_task(task_id)
+            result = await self._api.get_task(task_id, model=kwargs.get("model"))
         except Exception as e:
             logger.error(f"[mmx] 视频任务查询失败: {e}")
             return tool_result(
