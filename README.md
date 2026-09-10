@@ -37,8 +37,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_file_upload` | 上传插件数据目录或 AstrBot 临时目录内的文件到 MiniMax 存储 | 管理员 |
 | `mmx_file_list` | 列出已上传到 MiniMax 存储的文件 | 管理员 |
 | `mmx_file_delete` | 删除已上传的 MiniMax 文件 | 管理员 |
-| `mmx_generate_music` | 生成音乐（支持纯器乐、带歌词，及所有精细控制参数；上游 mmx-cli 1.0.25 已移除音乐命令，插件仍直连服务端 API） | 无 |
-| `mmx_music_cover` | 基于参考音频及描述进行翻唱（支持 URL 和本地音频输入；上游 CLI 已移除，同上） | 无 |
+| `mmx_generate_music` | 生成音乐（支持纯器乐、带歌词，及所有精细控制参数） | 无 |
+| `mmx_music_cover` | 基于参考音频及描述进行翻唱（支持 URL 和本地音频输入） | 无 |
 | `mmx_background_task_get` | 查询音乐生成和翻唱的后台任务状态与结果 | 无 |
 | `mmx_speech_synthesize` | 将文本合成语音（TTS），支持 30+ 种音色和语速/音量/音高控制 | 无 |
 | `mmx_speech_voices` | 查询可用 TTS 系统音色列表 | 无 |
@@ -64,6 +64,10 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx quota                    # 查询额度（多 Key 默认每页显示 3 个）
 /mmx quota page <页码>        # 翻页查看 Key 额度
 ```
+
+
+> [!WARNING]
+> **音乐生成与翻唱已被上游弃用。** mmx-cli 从 1.0.25 起移除了全部音乐命令。本插件不依赖 mmx-cli 运行，仍直接调用 MiniMax 服务端接口，目前功能可用；但服务端后续可能随时关闭接口，届时音乐相关功能将失效，请以实际调用结果为准。
 
 ### 示例
 
@@ -210,6 +214,10 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - `out` (string): 插件数据目录内的自定义保存路径（选填，省略时保存到 AstrBot 临时目录）。拒绝绝对路径和 `..` 穿越。
 
 #### 5. `mmx_generate_music` (音乐生成)
+
+> [!WARNING]
+> 上游已弃用：见「指令」一节关于音乐功能的说明。
+
 - `prompt` (string): 音乐风格描述。
 - `lyrics` (string): 歌词（可带 `[Verse]`, `[Chorus]` 等结构标签）。与 `instrumental` 互斥。
 - `lyricsOptimizer` (boolean): `true` 时根据风格自动生成歌词。与 `lyrics`/`instrumental` 互斥。
