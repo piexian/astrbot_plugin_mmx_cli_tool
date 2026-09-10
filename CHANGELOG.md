@@ -1,5 +1,18 @@
 # 更新日志
 
+## 0.4.0 - 2026-09-10
+
+- 对齐 mmx-cli 1.0.25（与官方 1.0.16/1.0.19/1.0.25 包逐一比对打包源码确认）：
+- 文件上传端点由 `/v1/files` 修正为 `/v1/files/upload`（CLI 自 1.0.19 起变更）。
+- 额度查询主端点由 `/v1/api/openplatform/coding_plan/remains` 调整为 `/v1/token_plan/remains`（CLI 自 1.0.19 起变更），openplatform 与 www 子域路径降级为回退。
+- 新增账户余额分支：`sk-api-` 开头的 Key 自动走 `/account/query_balance`，`/mmx quota` 与 `mmx_check_quota` 展示可用余额/现金/代金券/信用额度/欠费；此类 Key 不参与按模型额度汇总。
+- 语音 `pronunciation` 改发 CLI 1.0.19+ 的 `{"tone": ["文本/(读音)"]}` 格式（字符串原样透传，旧 {text, tone} 字典输入自动转换）。
+- 语音合成新增 `emotion`、`text_normalization`、`latex_read` 参数（LLM 工具与 `/mmx speech` 同步支持），请求体显式携带 `output_format: hex`。
+- 新增 `default_speech_voice` 配置项（默认 `English_expressive_narrator`），LLM 工具与 `/mmx speech` 的 `voice` 缺省时读取。
+- `mmx_speech_voices` 每个音色条目新增 `gender` 字段（male/female/unknown，按 voice_id 与名称推断），并新增 `gender` 过滤参数，便于 AI 区分男声/女声。
+- `mmx_file_upload` 与 `FileAPI.upload` 的 `purpose` 默认值统一为 `retrieval`。
+- 说明：mmx-cli 1.0.25 已整体移除音乐生成/翻唱命令，插件仍直连服务端 `/v1/music_generation`，功能保留但上游已弃用，后续服务端可能关闭。
+- `MiniMaxClient` 新增公开 `api_key` 属性，`main.py` 不再访问私有成员。
 ## 0.3.0 - 2026-08-18
 
 - 同步 mmx-cli 1.0.19：音乐生成默认模型升级为 `music-3.0`，有效模型新增 `music-3.0`、`music-2.6-free`；音乐翻唱新增 `music-cover-free` 模型。

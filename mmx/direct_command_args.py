@@ -32,10 +32,13 @@ class ImageCommandArgs:
 class SpeechCommandArgs:
     text: str
     model: str | None = None
-    voice: str = "English_expressive_narrator"
+    voice: str | None = None
     speed: float | None = None
     volume: float | None = None
     pitch: float | None = None
+    emotion: str | None = None
+    text_normalization: bool = False
+    latex_read: bool = False
     audio_format: str = "mp3"
     sample_rate: int = 32000
     bitrate: int = 128000
@@ -43,7 +46,6 @@ class SpeechCommandArgs:
     language: str | None = None
     subtitles: bool = False
     pronunciation: tuple[str, ...] = ()
-
 
 @dataclass(frozen=True)
 class VideoCommandArgs:
@@ -139,7 +141,13 @@ def parse_image_command(raw: str) -> ImageCommandArgs:
 def parse_speech_command(raw: str) -> SpeechCommandArgs:
     values, positional = _parse_cli_args(
         raw,
-        bool_flags={"--subtitles": "subtitles"},
+        bool_flags={
+            "--subtitles": "subtitles",
+            "--text-normalization": "text_normalization",
+            "--textNormalization": "text_normalization",
+            "--latex-read": "latex_read",
+            "--latexRead": "latex_read",
+        },
         value_flags={
             "--text": "text",
             "--model": "model",
@@ -147,6 +155,7 @@ def parse_speech_command(raw: str) -> SpeechCommandArgs:
             "--speed": "speed",
             "--volume": "volume",
             "--pitch": "pitch",
+            "--emotion": "emotion",
             "--format": "audio_format",
             "--sample-rate": "sample_rate",
             "--sampleRate": "sample_rate",
@@ -470,9 +479,9 @@ def _image_usage() -> str:
 def _speech_usage() -> str:
     return (
         "用法: /mmx speech <文本> [--voice <音色>] [--speed 1.0] "
-        "[--format mp3] [--sample-rate 32000] [--pronunciation 文本/读音]"
+        "[--emotion happy] [--format mp3] [--sample-rate 32000] "
+        "[--pronunciation 处理/(chu li)]"
     )
-
 
 def _video_usage() -> str:
     return (

@@ -11,30 +11,33 @@ from ..endpoints import speech_endpoint, voices_endpoint
 
 def _normalize_pronunciation(
     pronunciation: object,
-) -> list[dict[str, str]]:
+) -> dict[str, list[str]]:
+    """归一化为 MiniMax pronunciation_dict 格式 {"tone": ["文本/(读音)"]}。
+
+    对齐 mmx-cli >= 1.0.19：字符串条目原样透传；
+    兼容旧调用方传入的 {text, tone} 字典，转换为 "text/(tone)"。
+    """
     if pronunciation is None:
-        return []
+        return {}
 
     entries = pronunciation
     if isinstance(pronunciation, str):
         entries = [pronunciation]
     if not isinstance(entries, (list, tuple)):
-        return []
+        return {}
 
-    result: list[dict[str, str]] = []
+    tones: list[str] = []
     for item in entries:
         if isinstance(item, dict):
             text = str(item.get("text") or "").strip()
-            tone = str(item.get("tone") or item.get("pronunciation") or text).strip()
+            tone = str(item.get("tone") or item.get("pronunciation") or "").strip()
+            if text:
+                tones.append(f"{text}/({tone})" if tone else text)
         else:
             raw = str(item).strip()
-            text, sep, tone = raw.partition("/")
-            text = text.strip()
-            tone = tone.strip() if sep else text
-        if text:
-            result.append({"text": text, "tone": tone or text})
-    return result
-
+            if raw:
+                tones.append(raw)
+    return {"tone": tones} if tones else {}
 
 class SpeechAPI:
     """MiniMax 语音合成接口。"""
@@ -51,6 +54,9 @@ class SpeechAPI:
         speed: float | None = None,
         volume: float | None = None,
         pitch: float | None = None,
+        emotion: str | None = None,
+        text_normalization: bool = False,
+        latex_read: bool = False,
         audio_format: str = "mp3",
         sample_rate: int = 32000,
         bitrate: int = 128000,
@@ -59,7 +65,7 @@ class SpeechAPI:
         subtitles: bool = False,
         pronunciation: object = None,
     ) -> dict[str, Any]:
-        """同步 TTS 合成，最大 10k 字符。"""
+        """同步 TTS 合成，最大 10k 字符。对齐 mmx-cli >= 1.0.19 请求体。"""
         body: dict[str, Any] = {
             "text": text,
             "voice_setting": {
@@ -71,6 +77,8 @@ class SpeechAPI:
                 "bitrate": bitrate,
                 "channel": channels,
             },
+            "output_format": "hex",
+            "stream": False,
         }
         if model:
             body["model"] = model
@@ -80,6 +88,12 @@ class SpeechAPI:
             body["voice_setting"]["vol"] = volume
         if pitch is not None:
             body["voice_setting"]["pitch"] = pitch
+        if emotion:
+            body["voice_setting"]["emotion"] = emotion
+        if text_normalization:
+            body["voice_setting"]["text_normalization"] = True
+        if latex_read:
+            body["voice_setting"]["latex_read"] = True
         if language:
             body["language_boost"] = language
         if subtitles:
@@ -87,7 +101,6 @@ class SpeechAPI:
         pronunciation_dict = _normalize_pronunciation(pronunciation)
         if pronunciation_dict:
             body["pronunciation_dict"] = pronunciation_dict
-
         return await self._client.request_json(
             "POST",
             speech_endpoint(self._client.base_url),

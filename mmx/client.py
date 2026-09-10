@@ -39,6 +39,11 @@ class MiniMaxClient:
         """当前 API 基础地址。"""
         return self._base_url
 
+    @property
+    def api_key(self) -> str | None:
+        """客户端固定 API Key（key_getter 模式下为 None）。"""
+        return self._api_key
+
     async def _resolve(self, model: str = "") -> str:
         """获取本次请求的 API Key。"""
         if self._key_getter is not None:

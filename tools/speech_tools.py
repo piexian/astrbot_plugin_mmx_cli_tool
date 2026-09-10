@@ -11,6 +11,7 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.speech import SpeechAPI
+from ..mmx.voice_gender import infer_voice_gender
 from .result import tool_result
 from .schema import (
     array_param,
@@ -50,6 +51,7 @@ class SpeechSynthesizeTool(FunctionTool):
         api: SpeechAPI,
         data_dir: str = ".",
         default_model: str = "",
+        default_voice: str = "",
         cache_dir: str | None = None,
     ):
         super().__init__(
@@ -57,6 +59,8 @@ class SpeechSynthesizeTool(FunctionTool):
             description=(
                 "Synthesize speech from text using MiniMax TTS. "
                 "Supports 30+ voices, speed/pitch/volume control. Max 10k characters. "
+                "Use mmx_speech_voices to list voices (each entry is annotated "
+                "with gender: male/female/unknown). "
                 "Returns the generated audio file path."
             ),
             parameters=object_parameters(
@@ -65,7 +69,8 @@ class SpeechSynthesizeTool(FunctionTool):
                         "Text to synthesize (required, max 10000 characters)"
                     ),
                     "voice": string_param(
-                        "Voice ID. Use mmx_speech_voices to list available voices."
+                        "Voice ID. Use mmx_speech_voices to list available voices "
+                        "with gender annotations; omit to use the configured default."
                     ),
                     "model": string_param(
                         "Model override: speech-2.8-hd, speech-2.6, or speech-02. Omit to use the plugin default_speech_model configuration."
@@ -75,6 +80,15 @@ class SpeechSynthesizeTool(FunctionTool):
                     ),
                     "volume": number_param("Volume level"),
                     "pitch": number_param("Pitch adjustment"),
+                    "emotion": string_param(
+                        "Emotion of the voice: happy, sad, angry, fearful, disgusted, surprised, calm, fluent, whisper (passed through as-is)."
+                    ),
+                    "textNormalization": boolean_param(
+                        "Enable text normalization (numbers, symbols read aloud naturally)."
+                    ),
+                    "latexRead": boolean_param(
+                        "Read LaTeX formulas aloud when the text contains them."
+                    ),
                     "format": string_param(
                         "Audio format: mp3, pcm, flac, wav, pcmu_raw, pcmu_wav, opus"
                     ),
@@ -88,8 +102,8 @@ class SpeechSynthesizeTool(FunctionTool):
                         "Include subtitle timing data when supported."
                     ),
                     "pronunciation": array_param(
-                        "Custom pronunciation entries. Each item uses 'text/tone', for example 'MiniMax/minimax'.",
-                        string_param("One pronunciation entry in text/tone format."),
+                        "Custom pronunciation entries in 'text/(reading)' format, e.g. '处理/(chu li)' or 'MiniMax/(mini max)'.",
+                        string_param("One pronunciation entry in text/(reading) format."),
                     ),
                 },
                 required=["text"],
@@ -98,8 +112,8 @@ class SpeechSynthesizeTool(FunctionTool):
         self._api = api
         self._data_dir = data_dir
         self._default_model = default_model
+        self._default_voice = default_voice
         self._cache_dir = cache_dir or data_dir
-
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
@@ -127,10 +141,17 @@ class SpeechSynthesizeTool(FunctionTool):
             result = await self._api.synthesize(
                 text=text,
                 model=kwargs.get("model") or self._default_model or None,
-                voice=kwargs.get("voice") or "English_expressive_narrator",
+                voice=(
+                    kwargs.get("voice")
+                    or self._default_voice
+                    or "English_expressive_narrator"
+                ),
                 speed=kwargs.get("speed"),
                 volume=kwargs.get("volume"),
                 pitch=kwargs.get("pitch"),
+                emotion=kwargs.get("emotion"),
+                text_normalization=bool(kwargs.get("textNormalization", False)),
+                latex_read=bool(kwargs.get("latexRead", False)),
                 audio_format=audio_format,
                 sample_rate=kwargs.get("sampleRate") or 32000,
                 bitrate=kwargs.get("bitrate") or 128000,
@@ -181,17 +202,23 @@ class ListVoicesTool(FunctionTool):
     def __init__(self, api: SpeechAPI):
         super().__init__(
             name="mmx_speech_voices",
-            description="List available system voices for MiniMax TTS.",
+            description=(
+                "List available system voices for MiniMax TTS. Each voice entry "
+                "includes voice_id, voice_name, and a gender field "
+                "(male/female/unknown) inferred from the voice id and name."
+            ),
             parameters=object_parameters(
                 {
                     "language": string_param(
                         "Client-side filter by voice ID language prefix (e.g. english, korean, japanese)"
                     ),
+                    "gender": string_param(
+                        "Client-side filter by inferred gender: male or female"
+                    ),
                 },
             ),
         )
         self._api = api
-
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
@@ -206,13 +233,38 @@ class ListVoicesTool(FunctionTool):
                 )
             )
 
+        voices = result.get("system_voice", [])
+        if isinstance(voices, list):
+            annotated = []
+            for voice in voices:
+                if not isinstance(voice, dict):
+                    annotated.append(voice)
+                    continue
+                gender = infer_voice_gender(
+                    voice.get("voice_id"), voice.get("voice_name")
+                )
+                annotated.append({**voice, "gender": gender or "unknown"})
+            result = {**result, "system_voice": annotated}
+            voices = annotated
+
         language = kwargs.get("language")
-        if language:
-            data = result.copy()
-            voices = data.get("system_voice", [])
-            if isinstance(voices, list):
-                data["system_voice"] = _filter_voices_by_language(voices, language)
-            result = data
+        if language and isinstance(voices, list):
+            result = {
+                **result,
+                "system_voice": _filter_voices_by_language(voices, language),
+            }
+            voices = result["system_voice"]
+
+        gender_filter = str(kwargs.get("gender") or "").strip().lower()
+        if gender_filter and isinstance(voices, list):
+            result = {
+                **result,
+                "system_voice": [
+                    v
+                    for v in voices
+                    if isinstance(v, dict) and v.get("gender") == gender_filter
+                ],
+            }
 
         return tool_result(
             json.dumps({"ok": True, "data": result}, ensure_ascii=False)

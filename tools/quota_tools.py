@@ -97,11 +97,27 @@ class CheckQuotaTool(FunctionTool):
 
         # 精简为人类可读的摘要
         merged: dict[str, dict] = {}
+        balances: list[dict] = []
         failed_key_indexes: list[int] = []
         raw_results = []
         for idx, (raw_result, model_remains) in enumerate(results, start=1):
-            if raw_result is not None:
-                raw_results.append(raw_result)
+            if raw_result is None:
+                failed_key_indexes.append(idx)
+                continue
+            raw_results.append(raw_result)
+            if raw_result.get("kind") == "account_balance":
+                # sk-api- 账户余额型 Key：无按模型额度，直接汇总余额字段
+                balances.append(
+                    {
+                        "key_index": idx,
+                        "available_amount": raw_result.get("available_amount"),
+                        "cash_balance": raw_result.get("cash_balance"),
+                        "voucher_balance": raw_result.get("voucher_balance"),
+                        "credit_balance": raw_result.get("credit_balance"),
+                        "owed_amount": raw_result.get("owed_amount"),
+                    }
+                )
+                continue
             if not model_remains:
                 failed_key_indexes.append(idx)
                 continue
@@ -142,6 +158,7 @@ class CheckQuotaTool(FunctionTool):
                     "key_count": key_count,
                     "merged": len(api_keys) > 1,
                     "models": summary,
+                    "balances": balances,
                     "failed_key_indexes": failed_key_indexes,
                     "raw": raw_results[0] if len(raw_results) == 1 else None,
                 },

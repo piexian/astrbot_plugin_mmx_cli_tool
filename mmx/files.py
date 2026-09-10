@@ -21,9 +21,9 @@ class FileAPI:
         self._client = client
 
     async def upload(
-        self, file_path: str, purpose: str = "file-extract"
+        self, file_path: str, purpose: str = "retrieval"
     ) -> dict[str, Any]:
-        """上传文件到 MiniMax。"""
+        """上传文件到 MiniMax（purpose 默认值对齐 mmx-cli >= 1.0.16）。"""
         p = Path(file_path)
         if not p.is_file():
             raise FileNotFoundError(f"文件不存在: {file_path}")

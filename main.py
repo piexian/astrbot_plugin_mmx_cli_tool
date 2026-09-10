@@ -168,6 +168,25 @@ def _format_quota_reset_time(value: object) -> str | None:
     return f"{minutes}分钟"
 
 
+def _format_account_balance(result: dict) -> list[str]:
+    """格式化账户余额（sk-api- Key 的 query_balance 响应，对齐 mmx-cli 展示）。"""
+    fields = [
+        ("可用余额", "available_amount"),
+        ("现金", "cash_balance"),
+        ("代金券", "voucher_balance"),
+        ("信用额度", "credit_balance"),
+        ("欠费", "owed_amount"),
+    ]
+    lines = ["账户余额:"]
+    for label, key in fields:
+        value = result.get(key)
+        lines.append(f"  {label}: {value if value is not None else '未知'}")
+    if result.get("balance_alert_switch") is not None:
+        alert = "开" if result.get("balance_alert_switch") else "关"
+        lines.append(f"  余额提醒: {alert}")
+    return lines
+
+
 def _merge_quota_window(target: dict, source: dict) -> None:
     for key in ("total", "used", "remaining"):
         value = source.get(key)
@@ -394,10 +413,17 @@ class Main(star.Star):
             result = await self._speech.synthesize(
                 text=args.text,
                 model=args.model or self._default_speech_model,
-                voice=args.voice,
+                voice=(
+                    args.voice
+                    or self._default_speech_voice
+                    or "English_expressive_narrator"
+                ),
                 speed=args.speed,
                 volume=args.volume,
                 pitch=args.pitch,
+                emotion=args.emotion,
+                text_normalization=args.text_normalization,
+                latex_read=args.latex_read,
                 audio_format=args.audio_format,
                 sample_rate=args.sample_rate,
                 bitrate=args.bitrate,
@@ -1040,7 +1066,7 @@ class Main(star.Star):
             for s in self._key_pool._states:
                 all_keys.append((s.index, s.key))
         else:
-            all_keys.append((0, self._client._api_key or ""))
+            all_keys.append((0, self._client.api_key or ""))
 
         page_size = 3
         raw_args = _normalize_quota_command_args(index or event.message_str)
@@ -1096,10 +1122,10 @@ class Main(star.Star):
         async def _fetch(api_key: str):
             try:
                 result = await self._quota.info(api_key)
-                return normalize_quota_models(result.get("model_remains", []))
+                return result, normalize_quota_models(result.get("model_remains", []))
             except Exception as e:
                 logger.warning(f"[mmx] 额度查询失败: {e}")
-            return []
+            return None, []
 
         tasks = [_fetch(k) for _, k in keys_to_check]
         results = await asyncio.gather(*tasks)
@@ -1113,14 +1139,16 @@ class Main(star.Star):
                 f"每页最多 {page_size} 个，共 {len(all_keys)} 个 Key）:"
             )
 
-        for (ki, key), model_remains in zip(keys_to_check, results):
+        for (ki, key), (raw_result, model_remains) in zip(keys_to_check, results):
             masked = key[:4] + "..." + key[-4:] if len(key) > 8 else "***"
             if paged_multi_key:
                 lines.append("")
                 lines.append(f"Key [{ki + 1}] {masked}:")
             else:
                 lines.append(f"💰 Key [{ki + 1}] {masked} 额度:")
-            if not model_remains:
+            if isinstance(raw_result, dict) and raw_result.get("kind") == "account_balance":
+                lines.extend(_format_account_balance(raw_result))
+            elif not model_remains:
                 lines.append("查询失败或无额度信息。")
             else:
                 for m in model_remains:

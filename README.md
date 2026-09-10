@@ -37,8 +37,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_file_upload` | 上传插件数据目录或 AstrBot 临时目录内的文件到 MiniMax 存储 | 管理员 |
 | `mmx_file_list` | 列出已上传到 MiniMax 存储的文件 | 管理员 |
 | `mmx_file_delete` | 删除已上传的 MiniMax 文件 | 管理员 |
-| `mmx_generate_music` | 生成音乐（支持纯器乐、带歌词，及所有精细控制参数） | 无 |
-| `mmx_music_cover` | 基于参考音频及描述进行翻唱（支持 URL 和本地音频输入） | 无 |
+| `mmx_generate_music` | 生成音乐（支持纯器乐、带歌词，及所有精细控制参数；上游 mmx-cli 1.0.25 已移除音乐命令，插件仍直连服务端 API） | 无 |
+| `mmx_music_cover` | 基于参考音频及描述进行翻唱（支持 URL 和本地音频输入；上游 CLI 已移除，同上） | 无 |
 | `mmx_background_task_get` | 查询音乐生成和翻唱的后台任务状态与结果 | 无 |
 | `mmx_speech_synthesize` | 将文本合成语音（TTS），支持 30+ 种音色和语速/音量/音高控制 | 无 |
 | `mmx_speech_voices` | 查询可用 TTS 系统音色列表 | 无 |
@@ -74,7 +74,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx music 欢乐电子乐 --lyrics-optimizer
 /mmx music --prompt "Upbeat pop" --lyrics "[Verse] La la la"
 /mmx music cover indie folk, acoustic guitar, warm male vocal
-/mmx speech 欢迎使用 MiniMax 语音合成功能 --speed 1.1 --subtitles --pronunciation MiniMax/minimax
+/mmx speech 欢迎使用 MiniMax 语音合成功能 --speed 1.1 --subtitles --pronunciation MiniMax/(mini max)
 /mmx file list
 /mmx search 今天天气怎么样
 /mmx vision 描述这张图片里有什么
@@ -143,13 +143,16 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | 参数 | 说明 |
 |------|------|
 | `--model <模型>` | TTS 模型，如 `speech-2.8-hd` |
-| `--voice <音色>` | 音色 ID |
+| `--voice <音色>` | 音色 ID，缺省用配置项 `default_speech_voice` |
 | `--speed` / `--volume` / `--pitch` | 语速、音量、音高 |
+| `--emotion <情绪>` | 情绪，如 `happy`、`sad`、`angry`、`fearful`、`disgusted`、`surprised`、`calm`、`fluent`、`whisper` |
+| `--text-normalization` | 启用文本规范化（数字、符号自然朗读） |
+| `--latex-read` | 朗读文本中的 LaTeX 公式 |
 | `--format <格式>` | `mp3`、`pcm`、`flac`、`wav`、`pcmu_raw`、`pcmu_wav`、`opus` |
 | `--sample-rate <数字>` / `--bitrate <数字>` / `--channels <数字>` | 音频采样率、码率、声道数 |
 | `--language <语言>` | 语种增强 |
 | `--subtitles` | 请求字幕时间信息 |
-| `--pronunciation <文本/读音>` | 自定义读音，可重复传入 |
+| `--pronunciation <文本/(读音)>` | 自定义读音（服务端原样透传格式），可重复传入 |
 
 ### LLM 对话中使用
 
@@ -231,18 +234,21 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 #### 8. `mmx_speech_synthesize` (语音合成/TTS)
 - `text` (string, 必填): 需要合成的文本（最大 10000 字符）。
-- `voice` (string): 音色 ID（默认 `English_expressive_narrator`）。
+- `voice` (string): 音色 ID（缺省用配置项 `default_speech_voice`，默认 `English_expressive_narrator`）。
 - `model` (string): 模型名（如 `speech-2.8-hd`, `speech-2.6`, `speech-02`）。
 - `speed` / `volume` / `pitch` (number): 语速倍率（0.5-2.0）/ 音量 / 音高微调。
+- `emotion` (string): 情绪，如 `happy`、`sad`、`angry`、`fearful`、`disgusted`、`surprised`、`calm`、`fluent`、`whisper`。
+- `textNormalization` / `latexRead` (boolean): 文本规范化 / 朗读 LaTeX 公式。
 - `format` (string): 导出音频格式（如 `mp3`, `pcm`, `flac`, `wav`, `pcmu_raw`, `pcmu_wav`, `opus`）。
 - `sampleRate` / `bitrate` / `channels` (number): 采样率、码率、声道数。
 - `language` (string): 语种权重。
 - `subtitles` (boolean): 是否请求字幕时间信息。
-- `pronunciation` (array): 自定义读音数组，每项格式为 `文本/读音`。
+- `pronunciation` (array): 自定义读音数组，每项格式为 `文本/(读音)`，如 `处理/(chu li)`。
 
 #### 9. `mmx_speech_voices` (列出 TTS 音色)
 - `language` (string): 过滤语言（如 `english`, `chinese` 等）。
-
+- `gender` (string): 按性别过滤（`male` / `female`）。
+- 每个音色条目附带 `gender` 字段（`male` / `female` / `unknown`），由 voice_id 与名称推断，供 AI 选择男声/女声时参考。
 #### 10. `mmx_web_search` (联网搜索)
 - `q` (string, 必填): 搜索查询关键字。
 
@@ -266,7 +272,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 #### 15. `mmx_check_quota` (额度查询)
 - 无参数。查询当前 API Key 的 MiniMax Token Plan 额度；普通模型显示已用百分比，视频额度显示已用/剩余（上限），五小时额度与周额度附带重置倒计时，无限额度显示为 `∞`。
-
+- `sk-api-` 开头的 Key 自动改走账户余额接口，返回可用余额/现金/代金券/信用额度/欠费（对齐 mmx-cli 1.0.25）。
 ## 安全设计
 
 - **API Key 脱敏**：错误日志中自动隐藏 API Key（仅显示前 4 后 4 字符）
@@ -297,6 +303,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `default_video_sef_model` | string | `MiniMax-Hailuo-02` | 默认首尾帧视频模型 |
 | `default_video_subject_model` | string | `S2V-01` | 默认角色一致性视频模型 |
 | `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
+| `default_speech_voice` | string | `English_expressive_narrator` | 默认语音合成音色（voice_id） |
 | `default_music_model` | string | `music-3.0` | 默认音乐生成模型 |
 | `default_music_cover_model` | string | `music-cover` | 默认音乐翻唱模型 |
 

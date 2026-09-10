@@ -80,32 +80,37 @@ def _www_quota_host(base: str) -> str:
 
 
 def quota_endpoint(base: str) -> str:
-    """额度查询端点（同步 mmx-cli 1.0.16 的 Token Plan API）。"""
-    return f"{_api_quota_host(base)}/v1/api/openplatform/coding_plan/remains"
-
-
-def legacy_quota_endpoint(base: str) -> str:
-    """旧版额度查询端点，用于兼容仍返回旧路径的部署。"""
-    return f"{_www_quota_host(base)}/v1/token_plan/remains"
-
-
-def legacy_api_quota_endpoint(base: str) -> str:
-    """插件早期使用的旧版 api 子域额度端点。"""
+    """Token Plan 额度查询端点（mmx-cli >= 1.0.19 主端点）。"""
     return f"{_api_quota_host(base)}/v1/token_plan/remains"
 
 
+def account_balance_endpoint(base: str) -> str:
+    """账户余额查询端点（sk-api- 开头的 Key，mmx-cli >= 1.0.25）。"""
+    return f"{_api_quota_host(base)}/account/query_balance"
+
+
+def legacy_quota_endpoint(base: str) -> str:
+    """旧版 www 子域额度端点，用于兼容仍返回旧路径的部署。"""
+    return f"{_www_quota_host(base)}/v1/token_plan/remains"
+
+
+def legacy_openplatform_quota_endpoint(base: str) -> str:
+    """mmx-cli 1.0.16 的 openplatform 额度端点（已被上游移除，仅作回退）。"""
+    return f"{_api_quota_host(base)}/v1/api/openplatform/coding_plan/remains"
+
+
 def quota_endpoints(base: str) -> list[str]:
-    """按优先级返回额度查询候选端点。"""
+    """按优先级返回 Token Plan 额度查询候选端点。"""
     return [
         quota_endpoint(base),
+        legacy_openplatform_quota_endpoint(base),
         legacy_quota_endpoint(base),
-        legacy_api_quota_endpoint(base),
     ]
 
 
 def file_upload_endpoint(base: str) -> str:
-    """文件上传端点。"""
-    return f"{base}/v1/files"
+    """文件上传端点（mmx-cli >= 1.0.19）。"""
+    return f"{base}/v1/files/upload"
 
 
 def file_list_endpoint(base: str) -> str:
