@@ -6,13 +6,14 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from astrbot_plugin_mmx_cli_tool.mmx.apis.transcription import TranscriptionOptions  # noqa: E402
+from astrbot_plugin_mmx_cli_tool.mmx.attachment_input import extract_first_audio_input  # noqa: E402
 from astrbot_plugin_mmx_cli_tool.mmx.direct_command_args import (  # noqa: E402
     DirectCommandError, parse_transcription_command,
 )
@@ -97,9 +98,13 @@ class TranscriptionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.api.transcribe.assert_not_awaited()
 
     async def test_file_limit_checked_before_read(self):
-        with patch("astrbot_plugin_mmx_cli_tool.mmx.apis.transcription.MAX_AUDIO_BYTES", 4):
-            with self.assertRaises(ValueError):
-                await self.service.run("audio.mp3", TranscriptionOptions())
+        with (self.data / "audio.mp3").open("rb") as audio:
+            guarded = MagicMock(wraps=audio)
+            guarded.__enter__.return_value = guarded
+            with patch("astrbot_plugin_mmx_cli_tool.mmx.apis.transcription.MAX_AUDIO_BYTES", 4), patch.object(Path, "open", return_value=guarded):
+                with self.assertRaises(ValueError):
+                    await self.service.run("audio.mp3", TranscriptionOptions())
+            guarded.read.assert_not_called()
         self.api.transcribe.assert_not_awaited()
 
     async def test_bounded_attachment_download_has_no_api_auth(self):
@@ -115,6 +120,37 @@ class TranscriptionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("authorization", requests[0].headers)
         self.assertNotIn("x-api-key", requests[0].headers)
         self.assertEqual(b"audio", self.api.transcribe.call_args.args[0])
+
+    async def test_attachment_redirects_are_rejected_before_follow_or_upload(self):
+        real_client = httpx.AsyncClient
+        source = "https://cdn.example.test/audio.mp3"
+        destinations = (
+            "http://127.0.0.1/private.wav", "http://10.0.0.1/private.wav",
+            "https://other.example.test/audio.mp3", "/other.mp3",
+        )
+        for status in (301, 302, 303, 307, 308):
+            for destination in destinations:
+                with self.subTest(status=status, destination=destination):
+                    requests = []
+                    redirect_body = Chunks(b"must not read")
+                    self.api.transcribe.reset_mock()
+
+                    def handler(request):
+                        requests.append(str(request.url))
+                        if str(request.url) == source:
+                            return httpx.Response(status, headers={"location": destination}, stream=redirect_body)
+                        return httpx.Response(200, content=b"must not upload")
+
+                    def client_factory(**kwargs):
+                        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+                    with patch("astrbot_plugin_mmx_cli_tool.mmx.transcription.httpx.AsyncClient", side_effect=client_factory):
+                        with self.assertRaisesRegex(ValueError, "重定向"):
+                            await self.service.run(source, TranscriptionOptions(), trusted_attachment=True)
+                    self.assertEqual([source], requests)
+                    self.assertEqual(0, redirect_body.reads)
+                    self.assertTrue(redirect_body.closed)
+                    self.api.transcribe.assert_not_awaited()
 
     async def test_download_checks_header_and_chunked_size(self):
         for headers in ({"content-length": "100"}, {}):
@@ -159,3 +195,46 @@ class TranscriptionParserTests(unittest.TestCase):
         for text in ("--unknown", "--stream --out x.txt", "--stream --response-format srt", "--response-format text", "--timestamp-level wrong", "--file"):
             with self.subTest(text=text), self.assertRaises(DirectCommandError):
                 parse_transcription_command(text)
+
+
+class AttachmentCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.audio = Path(temp.name) / "audio.mp3"
+        self.audio.write_bytes(b"audio")
+
+    class LegacyFile:
+        def __init__(self, value):
+            self._value = value
+            self.calls = 0
+
+        async def get_file(self):
+            self.calls += 1
+            return self._value
+
+    async def resolve(self, component, *, prefer_url=True):
+        return await extract_first_audio_input(
+            [component], record_type=self.LegacyFile, file_type=self.LegacyFile,
+            reply_type=type(None), prefer_url=prefer_url,
+        )
+
+    async def test_unsupported_legacy_getter_fails_without_unbounded_download(self):
+        component = self.LegacyFile(str(self.audio))
+        with self.assertRaisesRegex(ValueError, "无法安全解析") as caught:
+            await self.resolve(component)
+        self.assertIn("--file", str(caught.exception))
+        self.assertEqual(0, component.calls)
+
+    async def test_public_legacy_fields_do_not_require_getter(self):
+        for name, value in (("file_", str(self.audio)), ("url", "https://cdn.example.test/audio.mp3")):
+            with self.subTest(field=name):
+                component = self.LegacyFile(str(self.audio))
+                setattr(component, name, value)
+                self.assertEqual((value, True), await self.resolve(component))
+                self.assertEqual(0, component.calls)
+
+    async def test_non_asr_legacy_fallback_unchanged(self):
+        component = self.LegacyFile(str(self.audio))
+        self.assertEqual((str(self.audio), True), await self.resolve(component, prefer_url=False))
+        self.assertEqual(1, component.calls)

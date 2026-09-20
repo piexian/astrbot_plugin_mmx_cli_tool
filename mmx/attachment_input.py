@@ -99,8 +99,12 @@ async def _resolve_component_file(comp: Any, *, prefer_url: bool = False) -> str
     if callable(get_file):
         try:
             resolved = await get_file(allow_return_url=True)
-        except TypeError:
-            resolved = None if prefer_url else await get_file()
+        except TypeError as exc:
+            if prefer_url:
+                raise ValueError(
+                    "当前音频附件组件无法安全解析；请将音频保存到允许目录后使用 --file。"
+                ) from exc
+            resolved = await get_file()
         except Exception:
             resolved = None
         if isinstance(resolved, str) and resolved.strip():

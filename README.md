@@ -210,7 +210,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 - **文件名安全**：自动保存使用时间戳或随机 ID 命名，避免路径注入
 - **输出目录限制**：生成媒体及转写文件默认保存到 AstrBot 临时目录；视频下载和转写的 `out` 仅允许写入插件数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）
 - **文件管理权限**：`/mmx file upload|list|delete` 与 `mmx_file_upload/list/delete` 仅管理员可用
-- **转写附件下载**：仅下载平台解析的附件 URL，不携带 MiniMax Key，限制 50 MB、60 秒及最多 3 次重定向；附件来源沿用平台信任边界
+- **转写附件下载**：仅下载平台解析的附件 URL，不携带 MiniMax Key，限制 50 MB、60 秒并拒绝重定向；附件来源沿用平台信任边界
 - **LLM 文件上传限制**：`mmx_file_upload` 仅允许上传插件数据目录或 AstrBot 临时目录内的文件，避免模型诱导读取任意宿主文件
 - **本地媒体输入限制**：LLM 工具和直接指令中手写的图片/音频路径仅允许指向插件数据目录或 AstrBot 临时目录（聊天图片下载位置）；当前消息和引用消息中的附件仍由 AstrBot 解析后提交
 - **临时目录信任面**：AstrBot 临时目录由所有插件共享（聊天附件、其他插件的临时文件都在其中），放行该目录意味着 LLM 工具可读取其中的任意文件，并非"仅聊天图片"

@@ -70,8 +70,12 @@ class TranscriptionService:
         if parsed.username or parsed.password or not parsed.hostname:
             raise ValueError("音频附件 URL 无效")
         # 仅平台解析的附件可进入此分支，不复用带 MiniMax 鉴权的客户端。
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True, max_redirects=3) as client:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
             async with client.stream("GET", url) as response:
+                if response.is_redirect:
+                    raise ValueError(
+                        "音频附件返回重定向，已拒绝下载；请将音频保存到允许目录后使用 --file。"
+                    )
                 response.raise_for_status()
                 length = response.headers.get("content-length")
                 if length is not None and length.isdigit() and int(length) > MAX_AUDIO_BYTES:
