@@ -1,4 +1,4 @@
-"""SSE（Server-Sent Events）流式解析器。"""
+"""SSE 流式解析器。"""
 
 from __future__ import annotations
 
@@ -9,33 +9,45 @@ from typing import Any
 import httpx
 
 
-async def parse_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], None]:
-    """解析 ``text/event-stream`` 响应，逐事件产出 JSON 对象。
-
-    处理多行 ``data:``、``event:`` / ``id:`` 字段、以 ``:`` 开头的
-    注释行、以及 ``[DONE]`` 终止标记。
-    """
+async def parse_sse(
+    response: httpx.Response, *, strict: bool = False
+) -> AsyncGenerator[dict[str, Any], None]:
+    """解析多行 data、注释和 EOF 残留事件，可严格拒绝损坏事件。"""
     data_lines: list[str] = []
+    event_size = 0
+
+    def decode(data: str) -> dict[str, Any] | None:
+        try:
+            value = json.loads(data)
+            if not isinstance(value, dict):
+                raise ValueError("SSE 事件必须是 JSON 对象")
+            return value
+        except ValueError:
+            if strict:
+                raise
+            return None
 
     async for line in response.aiter_lines():
-        # 去除行尾 \r，跳过注释行
-        line = line.rstrip("\r")
         if not line:
-            # 空行 → 派发已缓冲的事件
             if data_lines:
-                data_str = "\n".join(data_lines)
-                if data_str == "[DONE]":
+                data = "\n".join(data_lines)
+                if data == "[DONE]":
                     return
-                try:
-                    yield json.loads(data_str)
-                except json.JSONDecodeError:
-                    pass
+                value = decode(data)
+                if value is not None:
+                    yield value
                 data_lines = []
-            continue
-
-        if line.startswith(":"):
-            continue
-
-        if line.startswith("data:"):
-            data_lines.append(line[5:].strip())
-        # event: 和 id: 字段在 MiniMax API 中被忽略
+                event_size = 0
+        elif line.startswith("data:"):
+            part = line[5:]
+            part = part[1:] if part.startswith(" ") else part
+            event_size += len(part)
+            if event_size > 1024 * 1024:
+                raise ValueError("SSE 单个事件超过大小限制")
+            data_lines.append(part)
+    if data_lines:
+        data = "\n".join(data_lines)
+        if data != "[DONE]":
+            value = decode(data)
+            if value is not None:
+                yield value

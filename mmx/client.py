@@ -5,12 +5,13 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from collections.abc import Callable, Awaitable
 from typing import Any
 
 import httpx
 
-from .errors import classify_error
+from .errors import ErrorCategory, MiniMaxError, classify_error
 from .endpoints import REGIONS
 
 
@@ -33,6 +34,7 @@ class MiniMaxClient:
             timeout=httpx.Timeout(timeout),
             proxy=proxy or None,
         )
+        self._streams: set[httpx.Response] = set()
 
     @property
     def base_url(self) -> str:
@@ -61,13 +63,13 @@ class MiniMaxClient:
         data: Any = None,
         files: Any = None,
         headers: dict[str, str] | None = None,
-        stream: bool = False,  # noqa: ARG002
+        stream: bool = False,
         auth_style: str = "bearer",
         model: str = "",
         api_key_override: str | None = None,
     ) -> httpx.Response:
         """发送 HTTP 请求，返回原始 Response。"""
-        hdrs: dict[str, str] = {"User-Agent": "astrbot-plugin-mmx/0.1.0"}
+        hdrs: dict[str, str] = {"User-Agent": "astrbot-plugin-mmx/0.5.0"}
         if headers:
             hdrs.update(headers)
 
@@ -88,7 +90,7 @@ class MiniMaxClient:
             if path.startswith(("http://", "https://"))
             else f"{self._base_url}{path}"
         )
-        res = await self._client.request(
+        request = self._client.build_request(
             method=method,
             url=url,
             headers=hdrs,
@@ -104,11 +106,26 @@ class MiniMaxClient:
             data=data,
             files=files,
         )
-
+        res = await self._client.send(request, stream=stream)
         if not res.is_success:
-            raise classify_error(res.status_code, res, path)
-
+            try:
+                await res.aread()
+                raise classify_error(res.status_code, res, path)
+            finally:
+                await res.aclose()
+        if stream:
+            self._streams.add(res)
         return res
+
+    @asynccontextmanager
+    async def stream(self, method: str, path: str, **kwargs):
+        """保持响应流开放，并在完成、取消或异常时释放连接。"""
+        response = await self.request(method, path, stream=True, **kwargs)
+        try:
+            yield response
+        finally:
+            self._streams.discard(response)
+            await response.aclose()
 
     async def request_json(
         self,
@@ -134,12 +151,29 @@ class MiniMaxClient:
             model=model,
             api_key_override=api_key_override,
         )
-        data: dict[str, Any] = res.json()
+        return self.decode_json_response(res, path)
+
+    @staticmethod
+    def decode_json_response(res: httpx.Response, path: str) -> dict[str, Any]:
+        """解析 JSON 并检查 HTTP 200 内的业务错误。"""
+        try:
+            data = res.json()
+        except ValueError as exc:
+            raise MiniMaxError(ErrorCategory.GENERAL, "API 返回了无效 JSON") from exc
+        if not isinstance(data, dict):
+            raise MiniMaxError(ErrorCategory.GENERAL, "API 返回了非对象 JSON")
         base_resp = data.get("base_resp")
-        if base_resp and base_resp.get("status_code", 0) != 0:
-            raise classify_error(res.status_code, None, path, api_body=data)
+        if (isinstance(base_resp, dict) and base_resp.get("status_code", 0) != 0) or data.get("error"):
+            raise classify_error(res.status_code, path=path, api_body=data)
         return data
 
     async def close(self) -> None:
         """关闭底层 httpx 客户端连接。"""
-        await self._client.aclose()
+        try:
+            for response in tuple(self._streams):
+                try:
+                    await response.aclose()
+                finally:
+                    self._streams.discard(response)
+        finally:
+            await self._client.aclose()

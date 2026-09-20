@@ -13,57 +13,21 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.quota import QuotaAPI
 from ..mmx.quota_usage import (
+    format_quota_reset_time,
+    format_quota_usage,
     is_video_quota_model,
     merge_quota_models,
-    merge_quota_window,
     normalize_quota_models,
-    resolve_used_percent,
+    quota_window_label,
 )
 from .result import tool_result
 from .schema import object_parameters
 
 
-def _quota_number_display(value: object) -> str:
-    if isinstance(value, int):
-        return str(value)
-    return "未知"
-
-
-def _video_quota_window_display(window: dict) -> str:
-    has_counts = any(
-        isinstance(window.get(key), int) for key in ("used", "remaining", "total")
-    )
-    if not has_counts:
-        return "未知"
-    used = _quota_number_display(window.get("used"))
-    remaining = _quota_number_display(window.get("remaining"))
-    total = _quota_number_display(window.get("total"))
-    return f"{used} / {remaining}（{total}）"
-
-
-def _quota_window_display(window: dict, *, is_video: bool = False) -> str:
-    if window.get("unlimited") is True:
-        return "∞"
-    if is_video:
-        return _video_quota_window_display(window)
-    percent = resolve_used_percent(window)
-    if isinstance(percent, int):
-        return f"已用{percent}%"
-    return "未知"
-
-
 def _quota_reset_display(window: dict) -> str | None:
-    value = window.get("remains_time")
-    if not isinstance(value, int) or value <= 0:
+    if window.get("unlimited") or window.get("unavailable"):
         return None
-    total_minutes = value // 60000
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
-    if hours > 0 and minutes > 0:
-        return f"{hours}小时{minutes}分钟"
-    if hours > 0:
-        return f"{hours}小时"
-    return f"{minutes}分钟"
+    return format_quota_reset_time(window.get("remains_time"))
 
 
 @dataclass
@@ -96,7 +60,7 @@ class CheckQuotaTool(FunctionTool):
         results = await asyncio.gather(*[_fetch(k) for k in api_keys])
 
         # 精简为人类可读的摘要
-        merged: dict[str, dict] = {}
+        all_models: list[dict] = []
         balances: list[dict] = []
         failed_key_indexes: list[int] = []
         raw_results = []
@@ -121,18 +85,10 @@ class CheckQuotaTool(FunctionTool):
             if not model_remains:
                 failed_key_indexes.append(idx)
                 continue
-            for name, model in merge_quota_models(model_remains).items():
-                target = merged.setdefault(name, {"current": {}, "weekly": {}})
-                merge_quota_window(target["current"], model["current"])
-                merge_quota_window(target["weekly"], model["weekly"])
+            all_models.extend(model_remains)
 
         summary = []
-        merged_models = merge_quota_models(
-            [
-                {"model": name, "current": value["current"], "weekly": value["weekly"]}
-                for name, value in merged.items()
-            ]
-        )
+        merged_models = merge_quota_models(all_models)
         for model, m in sorted(merged_models.items()):
             is_video = is_video_quota_model(model)
             current = m["current"]
@@ -140,14 +96,11 @@ class CheckQuotaTool(FunctionTool):
             summary.append(
                 {
                     "model": model,
-                    "current": _quota_window_display(current, is_video=is_video),
-                    "current_reset": None
-                    if current.get("unlimited") is True
-                    else _quota_reset_display(current),
-                    "weekly": _quota_window_display(weekly, is_video=is_video),
-                    "weekly_reset": None
-                    if weekly.get("unlimited") is True
-                    else _quota_reset_display(weekly),
+                    "current": format_quota_usage(current, is_video=is_video),
+                    "current_window": quota_window_label(current),
+                    "current_reset": _quota_reset_display(current),
+                    "weekly": format_quota_usage(weekly, is_video=is_video),
+                    "weekly_reset": _quota_reset_display(weekly),
                 }
             )
 
