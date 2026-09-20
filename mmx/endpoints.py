@@ -17,6 +17,11 @@ def speech_endpoint(base: str) -> str:
     return f"{base}/v1/t2a_v2"
 
 
+def speech_to_text_endpoint(base: str) -> str:
+    """语音转文字端点。"""
+    return f"{base}/v1/speech_to_text"
+
+
 def voices_endpoint(base: str) -> str:
     """音色列表端点。"""
     return f"{base}/v1/get_voice"

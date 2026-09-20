@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 import time as _time
 from pathlib import Path
@@ -25,6 +26,9 @@ from .mmx.apis.search import SearchAPI
 from .mmx.apis.vision import VisionAPI
 from .mmx.apis.quota import QuotaAPI
 from .mmx.apis.speech import SpeechAPI
+from .mmx.apis.transcription import SpeechToTextAPI, TranscriptionOptions
+from .mmx.transcription import TranscriptionService
+from .tools.transcription_tools import transcribe_event
 from .mmx.files import FileAPI
 from .mmx.attachment_input import extract_first_audio_input
 from .mmx.vision_input import extract_image_input, extract_image_inputs
@@ -34,15 +38,18 @@ from .mmx.direct_command_args import (
     parse_image_command,
     parse_music_cover_command,
     parse_speech_command,
+    parse_transcription_command,
     parse_video_command,
 )
 from .mmx.music_command import MusicCommandError, parse_music_command
 from .mmx.errors import MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
 from .mmx.quota_usage import (
+    format_quota_reset_time,
+    format_quota_usage,
     is_video_quota_model,
     normalize_quota_models,
-    resolve_used_percent,
+    quota_window_label,
 )
 from .mmx.utils import (
     get_shared_temp_dir,
@@ -63,6 +70,7 @@ from .tools import (
     DescribeImageTool,
     CheckQuotaTool,
     SpeechSynthesizeTool,
+    SpeechTranscribeTool,
     ListVoicesTool,
     UploadFileTool,
     ListFilesTool,
@@ -120,52 +128,14 @@ def _file_payload(result: dict) -> dict:
     return item if isinstance(item, dict) else result
 
 
-def _quota_number_text(value: object) -> str:
-    if isinstance(value, int):
-        return str(value)
-    return "未知"
-
-
-def _format_video_quota_window(window: dict) -> str:
-    has_counts = any(
-        isinstance(window.get(key), int) for key in ("used", "remaining", "total")
-    )
-    if not has_counts:
-        return "未知"
-    used = _quota_number_text(window.get("used"))
-    remaining = _quota_number_text(window.get("remaining"))
-    total = _quota_number_text(window.get("total"))
-    return f"{used} / {remaining}（{total}）"
-
-
 def _format_quota_window(label: str, window: dict, *, is_video: bool = False) -> str:
-    if window.get("unlimited") is True:
-        return f"{label}: ∞"
-    if is_video:
-        text = f"{label}: {_format_video_quota_window(window)}"
-    else:
-        percent = resolve_used_percent(window)
-        if isinstance(percent, int):
-            text = f"{label}: 已用{percent}%"
-        else:
-            text = f"{label}: 未知"
-    reset = _format_quota_reset_time(window.get("remains_time"))
+    text = f"{label}: {format_quota_usage(window, is_video=is_video)}"
+    if window.get("unlimited") or window.get("unavailable"):
+        return text
+    reset = format_quota_reset_time(window.get("remains_time"))
     if reset:
-        text += f"（{reset}后重置）"
+        text += "（即将重置）" if reset == "即将" else f"（{reset}后重置）"
     return text
-
-
-def _format_quota_reset_time(value: object) -> str | None:
-    if not isinstance(value, int) or value <= 0:
-        return None
-    total_minutes = value // 60000
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
-    if hours > 0 and minutes > 0:
-        return f"{hours}小时{minutes}分钟"
-    if hours > 0:
-        return f"{hours}小时"
-    return f"{minutes}分钟"
 
 
 def _format_account_balance(result: dict) -> list[str]:
@@ -185,48 +155,6 @@ def _format_account_balance(result: dict) -> list[str]:
         alert = "开" if result.get("balance_alert_switch") else "关"
         lines.append(f"  余额提醒: {alert}")
     return lines
-
-
-def _merge_quota_window(target: dict, source: dict) -> None:
-    for key in ("total", "used", "remaining"):
-        value = source.get(key)
-        if isinstance(value, int):
-            target[key] = (target.get(key) or 0) + value
-    reset_time = source.get("remains_time")
-    if isinstance(reset_time, int):
-        current_reset_time = target.get("remains_time")
-        target["remains_time"] = (
-            min(current_reset_time, reset_time)
-            if isinstance(current_reset_time, int)
-            else reset_time
-        )
-    if source.get("unlimited") is True:
-        target["unlimited"] = True
-
-
-def _finalize_merged_quota_window(window: dict) -> dict:
-    if window.get("unlimited") is True:
-        window["remaining_percent"] = 100
-        return window
-    total = window.get("total")
-    remaining = window.get("remaining")
-    if isinstance(total, int) and total > 0 and isinstance(remaining, int):
-        window["remaining_percent"] = max(0, min(100, int(remaining / total * 100)))
-    return window
-
-
-def _merge_quota_models(models: list[dict]) -> dict[str, dict]:
-    merged: dict[str, dict] = {}
-    for model in models:
-        name = str(model.get("model", "unknown"))
-        target = merged.setdefault(name, {"current": {}, "weekly": {}})
-        _merge_quota_window(target["current"], model["current"])
-        _merge_quota_window(target["weekly"], model["weekly"])
-
-    for model in merged.values():
-        _finalize_merged_quota_window(model["current"])
-        _finalize_merged_quota_window(model["weekly"])
-    return merged
 
 
 def _normalize_quota_command_args(raw: str) -> str:
@@ -279,6 +207,7 @@ class Main(star.Star):
             config.get("default_video_subject_model", "")
         ).strip()
         self._default_speech_model = str(config.get("default_speech_model", "")).strip()
+        self._default_speech_voice = str(config.get("default_speech_voice", "")).strip()
         self._default_music_model = str(config.get("default_music_model", "")).strip()
         self._default_music_cover_model = str(
             config.get("default_music_cover_model", "")
@@ -335,6 +264,13 @@ class Main(star.Star):
         self._quota = QuotaAPI(self._client)
         self._speech = SpeechAPI(self._client)
         self._files = FileAPI(self._client)
+        self._transcription = TranscriptionService(
+            SpeechToTextAPI(self._client),
+            str(self._plugin_data_dir),
+            str(self._cache_dir),
+            extra_allowed_dirs=self._extra_dirs,
+            default_model=str(config.get("default_transcription_model", "asr-1.0")).strip(),
+        )
 
         # 插件数据目录路径（字符串）
         _data_dir = str(self._plugin_data_dir)
@@ -380,9 +316,11 @@ class Main(star.Star):
                 self._speech,
                 _data_dir,
                 self._default_speech_model,
+                default_voice=self._default_speech_voice,
                 cache_dir=_cache_dir,
             ),
             ListVoicesTool(self._speech),
+            SpeechTranscribeTool(self._transcription),
             UploadFileTool(self._files, _data_dir, extra_allowed_dirs=_extra_dirs),
             ListFilesTool(self._files),
             DeleteFileTool(self._files),
@@ -392,12 +330,57 @@ class Main(star.Star):
         if self._client:
             await self._client.close()
 
+    async def _handle_speech_transcribe(self, event: AstrMessageEvent, raw_args: str):
+        try:
+            args = parse_transcription_command(raw_args)
+            options = TranscriptionOptions(
+                model=args.model or self._transcription.default_model,
+                response_format=args.response_format, language=args.language,
+                timestamp_level=args.timestamp_level, stream=args.stream,
+            )
+            result = await transcribe_event(
+                self._transcription, event, options, file=args.file, out=args.out
+            )
+        except MiniMaxError as exc:
+            yield event.plain_result(friendly_message(exc))
+            return
+        except (ValueError, OSError) as exc:
+            yield event.plain_result(str(exc))
+            return
+        except Exception as exc:
+            logger.warning(f"[mmx] 转写失败: {exc}")
+            yield event.plain_result("转写未完成或状态未确认，请勿自动重复提交计费请求。")
+            return
+        if result.get("warning"):
+            yield event.plain_result(result["warning"])
+        if result.get("file_path"):
+            path = result["file_path"]
+            yield event.chain_result([Comp.File(name=Path(path).name, file=path)])
+            return
+        data = result["data"]
+        if isinstance(data, dict):
+            content = json.dumps(data, ensure_ascii=False) if args.response_format == "verbose_json" else data["text"]
+        else:
+            content = data
+        content = content or "未识别到语音。"
+        for offset in range(0, len(content), 3500):
+            yield event.plain_result(content[offset:offset + 3500])
+
     @mmx_group.command("speech")
     async def mmx_speech(self, event: AstrMessageEvent, *, text: str = ""):
-        """语音合成。用法: /mmx speech <文本> [--voice <音色>] [--format mp3]"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        raw_args = text or (parts[1] if len(parts) > 1 else "")
+        """语音合成，或用 transcribe/recognize 子命令转写音频。"""
+        raw_args = text
+        if not raw_args:
+            parts = event.message_str.strip().split(maxsplit=2)
+            if len(parts) >= 2 and parts[0].lstrip("/") == "mmx" and parts[1] == "speech":
+                raw_args = parts[2] if len(parts) > 2 else ""
+        parts = raw_args.strip().split(maxsplit=1)
+        action = parts[0] if parts else ""
+        rest = parts[1] if len(parts) > 1 else ""
+        if action in {"transcribe", "recognize"}:
+            async for result in self._handle_speech_transcribe(event, rest):
+                yield result
+            return
         try:
             args = parse_speech_command(raw_args)
         except DirectCommandError as e:
@@ -1155,7 +1138,7 @@ class Main(star.Star):
                     is_video = is_video_quota_model(m["model"])
                     lines.append(f"- {m['model']}")
                     lines.append(
-                        f"  {_format_quota_window('五小时额度', m['current'], is_video=is_video)}"
+                        f"  {_format_quota_window(quota_window_label(m['current']), m['current'], is_video=is_video)}"
                     )
                     lines.append(
                         f"  {_format_quota_window('周额度', m['weekly'], is_video=is_video)}"

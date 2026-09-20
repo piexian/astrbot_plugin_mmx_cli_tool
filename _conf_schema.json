@@ -67,6 +67,11 @@
     "type": "string",
     "default": "English_expressive_narrator"
   },
+  "default_transcription_model": {
+    "description": "默认语音转文字模型",
+    "type": "string",
+    "default": "asr-1.0"
+  },
   "default_music_model": {
     "description": "默认音乐生成模型",
     "type": "string",

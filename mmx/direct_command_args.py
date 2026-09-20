@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from .model_options import MUSIC_COVER_MODELS
 from .utils import split_command_tokens
+from .apis.transcription import DEFAULT_TRANSCRIPTION_MODEL, TranscriptionOptions
 
 
 class DirectCommandError(ValueError):
@@ -46,6 +47,17 @@ class SpeechCommandArgs:
     language: str | None = None
     subtitles: bool = False
     pronunciation: tuple[str, ...] = ()
+
+@dataclass(frozen=True)
+class TranscribeCommandArgs:
+    file: str | None = None
+    model: str | None = None
+    response_format: str = "json"
+    language: str | None = None
+    timestamp_level: str | None = None
+    stream: bool = False
+    out: str | None = None
+
 
 @dataclass(frozen=True)
 class VideoCommandArgs:
@@ -195,6 +207,36 @@ def parse_speech_command(raw: str) -> SpeechCommandArgs:
         "opus",
     }:
         raise DirectCommandError("--format 参数不支持")
+    return args
+
+
+def parse_transcription_command(raw: str) -> TranscribeCommandArgs:
+    values, positional = _parse_cli_args(
+        raw,
+        bool_flags={"--stream": "stream"},
+        value_flags={
+            "--file": "file", "--model": "model", "--language": "language",
+            "--response-format": "response_format",
+            "--timestamp-level": "timestamp_level", "--out": "out",
+        },
+        unsupported={},
+        usage="用法: /mmx speech transcribe [--file <路径>] [--language zh] [--response-format srt]",
+    )
+    if positional:
+        if "file" in values:
+            raise DirectCommandError("请仅使用 --file 或位置参数指定一个音频文件")
+        values["file"] = " ".join(positional)
+    args = TranscribeCommandArgs(**values)
+    try:
+        TranscriptionOptions(
+            model=args.model or DEFAULT_TRANSCRIPTION_MODEL,
+            response_format=args.response_format, language=args.language,
+            timestamp_level=args.timestamp_level, stream=args.stream,
+        ).validate()
+    except ValueError as exc:
+        raise DirectCommandError(str(exc)) from exc
+    if args.stream and args.out is not None:
+        raise DirectCommandError("--stream 与 --out 不能同时使用")
     return args
 
 

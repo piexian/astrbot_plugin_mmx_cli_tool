@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Any
 
@@ -11,13 +12,13 @@ import httpx
 class ErrorCategory(Enum):
     """错误类别枚举。"""
 
-    AUTH = "auth"  # 鉴权失败
-    QUOTA = "quota"  # 额度不足/限流
-    TIMEOUT = "timeout"  # 超时
-    CONTENT_FILTER = "content_filter"  # 内容审核拦截
-    USAGE = "usage"  # 参数错误
-    GENERAL = "general"  # 一般错误
-    NETWORK = "network"  # 网络错误
+    AUTH = "auth"
+    QUOTA = "quota"
+    TIMEOUT = "timeout"
+    CONTENT_FILTER = "content_filter"
+    USAGE = "usage"
+    GENERAL = "general"
+    NETWORK = "network"
 
 
 class MiniMaxError(Exception):
@@ -38,16 +39,19 @@ class MiniMaxError(Exception):
         super().__init__(message)
 
 
-def _extract_api_code(body: dict[str, Any] | None) -> int | None:
-    """从响应体中提取 base_resp.status_code。"""
-    if not body:
-        return None
-    base_resp = body.get("base_resp")
-    if isinstance(base_resp, dict):
-        code = base_resp.get("status_code")
-        if isinstance(code, int):
-            return code
-    return None
+def _error_fields(body: Any) -> tuple[int | None, str, str]:
+    if not isinstance(body, dict):
+        return None, "", ""
+    base = body.get("base_resp")
+    error = body.get("error")
+    base = base if isinstance(base, dict) else {}
+    error = error if isinstance(error, dict) else {}
+    code = base.get("status_code") or error.get("code")
+    return (
+        code if isinstance(code, int) and not isinstance(code, bool) else None,
+        str(base.get("status_msg") or error.get("message") or ""),
+        str(error.get("type") or ""),
+    )
 
 
 def classify_error(
@@ -56,99 +60,63 @@ def classify_error(
     path: str = "",
     api_body: dict[str, Any] | None = None,
 ) -> MiniMaxError:
-    """将 HTTP 状态码 + API 响应体映射为 MiniMaxError。"""
-    body: dict[str, Any] | None = None
-    if response is not None:
+    """将 HTTP 状态和两种 API 错误格式映射为结构化异常。"""
+    body: Any = api_body
+    if body is None and response is not None:
         try:
             body = response.json()
-        except Exception:
-            body = None
-    if api_body is not None:
-        body = api_body
+        except ValueError:
+            pass
+    code, message, error_type = _error_fields(body)
+    category = ErrorCategory.GENERAL
+    retryable = False
 
-    api_code = _extract_api_code(body)
-
-    status_msg = ""
-    if body:
-        base_resp = body.get("base_resp")
-        if isinstance(base_resp, dict):
-            status_msg = base_resp.get("status_msg", "")
-
-    # HTTP 层错误
     if http_status in (401, 403):
-        return MiniMaxError(
-            ErrorCategory.AUTH,
-            f"API Key 无效或已过期 ({http_status})。请检查配置中的 api_key。",
-            http_status=http_status,
-            retryable=False,
-        )
-    if http_status == 429:
-        return MiniMaxError(
-            ErrorCategory.QUOTA,
-            f"请求过于频繁或额度不足 ({http_status})。{status_msg}".strip(),
-            http_status=http_status,
-            retryable=True,
-        )
-    if http_status in (408, 504):
-        return MiniMaxError(
-            ErrorCategory.TIMEOUT,
-            f"请求超时 ({http_status})。请稍后重试。",
-            http_status=http_status,
-            retryable=True,
-        )
-
-    # API 层错误（通过 base_resp.status_code）
-    if api_code is not None and api_code != 0:
-        # 内容审核拦截
-        if api_code in (1002, 1039):
-            return MiniMaxError(
-                ErrorCategory.CONTENT_FILTER,
-                f"内容被审核拦截 (code={api_code})。{status_msg}".strip(),
-                api_code=api_code,
-                retryable=False,
-            )
-        # 额度/计划限制
-        if api_code in (1028, 1030, 2061):
-            return MiniMaxError(
-                ErrorCategory.QUOTA,
-                f"额度不足或模型不可用 (code={api_code})。{status_msg}".strip(),
-                api_code=api_code,
-                retryable=False,
-            )
-
-        return MiniMaxError(
-            ErrorCategory.GENERAL,
-            f"API 错误 (code={api_code}): {status_msg}".strip(),
-            http_status=http_status,
-            api_code=api_code,
-        )
-
-    # 通用 HTTP 服务端错误
-    if http_status >= 500:
-        return MiniMaxError(
-            ErrorCategory.GENERAL,
-            f"MiniMax 服务器错误 ({http_status})。请稍后重试。",
-            http_status=http_status,
-            retryable=True,
-        )
-
-    msg = f"请求失败 ({http_status})"
-    if status_msg:
-        msg += f": {status_msg}"
-    return MiniMaxError(
-        ErrorCategory.GENERAL,
-        msg,
-        http_status=http_status,
-    )
+        category = ErrorCategory.AUTH
+        text = f"API Key 无效或已过期 ({http_status})。请检查配置中的 api_key。"
+    elif http_status == 429:
+        category, retryable = ErrorCategory.QUOTA, True
+        text = f"请求过于频繁或额度不足 ({http_status})。{message}"
+    elif http_status == 402 or error_type == "insufficient_balance_error":
+        category = ErrorCategory.QUOTA
+        text = f"账户余额不足。{message}"
+    elif http_status in (408, 504):
+        category, retryable = ErrorCategory.TIMEOUT, True
+        text = f"请求超时 ({http_status})。请稍后重试。"
+    elif http_status == 413 and "/speech_to_text" in path:
+        category = ErrorCategory.USAGE
+        text = f"音频超过 50 MB 限制，请压缩或分段后提交。{message}"
+    elif http_status == 422 and "/speech_to_text" in path:
+        category = ErrorCategory.CONTENT_FILTER
+        text = f"输入音频被安全审核拦截。{message}"
+    elif code in (1002, 1039, 1026) or (
+        http_status == 422 and error_type == "unprocessable_entity_error"
+        and re.search(r"sensitive content|(?:^|\D)1026(?:\D|$)", message, re.I)
+    ):
+        category = ErrorCategory.CONTENT_FILTER
+        text = f"输入内容被安全审核拦截，请修改输入。{message}"
+    elif code in (1028, 1030, 2061):
+        category = ErrorCategory.QUOTA
+        text = f"额度不足或模型不可用 (code={code})。{message}"
+    elif code == 1027 or re.search(r"output.*sensitive", message, re.I):
+        category = ErrorCategory.CONTENT_FILTER
+        text = f"输出内容被安全审核拦截，请调整查询。{message}"
+    elif code:
+        text = f"API 错误 (code={code}): {message}"
+    elif http_status >= 500:
+        retryable = True
+        text = f"MiniMax 服务器错误 ({http_status})。请稍后重试。{message}"
+    else:
+        text = f"请求失败 ({http_status})" + (f": {message}" if message else "")
+    return MiniMaxError(category, text.strip(), http_status, code, retryable)
 
 
 def friendly_message(err: MiniMaxError) -> str:
-    """根据错误类别返回用户友好的中文提示。"""
+    """保留审核和参数错误的具体原因，其余类别给出简短提示。"""
     messages = {
-        ErrorCategory.AUTH: "❌ API Key 无效，请检查插件配置。",
-        ErrorCategory.QUOTA: "⏳ 额度不足或请求过多，请稍后重试。",
-        ErrorCategory.TIMEOUT: "⏱️ 请求超时，请稍后重试。",
-        ErrorCategory.CONTENT_FILTER: "🚫 内容被安全审核拦截，请修改提示词后重试。",
-        ErrorCategory.NETWORK: "🌐 网络连接失败，请检查网络。",
+        ErrorCategory.AUTH: "API Key 无效，请检查插件配置。",
+        ErrorCategory.QUOTA: "额度不足或请求过多，请稍后重试。",
+        ErrorCategory.TIMEOUT: "请求超时，请稍后重试。",
+        ErrorCategory.NETWORK: "网络连接失败，请检查网络。",
     }
-    return messages.get(err.category, f"❌ {err}")
+    return messages.get(err.category, str(err))

@@ -1,6 +1,6 @@
 # MiniMax 多模态工具
 
-为 AstrBot 提供 MiniMax 图片生成、视频生成、音乐生成、联网搜索、视觉理解、额度查询能力。
+为 AstrBot 提供 MiniMax 图片、视频、音乐、语音合成与转写、联网搜索、视觉理解和额度查询能力。
 
 
 ## 环境要求
@@ -11,7 +11,7 @@
 
 ## 功能
 
-- 15 个 LLM Tool，全面覆盖 MiniMax 多模态 API（图片/视频/音乐/语音合成/联网搜索/视觉理解/文件管理）
+- 16 个 LLM Tool，支持图片/视频/音乐/语音合成与转写/联网搜索/视觉理解/文件管理
 - `/mmx` 命令组，用户可直接通过指令快速调用
 - 智能参数校验与纠偏机制，对 AI 友好
 - API 多 Key 轮询与额度查询
@@ -42,6 +42,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_background_task_get` | 查询音乐生成和翻唱的后台任务状态与结果 | 无 |
 | `mmx_speech_synthesize` | 将文本合成语音（TTS），支持 30+ 种音色和语速/音量/音高控制 | 无 |
 | `mmx_speech_voices` | 查询可用 TTS 系统音色列表 | 无 |
+| `mmx_speech_transcribe` | 音频转文字，支持说话人、时间戳及 SRT/WebVTT 字幕 | 无 |
 | `mmx_web_search` | 联网搜索信息 | 无 |
 | `mmx_describe_image` | 分析/描述图片内容（视觉理解） | 无 |
 | `mmx_check_quota` | 查询 API 剩余额度 | 无 |
@@ -56,6 +57,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)  # 生成音乐
 /mmx music cover <风格描述> --audio <URL>  # 生成翻唱，可附带或引用音频
 /mmx speech <文本> [--voice <音色>] [--format mp3]  # 语音合成
+/mmx speech transcribe [--file <路径>] [--language zh]  # 语音转文字，可附带或引用音频
 /mmx file upload --file <路径> [--purpose retrieval]  # 上传文件（管理员）
 /mmx file list                 # 列出文件（管理员）
 /mmx file delete --file-id <id> # 删除文件（管理员）
@@ -79,6 +81,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx music --prompt "Upbeat pop" --lyrics "[Verse] La la la"
 /mmx music cover indie folk, acoustic guitar, warm male vocal
 /mmx speech 欢迎使用 MiniMax 语音合成功能 --speed 1.1 --subtitles --pronunciation MiniMax/(mini max)
+/mmx speech transcribe --response-format srt --language zh
 /mmx file list
 /mmx search 今天天气怎么样
 /mmx vision 描述这张图片里有什么
@@ -158,6 +161,24 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `--subtitles` | 请求字幕时间信息 |
 | `--pronunciation <文本/(读音)>` | 自定义读音（服务端原样透传格式），可重复传入 |
 
+### 语音转文字
+
+`/mmx speech transcribe`（别名 `recognize`）默认使用 `asr-1.0`；省略 `--file` 时读取当前消息或引用消息中的音频。
+
+| 参数 | 说明 |
+|------|------|
+| `--file <路径>` | 插件数据目录或允许的 AstrBot 临时目录内音频；不接受手写 URL |
+| `--model <模型>` | 缺省读取 `default_transcription_model` |
+| `--language <语言>` | 如 `zh`、`en`；省略自动识别 |
+| `--response-format <格式>` | `json`、`verbose_json`、`srt`、`vtt`，默认 `json` |
+| `--timestamp-level <粒度>` | `sentence` 或 `word`；仅详细 JSON 和字幕生效 |
+| `--stream` | 通过 SSE 接收并汇总后回复，仅支持 `json`，不能与 `--out` 同用 |
+| `--out <相对路径>` | 写入插件数据目录；省略时字幕、详细 JSON 和长文本结果保存到临时目录 |
+
+支持 MP3、WAV、M4A、FLAC、AAC、Opus、Ogg、AIFF，最大 50 MB、500 秒；大小在本地检查，时长和编码由服务端检查。AMR/Silk、裸 PCM 等需先转换为支持的音频格式。
+
+普通转写直接回复文字，其余结果发送文件。保存失败会保留文字，不自动重试计费请求。LLM 工具使用 `responseFormat`、`timestampLevel` 等 camelCase 参数。合成以 `transcribe`/`recognize` 开头的文本时，请使用 `/mmx speech --text "transcribe ..."`。
+
 ### LLM 对话中使用
 
 当 AI 需要生成图片、视频、语音、音乐，或进行搜索、图片理解时，会自动调用对应工具。
@@ -180,15 +201,16 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 ### 工具一览
 
-`mmx_generate_image`、`mmx_generate_video`、`mmx_video_task_get`、`mmx_video_download`、`mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get`、`mmx_speech_synthesize`、`mmx_speech_voices`、`mmx_web_search`、`mmx_describe_image`、`mmx_file_upload`、`mmx_file_list`、`mmx_file_delete`、`mmx_check_quota`
+`mmx_generate_image`、`mmx_generate_video`、`mmx_video_task_get`、`mmx_video_download`、`mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get`、`mmx_speech_synthesize`、`mmx_speech_voices`、`mmx_speech_transcribe`、`mmx_web_search`、`mmx_describe_image`、`mmx_file_upload`、`mmx_file_list`、`mmx_file_delete`、`mmx_check_quota`
 
 参数以各工具的实际声明为准（LLM 调用时自动可见），本文不再逐项展开。
 ## 安全设计
 
 - **API Key 脱敏**：错误日志中自动隐藏 API Key（仅显示前 4 后 4 字符）
-- **文件名安全**：保存文件使用时间戳命名，避免路径注入
-- **输出目录限制**：生成的媒体文件默认保存到 AstrBot 临时目录（作为缓存由 AstrBot 统一管理，无需手动清理）；仅用户显式指定的持久化输出（如 `mmx_video_download` 的 `out`）写入插件数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）
+- **文件名安全**：自动保存使用时间戳或随机 ID 命名，避免路径注入
+- **输出目录限制**：生成媒体及转写文件默认保存到 AstrBot 临时目录；视频下载和转写的 `out` 仅允许写入插件数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）
 - **文件管理权限**：`/mmx file upload|list|delete` 与 `mmx_file_upload/list/delete` 仅管理员可用
+- **转写附件下载**：仅下载平台解析的附件 URL，不携带 MiniMax Key，限制 50 MB、60 秒并拒绝重定向；附件来源沿用平台信任边界
 - **LLM 文件上传限制**：`mmx_file_upload` 仅允许上传插件数据目录或 AstrBot 临时目录内的文件，避免模型诱导读取任意宿主文件
 - **本地媒体输入限制**：LLM 工具和直接指令中手写的图片/音频路径仅允许指向插件数据目录或 AstrBot 临时目录（聊天图片下载位置）；当前消息和引用消息中的附件仍由 AstrBot 解析后提交
 - **临时目录信任面**：AstrBot 临时目录由所有插件共享（聊天附件、其他插件的临时文件都在其中），放行该目录意味着 LLM 工具可读取其中的任意文件，并非"仅聊天图片"
@@ -214,6 +236,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `default_video_subject_model` | string | `S2V-01` | 默认角色一致性视频模型 |
 | `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
 | `default_speech_voice` | string | `English_expressive_narrator` | 默认语音合成音色（voice_id） |
+| `default_transcription_model` | string | `asr-1.0` | 默认语音转文字模型 |
 | `default_music_model` | string | `music-3.0` | 默认音乐生成模型 |
 | `default_music_cover_model` | string | `music-cover` | 默认音乐翻唱模型 |
 
@@ -243,6 +266,7 @@ astrbot_plugin_mmx_cli_tool/
 │       ├── video.py                 # 视频生成与任务轮询 API
 │       ├── music.py                 # 音乐生成与翻唱 API
 │       ├── speech.py                # 语音合成 API
+│       ├── transcription.py          # 语音转文字 API
 │       ├── search.py                # 联网搜索 API
 │       ├── vision.py                # 视觉理解 API
 │       └── quota.py                 # 额度查询 API
@@ -257,11 +281,17 @@ astrbot_plugin_mmx_cli_tool/
     ├── background_tasks.py          # 后台任务注册表
     ├── audio_result.py              # 音频结果保存与后台调度
     ├── speech_tools.py              # 语音合成与音色列表工具
+    ├── transcription_tools.py       # 语音转文字工具
     ├── file_tools.py                # 文件上传、列表与删除工具
     ├── search_tools.py              # 联网搜索工具
     ├── vision_tools.py              # 视觉理解工具
     └── quota_tools.py               # 额度查询工具
 ```
+
+## 开发验证
+
+安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用 Mock HTTP 和 AstrBot 桩，不需要 API Key，也不替代真实服务及 AstrBot 加载验证。
+
 
 ## 更新日志
 

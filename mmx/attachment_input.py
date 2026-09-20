@@ -28,6 +28,7 @@ async def extract_first_audio_input(
     file_type: type[Any],
     reply_type: type[Any],
     event: Any | None = None,
+    prefer_url: bool = False,
 ) -> tuple[str | None, bool]:
     """Return the first audio-like attachment from current or quoted messages."""
     value, saw_attachment = await _extract_first_media_input(
@@ -35,6 +36,7 @@ async def extract_first_audio_input(
         media_types=(record_type, file_type),
         reply_type=reply_type,
         event=event,
+        prefer_url=prefer_url,
     )
     return value, saw_attachment
 
@@ -45,6 +47,7 @@ async def _extract_first_media_input(
     media_types: tuple[type[Any], ...],
     reply_type: type[Any],
     event: Any | None = None,
+    prefer_url: bool = False,
 ) -> tuple[str | None, bool]:
     saw_attachment = False
     reply_ids: list[str] = []
@@ -54,7 +57,7 @@ async def _extract_first_media_input(
         for seg in segments:
             if isinstance(seg, media_types):
                 saw_attachment = True
-                resolved = await _resolve_component_file(seg)
+                resolved = await _resolve_component_file(seg, prefer_url=prefer_url)
                 if resolved:
                     return resolved
 
@@ -83,17 +86,32 @@ async def _extract_first_media_input(
     return None, saw_attachment
 
 
-async def _resolve_component_file(comp: Any) -> str | None:
+async def _resolve_component_file(comp: Any, *, prefer_url: bool = False) -> str | None:
+    if prefer_url:
+        # ASR 下载自行限时限量，避免组件先无界下载整个远端音频。
+        for attr in ("path", "file_", "url", "file"):
+            value = getattr(comp, "__dict__", {}).get(attr)
+            if isinstance(value, str) and value.strip():
+                value = _strip_file_scheme(value.strip())
+                if value.startswith(("http://", "https://")) or os.path.isfile(value):
+                    return value
     get_file = getattr(comp, "get_file", None)
     if callable(get_file):
         try:
             resolved = await get_file(allow_return_url=True)
-        except TypeError:
+        except TypeError as exc:
+            if prefer_url:
+                raise ValueError(
+                    "当前音频附件组件无法安全解析；请将音频保存到允许目录后使用 --file。"
+                ) from exc
             resolved = await get_file()
         except Exception:
             resolved = None
         if isinstance(resolved, str) and resolved.strip():
             return resolved.strip()
+
+    if prefer_url:
+        return None
 
     convert_to_file_path = getattr(comp, "convert_to_file_path", None)
     if callable(convert_to_file_path):

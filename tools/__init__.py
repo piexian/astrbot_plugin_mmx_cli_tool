@@ -11,6 +11,7 @@ from .vision_tools import DescribeImageTool
 from .quota_tools import CheckQuotaTool
 from .speech_tools import SpeechSynthesizeTool, ListVoicesTool
 from .file_tools import UploadFileTool, ListFilesTool, DeleteFileTool
+from .transcription_tools import SpeechTranscribeTool
 
 __all__ = [
     "GenerateImageTool",
@@ -24,6 +25,7 @@ __all__ = [
     "DescribeImageTool",
     "CheckQuotaTool",
     "SpeechSynthesizeTool",
+    "SpeechTranscribeTool",
     "ListVoicesTool",
     "UploadFileTool",
     "ListFilesTool",
