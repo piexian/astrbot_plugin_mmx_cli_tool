@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import logging
 import mimetypes
 import os
 import uuid
@@ -12,9 +11,9 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from .utils import get_shared_temp_dir
+from astrbot.api import logger
 
-logger = logging.getLogger(__name__)
+from .utils import get_shared_temp_dir
 
 
 def _get_temp_dir() -> str:

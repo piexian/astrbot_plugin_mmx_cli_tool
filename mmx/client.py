@@ -69,7 +69,7 @@ class MiniMaxClient:
         api_key_override: str | None = None,
     ) -> httpx.Response:
         """发送 HTTP 请求，返回原始 Response。"""
-        hdrs: dict[str, str] = {"User-Agent": "astrbot-plugin-mmx/0.5.0"}
+        hdrs: dict[str, str] = {"User-Agent": "astrbot-plugin-mmx/0.5.1"}
         if headers:
             hdrs.update(headers)
 

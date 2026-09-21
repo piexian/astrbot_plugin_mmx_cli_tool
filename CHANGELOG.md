@@ -1,5 +1,9 @@
 # 更新日志
 
+## 0.5.1 - 2026-09-21
+
+- 修正 `mmx/vision_input.py` 日志记录：改用 `astrbot.api` 提供的 logger，不再使用内置 `logging` 模块。
+
 ## 0.5.0 - 2026-09-20
 
 - 同步 mmx-cli 1.0.26：新增 `mmx_speech_transcribe`、`/mmx speech transcribe`（别名 `recognize`）及 `default_transcription_model` 配置。
