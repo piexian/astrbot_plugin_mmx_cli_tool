@@ -1,5 +1,9 @@
 # 更新日志
 
+## 0.5.2 - 2026-09-23
+
+- 修复音频保存阻塞事件循环：`SpeechAPI.save`、`MusicAPI.save` 的 URL 回退下载改为 `httpx.AsyncClient` 异步实现，全部调用点改为 `await`。
+
 ## 0.5.1 - 2026-09-21
 
 - 修正 `mmx/vision_input.py` 日志记录：改用 `astrbot.api` 提供的 logger，不再使用内置 `logging` 模块。

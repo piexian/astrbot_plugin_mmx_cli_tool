@@ -217,7 +217,7 @@ class GenerateMusicTool(FunctionTool):
                 aigc_watermark=kwargs.get("aigcWatermark", False),
                 model=selected_model,
             )
-            return saved_audio_result(
+            return await saved_audio_result(
                 self._api,
                 result,
                 save_dir=self._cache_dir,

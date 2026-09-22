@@ -178,7 +178,7 @@ class SpeechSynthesizeTool(FunctionTool):
         )
 
         try:
-            saved = self._api.save(result, out_path)
+            saved = await self._api.save(result, out_path)
         except Exception as e:
             logger.warning(f"[mmx] 语音保存失败: {e}")
             return tool_result(

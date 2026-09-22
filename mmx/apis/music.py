@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from pathlib import Path
 from typing import Any
 
@@ -110,7 +112,7 @@ class MusicAPI:
             body=body,
         )
 
-    def save(self, response: dict[str, Any], out_path: str) -> str:
+    async def save(self, response: dict[str, Any], out_path: str) -> str:
         """将响应中的音频（hex 或 url）保存到本地文件。"""
         data = response.get("data", {})
         audio_hex = data.get("audio")
@@ -125,9 +127,10 @@ class MusicAPI:
         elif audio_url:
             import httpx
 
-            r = httpx.get(audio_url, timeout=60)
-            r.raise_for_status()
-            path.write_bytes(r.content)
+            async with httpx.AsyncClient() as client:
+                r = await client.get(audio_url, timeout=60)
+                r.raise_for_status()
+                await asyncio.to_thread(path.write_bytes, r.content)
         else:
             raise ValueError("响应中没有 audio 或 audio_url 字段")
 

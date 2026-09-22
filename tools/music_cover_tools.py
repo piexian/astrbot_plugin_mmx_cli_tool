@@ -214,7 +214,7 @@ class MusicCoverTool(FunctionTool):
                 bitrate=kwargs.get("bitrate", 256000),
                 channel=kwargs.get("channel", 2),
             )
-            return saved_audio_result(
+            return await saved_audio_result(
                 self._api,
                 result,
                 save_dir=self._cache_dir,

@@ -428,7 +428,7 @@ class Main(star.Star):
             / f"mmx_speech_{int(_time.time() * 1000)}.{args.audio_format}"
         )
         try:
-            saved_path = self._speech.save(result, str(out_path))
+            saved_path = await self._speech.save(result, str(out_path))
         except Exception as e:
             logger.warning(f"[mmx] 语音保存失败: {e}")
             yield event.plain_result("语音合成完成，但保存音频失败。")
@@ -861,7 +861,7 @@ class Main(star.Star):
             / f"mmx_music_{int(_time.time() * 1000)}.{args.audio_format}"
         )
         try:
-            saved_path = self._music.save(result, str(out_path))
+            saved_path = await self._music.save(result, str(out_path))
         except Exception as e:
             logger.warning(f"[mmx] 音乐保存失败: {e}")
             audio_url = result.get("data", {}).get("audio_url", "")
@@ -939,7 +939,7 @@ class Main(star.Star):
             / f"mmx_music_cover_{int(_time.time() * 1000)}.{args.audio_format}"
         )
         try:
-            saved_path = self._music.save(result, str(out_path))
+            saved_path = await self._music.save(result, str(out_path))
         except Exception as e:
             logger.warning(f"[mmx] 翻唱保存失败: {e}")
             audio_url = result.get("data", {}).get("audio_url", "")

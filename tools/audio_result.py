@@ -15,10 +15,10 @@ from .background_tasks import BACKGROUND_TASKS
 
 
 class AudioSaver(Protocol):
-    def save(self, response: dict, out_path: str) -> str: ...
+    async def save(self, response: dict, out_path: str) -> str: ...
 
 
-def saved_audio_result(
+async def saved_audio_result(
     api: AudioSaver,
     response: dict,
     *,
@@ -40,7 +40,7 @@ def saved_audio_result(
 
     out_path = Path(save_dir) / f"{prefix}_{int(_time.time() * 1000)}.{audio_format}"
     try:
-        saved = api.save(response, str(out_path))
+        saved = await api.save(response, str(out_path))
     except Exception as e:
         logger.warning(f"[mmx] {save_error_label}: {e}")
         if audio_url:

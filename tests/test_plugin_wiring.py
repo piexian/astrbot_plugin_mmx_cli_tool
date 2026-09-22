@@ -24,7 +24,7 @@ class PluginWiringTests(unittest.IsolatedAsyncioTestCase):
         })
         self.addAsyncCleanup(self.plugin.terminate)
         self.plugin._speech.synthesize = AsyncMock(return_value={"data": {"audio": "01"}})
-        self.plugin._speech.save = Mock(return_value=str(self.root / "speech.mp3"))
+        self.plugin._speech.save = AsyncMock(return_value=str(self.root / "speech.mp3"))
         self.plugin._transcription._api.transcribe = AsyncMock(return_value={"text": "转写结果", "duration": 1})
         self.audio = self.plugin._plugin_data_dir / "audio.mp3"
         self.audio.write_bytes(b"audio")
