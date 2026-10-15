@@ -187,6 +187,7 @@ class GenerateVideoTool(FunctionTool):
         # V2 (MiniMax-H3) 模型分支
         is_v2 = selected_model == "MiniMax-H3"
         try:
+            validate_video_mode(first_frame, last_frame, subject_image, selected_model)
             validate_h3_subject(selected_model, subject_image)
         except VideoInputError as exc:
             return tool_result(json.dumps(exc.payload, ensure_ascii=False))

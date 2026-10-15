@@ -168,3 +168,32 @@ class PluginWiringTests(unittest.IsolatedAsyncioTestCase):
         result = json.loads(await tool.call(None, prompt="scene"))
         self.assertNotIn("file_path", result)
         self.assertEqual("https://example.com/v.mp4", result["video_url"])
+        tool._default_model = "I2V-Fast"
+        fast_err = json.loads(await tool.call(None, prompt="scene"))
+        self.assertFalse(fast_err["ok"])
+        self.assertIn("firstFrame", fast_err["error"])
+        query_tool = next(
+            t for t in self.registered if t.name == "mmx_video_task_get"
+        )
+        query_tool._default_model = "MiniMax-H3"
+        self.plugin._video.get_task = AsyncMock(
+            return_value={
+                "status": "succeeded",
+                "content": {"url": "https://example.com/v2.mp4"},
+            }
+        )
+        queried = json.loads(await query_tool.call(None, taskId="t1"))
+        self.assertEqual("MiniMax-H3", self.plugin._video.get_task.call_args.kwargs["model"])
+        self.assertIn("videoUrl", queried["hint"])
+        download_tool = next(
+            t for t in self.registered if t.name == "mmx_video_download"
+        )
+        self.plugin._video.download = AsyncMock(return_value=saved)
+        downloaded = json.loads(
+            await download_tool.call(None, videoUrl="https://example.com/v2.mp4")
+        )
+        self.assertEqual(saved, downloaded["file_path"])
+        self.assertEqual(
+            "https://example.com/v2.mp4",
+            self.plugin._video.download.call_args.kwargs["video_url"],
+        )

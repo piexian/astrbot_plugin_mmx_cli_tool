@@ -322,18 +322,9 @@ class Main(star.Star):
     async def terminate(self) -> None:
         self._service._begin_close()
         if self._terminate_task is None:
-            tasks = set().union(
-                *(getattr(tool, "_tasks", set()) for tool in self._tools)
-            )
-            # Reject scheduled-but-not-started Tool work before yielding to cleanup.
-            for task in tasks:
-                task.cancel()
-
             async def cleanup():
                 try:
                     await self._service._drain()
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
                 finally:
                     try:
                         await self._client.close()

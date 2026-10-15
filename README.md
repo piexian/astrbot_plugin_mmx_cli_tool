@@ -210,6 +210,8 @@ astrbot_plugin_mmx_cli_tool/
 ├── _conf_schema.json                # 插件配置 Schema
 ├── requirements.txt                 # Python 依赖
 ├── README.md                        # 项目说明文档
+├── docs/
+│   └── plugin-api.md                # 插件协作 SDK v1 文档
 ├── .astrbot-plugin/
 │   └── i18n/
 │       └── zh-CN.json               # 中文翻译
@@ -220,6 +222,8 @@ astrbot_plugin_mmx_cli_tool/
 │   ├── errors.py                    # 错误分类与映射
 │   ├── sse.py                       # SSE 流式解析
 │   ├── files.py                     # 文件上传、列表、删除与检索
+│   ├── plugin_service.py            # 插件协作 SDK v1 门面
+│   ├── video_business.py            # 视频生成模式与参数前置校验
 │   ├── quota_usage.py               # 额度数据标准化与汇总
 │   └── apis/                        # MiniMax API 领域封装
 │       ├── image.py                 # 图片生成 API
