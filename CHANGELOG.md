@@ -1,5 +1,13 @@
 # 更新日志
 
+## 0.6.0 - 2026-10-15
+
+- 对齐 mmx-cli 1.0.28：上游已公告关闭音乐生成并下线服务端接口，本版本彻底移除音乐生成与翻唱。
+- 移除 `mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get` 工具及 `/mmx music` 指令；删除 `default_music_model`、`default_music_cover_model` 配置项。
+- 移除仅为音乐后台任务服务的任务注册表与音频结果调度模块；SDK 同步移除 `submit_music`、`submit_music_cover`、`get_task`、`list_tasks`、`wait_task`，能力清单去掉 `music.generate`、`music.cover`、`media.tasks`。
+- 生成媒体本地优先（修复 #12）：`mmx_generate_image` 生成后自动下载到 AstrBot 临时目录，结果新增 `file_paths`，工具描述提示模型发图必须使用本地路径；下载失败才回退 `image_urls`。
+- `mmx_generate_video` 同步等待完成后同样先下载到本地并返回 `file_path`，失败才回退 `video_url`/`file_id`；`/mmx video` 指令下载失败时回退发送 V2 远程链接。
+
 ## 0.5.2 - 2026-09-23
 
 - 修复音频保存阻塞事件循环：`SpeechAPI.save`、`MusicAPI.save` 的 URL 回退下载改为 `httpx.AsyncClient` 异步实现，全部调用点改为 `await`。

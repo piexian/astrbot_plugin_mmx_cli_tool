@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 from support import Event, File, Record, Reply, plugin_modules
 
@@ -62,7 +62,7 @@ class PluginWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("12小时额度", summary["current_window"])
 
     async def test_transcription_registration_and_command_aliases(self):
-        self.assertEqual(16, len(self.registered))
+        self.assertEqual(13, len(self.registered))
         for action in ("transcribe", "recognize"):
             results = [r async for r in self.plugin.mmx_speech(Event(f"/mmx speech {action} --file audio.mp3"))]
             self.assertEqual(["转写结果"], results)
@@ -113,3 +113,87 @@ class PluginWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(results)
         self.assertEqual("transcribe this sentence", self.plugin._speech.synthesize.call_args.kwargs["text"])
         self.plugin._transcription._api.transcribe.assert_not_awaited()
+
+    async def test_image_tool_saves_to_temp_dir_and_prefers_local_path(self):
+        generated = {
+            "data": {"image_urls": ["https://example.com/i.png"], "task_id": "t1"}
+        }
+        self.plugin._image.generate = AsyncMock(return_value=generated)
+        saved = str(self.plugin._cache_dir / "mmx_image_1.png")
+        self.plugin._image.save = AsyncMock(return_value=[saved])
+        tool = next(t for t in self.registered if t.name == "mmx_generate_image")
+        result = json.loads(await tool.call(None, prompt="cat"))
+        self.assertTrue(result["ok"])
+        self.assertEqual([saved], result["file_paths"])
+        self.assertIn("本地路径", result["hint"])
+        self.assertEqual(generated, self.plugin._image.save.call_args.args[0])
+        self.assertEqual(
+            str(self.plugin._cache_dir),
+            self.plugin._image.save.call_args.kwargs["out_dir"],
+        )
+
+    async def test_image_tool_falls_back_to_urls_when_download_fails(self):
+        self.plugin._image.generate = AsyncMock(return_value={
+            "data": {"image_urls": ["https://example.com/i.png"], "task_id": "t1"}
+        })
+        self.plugin._image.save = AsyncMock(side_effect=OSError("cdn down"))
+        tool = next(t for t in self.registered if t.name == "mmx_generate_image")
+        result = json.loads(await tool.call(None, prompt="cat"))
+        self.assertTrue(result["ok"])
+        self.assertNotIn("file_paths", result)
+        self.assertEqual(["https://example.com/i.png"], result["image_urls"])
+
+    async def test_video_tool_downloads_after_wait_then_falls_back(self):
+        self.plugin._video.generate = AsyncMock(
+            return_value={"task_id": "t1", "status": "Processing"}
+        )
+        self.plugin._video.wait_for_completion = AsyncMock(
+            return_value={"file_id": "f1", "video_url": "https://example.com/v.mp4"}
+        )
+        saved = str(self.plugin._cache_dir / "mmx_video_t1.mp4")
+        self.plugin._video.download = AsyncMock(return_value=saved)
+        tool = next(t for t in self.registered if t.name == "mmx_generate_video")
+        result = json.loads(await tool.call(None, prompt="scene"))
+        self.assertEqual(saved, result["file_path"])
+        self.assertIn("本地路径", result["hint"])
+        self.plugin._video.generate = AsyncMock(
+            return_value={"task_id": "../escape", "status": "Processing"}
+        )
+        await tool.call(None, prompt="scene")
+        self.assertEqual(
+            self.plugin._cache_dir,
+            Path(self.plugin._video.download.call_args.args[1]).parent,
+        )
+        self.plugin._video.download = AsyncMock(side_effect=OSError("cdn down"))
+        result = json.loads(await tool.call(None, prompt="scene"))
+        self.assertNotIn("file_path", result)
+        self.assertEqual("https://example.com/v.mp4", result["video_url"])
+        tool._default_model = "I2V-Fast"
+        fast_err = json.loads(await tool.call(None, prompt="scene"))
+        self.assertFalse(fast_err["ok"])
+        self.assertIn("firstFrame", fast_err["error"])
+        query_tool = next(
+            t for t in self.registered if t.name == "mmx_video_task_get"
+        )
+        query_tool._default_model = "MiniMax-H3"
+        self.plugin._video.get_task = AsyncMock(
+            return_value={
+                "status": "succeeded",
+                "content": {"url": "https://example.com/v2.mp4"},
+            }
+        )
+        queried = json.loads(await query_tool.call(None, taskId="t1"))
+        self.assertEqual("MiniMax-H3", self.plugin._video.get_task.call_args.kwargs["model"])
+        self.assertIn("videoUrl", queried["hint"])
+        download_tool = next(
+            t for t in self.registered if t.name == "mmx_video_download"
+        )
+        self.plugin._video.download = AsyncMock(return_value=saved)
+        downloaded = json.loads(
+            await download_tool.call(None, videoUrl="https://example.com/v2.mp4")
+        )
+        self.assertEqual(saved, downloaded["file_path"])
+        self.assertEqual(
+            "https://example.com/v2.mp4",
+            self.plugin._video.download.call_args.kwargs["video_url"],
+        )

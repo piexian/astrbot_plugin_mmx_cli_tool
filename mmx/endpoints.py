@@ -51,11 +51,6 @@ def video_task_v2_endpoint(base: str, task_id: str) -> str:
     """视频任务查询端点（V2，MiniMax-H3）。"""
     return f"{base}/v2/query/video_generation/{task_id}"
 
-def music_endpoint(base: str) -> str:
-    """音乐生成端点。"""
-    return f"{base}/v1/music_generation"
-
-
 def search_endpoint(base: str) -> str:
     """联网搜索端点。"""
     return f"{base}/v1/coding_plan/search"

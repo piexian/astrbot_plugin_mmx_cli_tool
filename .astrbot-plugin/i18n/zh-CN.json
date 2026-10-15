@@ -8,10 +8,6 @@
       "description": "生成视频 - 使用 MiniMax AI 根据文本描述生成视频",
       "usage": "/mmx video <描述>"
     },
-    "music": {
-      "description": "生成音乐 - 使用 MiniMax AI 生成音乐（支持纯器乐和歌词，后台任务）",
-      "usage": "/mmx music <描述> [--instrumental]"
-    },
     "speech": {
       "description": "语音合成或转写音频",
       "usage": "/mmx speech <文本>；/mmx speech transcribe [--file <路径>]"

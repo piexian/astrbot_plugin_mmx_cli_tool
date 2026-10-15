@@ -1,6 +1,9 @@
 # MiniMax 多模态工具
 
-为 AstrBot 提供 MiniMax 图片、视频、音乐、语音合成与转写、联网搜索、视觉理解和额度查询能力。
+为 AstrBot 提供 MiniMax 图片、视频、语音合成与转写、联网搜索、视觉理解和额度查询能力。
+
+> [!WARNING]
+> **音乐生成与翻唱已彻底移除。** MiniMax 已公告关闭音乐生成服务，mmx-cli 自 1.0.25 起移除全部音乐命令；本插件自 0.6.0 起同步移除 `mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get` 工具、`/mmx music` 指令及 `default_music_model`、`default_music_cover_model` 配置项。仍需音乐功能的用户请停留在 0.5.2。
 
 
 ## 环境要求
@@ -11,11 +14,11 @@
 
 ## 功能
 
-- 16 个 LLM Tool，支持图片/视频/音乐/语音合成与转写/联网搜索/视觉理解/文件管理
+- 13 个 LLM Tool，支持图片/视频/语音合成与转写/联网搜索/视觉理解/文件管理
 - `/mmx` 命令组，用户可直接通过指令快速调用
 - 智能参数校验与纠偏机制，对 AI 友好
 - API 多 Key 轮询与额度查询
-- 媒体文件自动保存到本地，并通过 AstrBot 多媒体消息格式发送
+- 生成的图片/视频优先下载到 AstrBot 临时目录，发送不依赖远程链接；下载失败才回退 URL
 
 ## 安装
 
@@ -30,16 +33,13 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 | 工具 | 功能 | 权限 |
 |------|------|------|
-| `mmx_generate_image` | 根据文字描述生成图片（支持 aspectRatio、角色参考等） | 无 |
-| `mmx_generate_video` | 根据文字描述及首尾帧等生成视频 | 无 |
+| `mmx_generate_image` | 根据文字描述生成图片（支持 aspectRatio、角色参考等），图片自动下载到本地临时目录并返回本地路径 | 无 |
+| `mmx_generate_video` | 根据文字描述及首尾帧等生成视频，同步等待完成后自动下载到本地临时目录并返回本地路径 | 无 |
 | `mmx_video_task_get` | 查询视频生成任务的最新状态和进度 | 无 |
 | `mmx_video_download` | 通过文件 ID 下载完成的视频到本地 | 无 |
 | `mmx_file_upload` | 上传插件数据目录或 AstrBot 临时目录内的文件到 MiniMax 存储 | 管理员 |
 | `mmx_file_list` | 列出已上传到 MiniMax 存储的文件 | 管理员 |
 | `mmx_file_delete` | 删除已上传的 MiniMax 文件 | 管理员 |
-| `mmx_generate_music` | 生成音乐（支持纯器乐、带歌词，及所有精细控制参数） | 无 |
-| `mmx_music_cover` | 基于参考音频及描述进行翻唱（支持 URL 和本地音频输入） | 无 |
-| `mmx_background_task_get` | 查询音乐生成和翻唱的后台任务状态与结果 | 无 |
 | `mmx_speech_synthesize` | 将文本合成语音（TTS），支持 30+ 种音色和语速/音量/音高控制 | 无 |
 | `mmx_speech_voices` | 查询可用 TTS 系统音色列表 | 无 |
 | `mmx_speech_transcribe` | 音频转文字，支持说话人、时间戳及 SRT/WebVTT 字幕 | 无 |
@@ -54,8 +54,6 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 ```
 /mmx image <描述> [--aspect-ratio 16:9] [--seed 42]  # 生成图片，可用 --subject-ref 引用图片
 /mmx video <描述> [--first-frame <图片>] [--no-wait]  # 生成视频，可附带或引用图片
-/mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)  # 生成音乐
-/mmx music cover <风格描述> --audio <URL>  # 生成翻唱，可附带或引用音频
 /mmx speech <文本> [--voice <音色>] [--format mp3]  # 语音合成
 /mmx speech transcribe [--file <路径>] [--language zh]  # 语音转文字，可附带或引用音频
 /mmx file upload --file <路径> [--purpose retrieval]  # 上传文件（管理员）
@@ -68,18 +66,11 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 ```
 
 
-> [!WARNING]
-> **音乐生成与翻唱已被上游弃用。** mmx-cli 从 1.0.25 起移除了全部音乐命令。本插件不依赖 mmx-cli 运行，仍直接调用 MiniMax 服务端接口，目前功能可用；但服务端后续可能随时关闭接口，届时音乐相关功能将失效，请以实际调用结果为准。
-
 ### 示例
 
 ```
 /mmx image a cute cat wearing a hat, watercolor style --aspect-ratio 1:1 --aigc-watermark
 /mmx video a sunset over the ocean with gentle waves --first-frame --no-wait
-/mmx music warm acoustic guitar, folk style --instrumental
-/mmx music 欢乐电子乐 --lyrics-optimizer
-/mmx music --prompt "Upbeat pop" --lyrics "[Verse] La la la"
-/mmx music cover indie folk, acoustic guitar, warm male vocal
 /mmx speech 欢迎使用 MiniMax 语音合成功能 --speed 1.1 --subtitles --pronunciation MiniMax/(mini max)
 /mmx speech transcribe --response-format srt --language zh
 /mmx file list
@@ -89,7 +80,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx quota page 2
 ```
 
-直接指令使用 kebab-case，例如 `--lyrics-optimizer`、`--use-case`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `lyricsOptimizer`、`useCase`、`sampleRate`。
+直接指令使用 kebab-case，例如 `--aspect-ratio`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `aspectRatio`、`sampleRate`。
 
 
 常用图片指令参数：
@@ -116,34 +107,6 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `--callback-url <URL>` | 完成回调地址 |
 | `--no-wait` / `--async` | 提交任务后立即返回 `task_id` |
 | `--poll-interval <秒>` | 等待生成时的轮询间隔 |
-
-常用音乐指令参数：
-
-| 参数 | 说明 |
-|------|------|
-| `--lyrics <歌词>` | 带歌词歌曲。歌词可带 `[Verse]`、`[Chorus]` 等结构标签 |
-| `--lyrics-optimizer` | 根据描述自动生成歌词。不能和 `--lyrics`/`--instrumental` 同时使用 |
-| `--instrumental` | 生成纯音乐。不能和 `--lyrics` 同时使用 |
-| `--vocals <文本>` | 人声风格，如 `"warm male baritone"` |
-| `--genre` / `--mood` / `--instruments` / `--tempo` / `--key` | 精细控制音乐风格 |
-| `--bpm <数字>` | 指定 BPM |
-| `--avoid` / `--use-case` / `--structure` / `--references` / `--extra` | 更多结构化描述 |
-| `--model <模型>` | `music-3.0`、`music-2.6`、`music-2.6-free`、`music-2.5+` 或 `music-2.5` |
-| `--output-format <hex|url>` | 输出格式，默认 `hex` |
-| `--format <mp3\|wav\|pcm>` | 音频格式，默认 `mp3` |
-| `--sample-rate <数字>` / `--bitrate <数字>` | 音频采样率和码率 |
-| `--aigc-watermark` | 添加 AI 生成内容水印 |
-
-常用翻唱指令参数：
-
-| 参数 | 说明 |
-|------|------|
-| `--audio <URL>` | 参考音频 URL；省略时可从引用消息中的音频附件解析 |
-| `--audio-file <路径>` | 插件数据目录内参考音频路径；省略值时可从引用消息中的音频/文件附件解析 |
-| `--lyrics <歌词>` | 翻唱歌词，留空则由接口从参考音频提取 |
-| `--model <模型>` | `music-cover` 或 `music-cover-free` |
-| `--format <mp3|wav|pcm>` | 音频格式，默认 `mp3` |
-| `--sample-rate <数字>` / `--bitrate <数字>` / `--channel <1|2>` | 音频采样率、码率、声道数 |
 
 常用语音指令参数：
 
@@ -181,16 +144,16 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 ### LLM 对话中使用
 
-当 AI 需要生成图片、视频、语音、音乐，或进行搜索、图片理解时，会自动调用对应工具。
+当 AI 需要生成图片、视频、语音，或进行搜索、图片理解时，会自动调用对应工具。
 
 例如对 AI 说「帮我把这段话合成语音：你好」→ 自动调用 `mmx_speech_synthesize`。
-音乐生成与翻唱会先返回 `task_id`，可用 `mmx_background_task_get` 查询结果。
+生成的图片/视频会先下载到 AstrBot 临时目录，工具结果返回 `file_paths`/`file_path` 本地路径，发送时优先使用本地路径而非远程链接（远程链接可能过期或无法被接收端下载）。
 
 
 ## 智能错误提示与参数规范
 
 ### 智能错误提示
-本插件实现了一套**面向 LLM 自动纠错**的智能错误反馈机制。当 LLM 传入参数缺失、类型错误或发生模式冲突（如音乐生成中歌词与纯乐器互斥）时，工具不直接崩溃，而是返回包含以下信息的结构化 JSON：
+本插件实现了一套**面向 LLM 自动纠错**的智能错误反馈机制。当 LLM 传入参数缺失、类型错误或发生模式冲突（如视频生成中首尾帧与角色参考互斥）时，工具不直接崩溃，而是返回包含以下信息的结构化 JSON：
 - `ok`: `false`，指示调用失败
 - `error`: 明确的错误原因
 - `hint`: AI 参数纠正建议
@@ -201,7 +164,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 ### 工具一览
 
-`mmx_generate_image`、`mmx_generate_video`、`mmx_video_task_get`、`mmx_video_download`、`mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get`、`mmx_speech_synthesize`、`mmx_speech_voices`、`mmx_speech_transcribe`、`mmx_web_search`、`mmx_describe_image`、`mmx_file_upload`、`mmx_file_list`、`mmx_file_delete`、`mmx_check_quota`
+`mmx_generate_image`、`mmx_generate_video`、`mmx_video_task_get`、`mmx_video_download`、`mmx_speech_synthesize`、`mmx_speech_voices`、`mmx_speech_transcribe`、`mmx_web_search`、`mmx_describe_image`、`mmx_file_upload`、`mmx_file_list`、`mmx_file_delete`、`mmx_check_quota`
 
 参数以各工具的实际声明为准（LLM 调用时自动可见），本文不再逐项展开。
 ## 安全设计
@@ -237,8 +200,6 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
 | `default_speech_voice` | string | `English_expressive_narrator` | 默认语音合成音色（voice_id） |
 | `default_transcription_model` | string | `asr-1.0` | 默认语音转文字模型 |
-| `default_music_model` | string | `music-3.0` | 默认音乐生成模型 |
-| `default_music_cover_model` | string | `music-cover` | 默认音乐翻唱模型 |
 
 ## 项目结构
 
@@ -249,6 +210,8 @@ astrbot_plugin_mmx_cli_tool/
 ├── _conf_schema.json                # 插件配置 Schema
 ├── requirements.txt                 # Python 依赖
 ├── README.md                        # 项目说明文档
+├── docs/
+│   └── plugin-api.md                # 插件协作 SDK v1 文档
 ├── .astrbot-plugin/
 │   └── i18n/
 │       └── zh-CN.json               # 中文翻译
@@ -259,12 +222,12 @@ astrbot_plugin_mmx_cli_tool/
 │   ├── errors.py                    # 错误分类与映射
 │   ├── sse.py                       # SSE 流式解析
 │   ├── files.py                     # 文件上传、列表、删除与检索
-│   ├── model_options.py             # 模型默认值与有效模型定义
+│   ├── plugin_service.py            # 插件协作 SDK v1 门面
+│   ├── video_business.py            # 视频生成模式与参数前置校验
 │   ├── quota_usage.py               # 额度数据标准化与汇总
 │   └── apis/                        # MiniMax API 领域封装
 │       ├── image.py                 # 图片生成 API
 │       ├── video.py                 # 视频生成与任务轮询 API
-│       ├── music.py                 # 音乐生成与翻唱 API
 │       ├── speech.py                # 语音合成 API
 │       ├── transcription.py          # 语音转文字 API
 │       ├── search.py                # 联网搜索 API
@@ -275,11 +238,6 @@ astrbot_plugin_mmx_cli_tool/
     ├── image_tools.py               # 图片生成工具
     ├── video_tools.py               # 视频生成工具
     ├── video_task_tools.py          # 视频任务查询与下载工具
-    ├── music_tools.py               # 音乐生成工具
-    ├── music_cover_tools.py         # 音乐翻唱工具
-    ├── background_task_tools.py     # 后台任务查询工具
-    ├── background_tasks.py          # 后台任务注册表
-    ├── audio_result.py              # 音频结果保存与后台调度
     ├── speech_tools.py              # 语音合成与音色列表工具
     ├── transcription_tools.py       # 语音转文字工具
     ├── file_tools.py                # 文件上传、列表与删除工具
@@ -288,9 +246,23 @@ astrbot_plugin_mmx_cli_tool/
     └── quota_tools.py               # 额度查询工具
 ```
 
+## 插件协作 SDK v1
+
+通过 `context.get_registered_star("astrbot_plugin_mmx_cli_tool")` 原生发现，在确认注册、启用、实例和接口存在后调用 `meta.star_cls.get_service(api_version=1)`。同次加载返回同一门面，支持本地状态/能力快照、图片/视频/语音/转写/搜索/视觉/文件/额度。
+
+```python
+service = meta.star_cls.get_service(api_version=1)
+await service.wait_ready(timeout=5)  # 不在消费者 initialize 中阻塞等待其他插件
+image = await service.generate_image("a cute cat", aspect_ratio="1:1")
+```
+
+SDK 返回结构化结果，不发送聊天消息、不唤醒 Agent。视频等待超时不取消、不重提生成。卸载后旧门面永久关闭；本地取消不代表远端取消或退款。路径仍受现有目录和符号链接约束，不开放 trusted-local 开关。
+
+完整发现检查、真实签名、结果与错误边界见 [docs/plugin-api.md](docs/plugin-api.md)。
+
 ## 开发验证
 
-安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用 Mock HTTP 和 AstrBot 桩，不需要 API Key，也不替代真实服务及 AstrBot 加载验证。
+安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用 Mock HTTP 和 AstrBot 桩，不需要 API Key，也不替代真实服务及 AstrBot 加载验证。安装 AstrBot 的开发环境可另运行 `python -m unittest discover -s tests -p native_discovery.py -v`，检查真实 Main/Context 原生发现和生命周期；该入口不加入仅依赖 httpx 的离线 CI。
 
 
 ## 更新日志

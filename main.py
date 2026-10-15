@@ -1,15 +1,17 @@
 """MiniMax 多模态工具 — AstrBot 插件入口。
 
-提供 LLM 工具和指令，覆盖 MiniMax 图片/视频/音乐生成、联网搜索、视觉理解和额度查询。
+提供 LLM 工具和指令，覆盖 MiniMax 图片/视频生成、语音合成与转写、联网搜索、视觉理解和额度查询。
 
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import re
 import time as _time
+import uuid
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger, star
@@ -19,9 +21,9 @@ from astrbot.core.message.components import Record, Video
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 from .mmx import MiniMaxClient
+from .mmx.plugin_service import MiniMaxService, ServiceError
 from .mmx.apis.image import ImageAPI
 from .mmx.apis.video import VideoAPI
-from .mmx.apis.music import MusicAPI
 from .mmx.apis.search import SearchAPI
 from .mmx.apis.vision import VisionAPI
 from .mmx.apis.quota import QuotaAPI
@@ -30,18 +32,15 @@ from .mmx.apis.transcription import SpeechToTextAPI, TranscriptionOptions
 from .mmx.transcription import TranscriptionService
 from .tools.transcription_tools import transcribe_event
 from .mmx.files import FileAPI
-from .mmx.attachment_input import extract_first_audio_input
 from .mmx.vision_input import extract_image_input, extract_image_inputs
 from .mmx.direct_command_args import (
     DirectCommandError,
     parse_file_command,
     parse_image_command,
-    parse_music_cover_command,
     parse_speech_command,
     parse_transcription_command,
     parse_video_command,
 )
-from .mmx.music_command import MusicCommandError, parse_music_command
 from .mmx.errors import MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
 from .mmx.quota_usage import (
@@ -53,7 +52,6 @@ from .mmx.quota_usage import (
 )
 from .mmx.utils import (
     get_shared_temp_dir,
-    is_url,
     resolve_existing_data_path,
     resolve_image,
     resolve_subject_reference,
@@ -63,9 +61,6 @@ from .tools import (
     GenerateVideoTool,
     QueryVideoTaskTool,
     DownloadVideoTool,
-    GenerateMusicTool,
-    MusicCoverTool,
-    QueryBackgroundTaskTool,
     WebSearchTool,
     DescribeImageTool,
     CheckQuotaTool,
@@ -181,7 +176,7 @@ def mmx_group() -> None:
 
 
 class Main(star.Star):
-    """MiniMax multi-modal plugin — image, video, music, search, vision, quota."""
+    """MiniMax multi-modal plugin — image, video, speech, search, vision, quota."""
 
     def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
         super().__init__(context)
@@ -208,10 +203,6 @@ class Main(star.Star):
         ).strip()
         self._default_speech_model = str(config.get("default_speech_model", "")).strip()
         self._default_speech_voice = str(config.get("default_speech_voice", "")).strip()
-        self._default_music_model = str(config.get("default_music_model", "")).strip()
-        self._default_music_cover_model = str(
-            config.get("default_music_cover_model", "")
-        ).strip()
 
         # 插件数据目录
         _plugin_name = getattr(self, "name", None) or "astrbot_plugin_mmx_cli_tool"
@@ -258,7 +249,6 @@ class Main(star.Star):
 
         self._image = ImageAPI(self._client)
         self._video = VideoAPI(self._client)
-        self._music = MusicAPI(self._client)
         self._search = SearchAPI(self._client)
         self._vision = VisionAPI(self._client)
         self._quota = QuotaAPI(self._client)
@@ -278,12 +268,16 @@ class Main(star.Star):
         # AstrBot 临时目录：聊天图片下载后存放于此，允许 LLM 工具读取
         _extra_dirs = self._extra_dirs
 
+        self._service = MiniMaxService(self, configured=bool(keys))
+        self._terminate_task: asyncio.Task | None = None
+
         # 注册 LLM 工具
-        context.add_llm_tools(
+        self._tools = [
             GenerateImageTool(
                 self._image,
                 self._default_image_model,
                 _data_dir,
+                cache_dir=_cache_dir,
                 extra_allowed_dirs=_extra_dirs,
             ),
             GenerateVideoTool(
@@ -294,21 +288,11 @@ class Main(star.Star):
                 self._default_video_sef_model,
                 self._default_video_subject_model,
                 _data_dir,
-                extra_allowed_dirs=_extra_dirs,
-            ),
-            QueryVideoTaskTool(self._video),
-            DownloadVideoTool(self._video, _data_dir, cache_dir=_cache_dir),
-            GenerateMusicTool(
-                self._music, _data_dir, self._default_music_model, cache_dir=_cache_dir
-            ),
-            MusicCoverTool(
-                self._music,
-                _data_dir,
-                self._default_music_cover_model,
                 cache_dir=_cache_dir,
                 extra_allowed_dirs=_extra_dirs,
             ),
-            QueryBackgroundTaskTool(),
+            QueryVideoTaskTool(self._video, self._default_video_model),
+            DownloadVideoTool(self._video, _data_dir, cache_dir=_cache_dir),
             WebSearchTool(self._search),
             DescribeImageTool(self._vision, _data_dir, extra_allowed_dirs=_extra_dirs),
             CheckQuotaTool(self._quota, keys),
@@ -324,11 +308,31 @@ class Main(star.Star):
             UploadFileTool(self._files, _data_dir, extra_allowed_dirs=_extra_dirs),
             ListFilesTool(self._files),
             DeleteFileTool(self._files),
-        )
+        ]
+        context.add_llm_tools(*self._tools)
+
+    def get_service(self, api_version: int = 1) -> MiniMaxService:
+        if type(api_version) is not int or api_version != 1:
+            raise ServiceError("unsupported_version")
+        return self._service
+
+    async def initialize(self) -> None:
+        self._service._initialize()
 
     async def terminate(self) -> None:
-        if self._client:
-            await self._client.close()
+        self._service._begin_close()
+        if self._terminate_task is None:
+            async def cleanup():
+                try:
+                    await self._service._drain()
+                finally:
+                    try:
+                        await self._client.close()
+                    finally:
+                        self._service._finish_close()
+
+            self._terminate_task = asyncio.create_task(cleanup())
+        await asyncio.shield(self._terminate_task)
 
     async def _handle_speech_transcribe(self, event: AstrMessageEvent, raw_args: str):
         try:
@@ -781,14 +785,22 @@ class Main(star.Star):
                     return
 
                 try:
-                    video_path = str(self._cache_dir / f"mmx_video_{task_id}.mp4")
+                    safe_task_id = (
+                        task_id
+                        if re.fullmatch(r"[A-Za-z0-9_-]+", str(task_id))
+                        else uuid.uuid4().hex
+                    )
+                    video_path = str(self._cache_dir / f"mmx_video_{safe_task_id}.mp4")
                     saved = await self._video.download(fid, video_path, video_url=v2_url or None)
                     yield event.chain_result([Video(file=saved)])
                 except Exception as e:
                     logger.warning(f"[mmx] 视频下载失败: {e}")
-                    yield event.plain_result(
-                        "视频生成完成，但下载失败，无法直接发送视频。"
-                    )
+                    if v2_url:
+                        yield event.chain_result([Video(file=v2_url)])
+                    else:
+                        yield event.plain_result(
+                            "视频生成完成，但下载失败，无法直接发送视频。"
+                        )
             except TimeoutError:
                 yield event.plain_result(
                     f"⏰ 视频生成超时。task_id={task_id}，请前往 MiniMax 控制台查看。"
@@ -798,159 +810,6 @@ class Main(star.Star):
         except Exception as e:
             logger.error(f"[mmx] Video error: {e}")
             yield event.plain_result(f"视频生成失败: {e}")
-
-    @mmx_group.command("music")
-    async def mmx_music(self, event: AstrMessageEvent, *, prompt: str = ""):
-        """生成音乐。用法: /mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        raw_args = prompt or (parts[1] if len(parts) > 1 else "")
-        stripped = raw_args.strip()
-        if stripped == "cover" or stripped.startswith("cover "):
-            async for result in self._handle_music_cover(event, raw_args):
-                yield result
-            return
-        try:
-            args = parse_music_command(raw_args)
-        except MusicCommandError as e:
-            yield event.plain_result(str(e))
-            return
-        if not raw_args:
-            yield event.plain_result(
-                "用法: /mmx music <描述> (--lyrics <歌词> | --instrumental | --lyrics-optimizer)\n"
-                "例如: /mmx music 欢乐电子乐 --lyrics-optimizer\n"
-                "例如: /mmx music 电影感管弦乐 --instrumental"
-            )
-            return
-        try:
-            result = await self._music.generate(
-                prompt=args.prompt,
-                lyrics=args.lyrics,
-                is_instrumental=args.instrumental,
-                lyrics_optimizer=args.lyrics_optimizer,
-                vocals=args.vocals,
-                genre=args.genre,
-                mood=args.mood,
-                instruments=args.instruments,
-                tempo=args.tempo,
-                bpm=args.bpm,
-                key=args.key,
-                avoid=args.avoid,
-                use_case=args.use_case,
-                structure=args.structure,
-                references=args.references,
-                extra=args.extra,
-                model=args.model or self._default_music_model or None,
-                output_format=args.output_format,
-                audio_format=args.audio_format,
-                sample_rate=args.sample_rate,
-                bitrate=args.bitrate,
-                aigc_watermark=args.aigc_watermark,
-            )
-        except MiniMaxError as e:
-            yield event.plain_result(friendly_message(e))
-            return
-        except Exception as e:
-            logger.error(f"[mmx] Music error: {e}")
-            yield event.plain_result(f"音乐生成失败: {e}")
-            return
-
-        saved_path = None
-        out_path = (
-            self._cache_dir
-            / f"mmx_music_{int(_time.time() * 1000)}.{args.audio_format}"
-        )
-        try:
-            saved_path = await self._music.save(result, str(out_path))
-        except Exception as e:
-            logger.warning(f"[mmx] 音乐保存失败: {e}")
-            audio_url = result.get("data", {}).get("audio_url", "")
-            if audio_url:
-                yield event.chain_result([Record(file=audio_url)])
-                return
-            yield event.plain_result("音乐生成完成，但未返回可发送音频。")
-            return
-
-        if saved_path:
-            yield event.chain_result([Record(file=saved_path)])
-
-    async def _handle_music_cover(self, event: AstrMessageEvent, raw_args: str):
-        text = raw_args.strip()
-        if text == "cover":
-            cover_args_text = ""
-        else:
-            cover_args_text = text[5:].strip() if text.startswith("cover ") else ""
-        try:
-            args = parse_music_cover_command(cover_args_text)
-        except DirectCommandError as e:
-            yield event.plain_result(str(e))
-            return
-        try:
-            audio_ref = args.audio
-            audio_file_ref = args.audio_file
-            audio_file_trusted = False
-            if not audio_ref and not audio_file_ref:
-                attachment_ref, _ = await extract_first_audio_input(
-                    event.get_messages(),
-                    record_type=Comp.Record,
-                    file_type=Comp.File,
-                    reply_type=Comp.Reply,
-                    event=event,
-                )
-                if attachment_ref:
-                    if is_url(attachment_ref):
-                        audio_ref = attachment_ref
-                    else:
-                        audio_file_ref = attachment_ref
-                        audio_file_trusted = True
-            if not audio_ref and not audio_file_ref:
-                yield event.plain_result(
-                    "请提供 --audio <URL>，或附带/引用一个音频文件后使用 /mmx music cover。"
-                )
-                return
-            result = await self._music.cover(
-                model=args.model or self._default_music_cover_model or None,
-                prompt=args.prompt,
-                audio=audio_ref,
-                audio_file=audio_file_ref,
-                data_dir=None
-                if audio_file_trusted
-                else str(self._plugin_data_dir),
-                allow_trusted_local_path=audio_file_trusted,
-                extra_allowed_dirs=self._extra_dirs,
-                lyrics=args.lyrics,
-                seed=args.seed,
-                audio_format=args.audio_format,
-                sample_rate=args.sample_rate,
-                bitrate=args.bitrate,
-                channel=args.channel,
-            )
-        except MiniMaxError as e:
-            yield event.plain_result(friendly_message(e))
-            return
-        except Exception as e:
-            logger.error(f"[mmx] Music cover error: {e}")
-            yield event.plain_result(f"翻唱生成失败: {e}")
-            return
-
-        saved_path = None
-        out_path = (
-            self._cache_dir
-            / f"mmx_music_cover_{int(_time.time() * 1000)}.{args.audio_format}"
-        )
-        try:
-            saved_path = await self._music.save(result, str(out_path))
-        except Exception as e:
-            logger.warning(f"[mmx] 翻唱保存失败: {e}")
-            audio_url = result.get("data", {}).get("audio_url", "")
-            if audio_url:
-                yield event.chain_result([Record(file=audio_url)])
-                return
-            yield event.plain_result("翻唱生成完成，但未返回可发送音频。")
-            return
-
-        if saved_path:
-            yield event.chain_result([Record(file=saved_path)])
 
     @mmx_group.command("search")
     async def mmx_search(self, event: AstrMessageEvent, *, query: str = ""):
