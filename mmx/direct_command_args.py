@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .model_options import MUSIC_COVER_MODELS
 from .utils import split_command_tokens
 from .apis.transcription import DEFAULT_TRANSCRIPTION_MODEL, TranscriptionOptions
 
@@ -75,20 +74,6 @@ class VideoCommandArgs:
     reference_images: tuple[str, ...] = ()
     reference_videos: tuple[str, ...] = ()
     reference_audios: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class MusicCoverCommandArgs:
-    prompt: str
-    audio: str | None = None
-    audio_file: str | None = None
-    lyrics: str | None = None
-    seed: int | None = None
-    model: str | None = None
-    audio_format: str = "mp3"
-    sample_rate: int = 44100
-    bitrate: int = 256000
-    channel: int = 2
 
 
 @dataclass(frozen=True)
@@ -237,53 +222,6 @@ def parse_transcription_command(raw: str) -> TranscribeCommandArgs:
         raise DirectCommandError(str(exc)) from exc
     if args.stream and args.out is not None:
         raise DirectCommandError("--stream 与 --out 不能同时使用")
-    return args
-
-
-def parse_music_cover_command(raw: str) -> MusicCoverCommandArgs:
-    values, positional = _parse_cli_args(
-        raw,
-        bool_flags={},
-        value_flags={
-            "--prompt": "prompt",
-            "--audio": "audio",
-            "--audio-file": "audio_file",
-            "--audioFile": "audio_file",
-            "--lyrics": "lyrics",
-            "--seed": "seed",
-            "--model": "model",
-            "--format": "audio_format",
-            "--sample-rate": "sample_rate",
-            "--sampleRate": "sample_rate",
-            "--bitrate": "bitrate",
-            "--channel": "channel",
-        },
-        optional_value_flags={"--audio", "--audio-file", "--audioFile"},
-        unsupported={
-            "--lyrics-file": "AstrBot 直接指令不读取服务器本地歌词文件，请使用 --lyrics 直接传歌词。",
-            "--out": "AstrBot 会自动保存并发送翻唱音频，不支持 --out 指定服务器路径。",
-            "--stream": "AstrBot 消息不支持 mmx CLI 的 --stream 原始音频流模式。",
-        },
-        usage=_music_cover_usage(),
-    )
-    prompt = str(values.get("prompt") or " ".join(positional)).strip()
-    if not prompt:
-        raise DirectCommandError(_music_cover_usage())
-    values["prompt"] = prompt
-    _coerce_ints(values, ("seed", "sample_rate", "bitrate", "channel"))
-    args = MusicCoverCommandArgs(**values)
-    if args.audio is not None and args.audio_file is not None:
-        raise DirectCommandError("--audio 和 --audio-file 不能同时使用")
-    if args.audio_format not in {"mp3", "wav", "pcm"}:
-        raise DirectCommandError("--format 只支持 mp3、wav 或 pcm")
-    if args.sample_rate <= 0 or args.bitrate <= 0:
-        raise DirectCommandError("--sample-rate 和 --bitrate 必须大于 0")
-    if args.channel not in {1, 2}:
-        raise DirectCommandError("--channel 只支持 1 或 2")
-    if args.model and args.model not in MUSIC_COVER_MODELS:
-        raise DirectCommandError(
-            f"--model 只支持: {', '.join(MUSIC_COVER_MODELS)}"
-        )
     return args
 
 
@@ -529,13 +467,6 @@ def _video_usage() -> str:
     return (
         "用法: /mmx video <描述> [--first-frame <图片>] [--last-frame <图片>] "
         "[--subject-image <图片>] [--no-wait]"
-    )
-
-
-def _music_cover_usage() -> str:
-    return (
-        "用法: /mmx music cover <风格描述> (--audio <URL> | --audio-file <路径>) "
-        "[--lyrics <歌词>] [--format mp3]"
     )
 
 

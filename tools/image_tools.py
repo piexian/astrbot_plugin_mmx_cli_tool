@@ -25,11 +25,17 @@ class GenerateImageTool(FunctionTool):
         api: ImageAPI,
         default_model: str = "",
         data_dir: str = ".",
+        cache_dir: str | None = None,
         extra_allowed_dirs: list[str] | None = None,
     ):
         super().__init__(
             name="mmx_generate_image",
-            description="Generate images using MiniMax AI. Provide a detailed prompt describing the image you want.",
+            description=(
+                "Generate images using MiniMax AI. Provide a detailed prompt describing the image you want. "
+                "Generated images are downloaded to the local AstrBot temp directory; the result includes "
+                "file_paths (local paths) and image_urls (remote URLs). Always send images via the local "
+                "file_paths — do not pass the remote image_urls to sending tools."
+            ),
             parameters=object_parameters(
                 {
                     "prompt": string_param(
@@ -70,6 +76,7 @@ class GenerateImageTool(FunctionTool):
         self._api = api
         self._default_model = default_model
         self._data_dir = data_dir
+        self._cache_dir = cache_dir or data_dir
         self._extra_allowed_dirs = extra_allowed_dirs
 
     async def call(
@@ -132,4 +139,18 @@ class GenerateImageTool(FunctionTool):
             "task_id": task_id,
             "count": len(image_urls),
         }
+        # 复用 /mmx image 指令的落地逻辑：先下载到 AstrBot 临时目录，失败才回退远程链接
+        try:
+            saved = await self._api.save(
+                result, out_dir=self._cache_dir, prefix="mmx_image"
+            )
+        except Exception as e:
+            logger.warning(f"[mmx] 图片下载到本地失败，仅返回远程链接: {e}")
+        else:
+            if saved:
+                resp["file_paths"] = saved
+                resp["hint"] = (
+                    "图片已保存到本地。发送图片时必须使用 file_paths 中的本地路径，"
+                    "不要使用 image_urls 远程链接（接收端可能无法下载）。"
+                )
         return tool_result(json.dumps(resp, ensure_ascii=False))

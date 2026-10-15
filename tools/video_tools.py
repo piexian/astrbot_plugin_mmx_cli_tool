@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from astrbot.api import FunctionTool, logger
 from astrbot.core.agent.run_context import ContextWrapper
@@ -12,6 +13,7 @@ from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.apis.video import VideoAPI
 from ..mmx.utils import resolve_image
+from ..mmx.video_business import VideoInputError, validate_h3_subject, validate_video_mode
 from .schema import array_param, boolean_param, integer_param, object_parameters, string_param
 from .result import tool_result
 
@@ -41,6 +43,7 @@ class GenerateVideoTool(FunctionTool):
         default_sef_model: str = "",
         default_subject_model: str = "",
         data_dir: str = ".",
+        cache_dir: str | None = None,
         extra_allowed_dirs: list[str] | None = None,
     ):
         super().__init__(
@@ -110,6 +113,7 @@ class GenerateVideoTool(FunctionTool):
         self._default_sef_model = default_sef_model
         self._default_subject_model = default_subject_model
         self._data_dir = data_dir
+        self._cache_dir = cache_dir or data_dir
         self._extra_allowed_dirs = extra_allowed_dirs
 
     async def call(
@@ -133,48 +137,10 @@ class GenerateVideoTool(FunctionTool):
         no_wait = kwargs.get("noWait", False)
         poll_interval = kwargs.get("pollInterval") or self._poll_interval
 
-        # 校验 SEF 模式：lastFrame 需要 firstFrame
-        if last_frame and not first_frame:
-            return tool_result(
-                _hint_json(
-                    "SEF 模式需要同时提供 firstFrame 和 lastFrame",
-                    "请同时提供 firstFrame（起始帧）和 lastFrame（结束帧）来启用首尾帧插值模式",
-                    {
-                        "prompt": "Walk forward",
-                        "firstFrame": "start.jpg",
-                        "lastFrame": "end.jpg",
-                    },
-                )
-            )
-
-        # 校验 SEF 与 S2V 互斥（对齐 mmx-cli）
-        if (first_frame or last_frame) and subject_image:
-            return tool_result(
-                _hint_json(
-                    "firstFrame/lastFrame 与 subjectImage 不能同时使用",
-                    "首尾帧插值（SEF）和角色一致性（S2V）是两种独立模式，请选择其一",
-                    {
-                        "prompt": "A person walking",
-                        "firstFrame": "start.jpg",
-                        "lastFrame": "end.jpg",
-                    },
-                )
-            )
-
-        # 校验 Fast 模型需要 firstFrame（对齐 mmx-cli）
-
-        if model and "Fast" in model and not first_frame:
-            return tool_result(
-                _hint_json(
-                    f"{model} 模型需要提供 firstFrame",
-                    "Fast 模型属于 I2V 模式，必须提供 firstFrame（起始帧图片）",
-                    {
-                        "prompt": "A cat running",
-                        "firstFrame": "cat.jpg",
-                        "model": model,
-                    },
-                )
-            )
+        try:
+            validate_video_mode(first_frame, last_frame, subject_image, model)
+        except VideoInputError as exc:
+            return tool_result(json.dumps(exc.payload, ensure_ascii=False))
 
         # 构建 subject_reference（image 必须为数组，对齐 mmx-cli）
         subject_reference = None
@@ -218,15 +184,10 @@ class GenerateVideoTool(FunctionTool):
         )
         # V2 (MiniMax-H3) 模型分支
         is_v2 = selected_model == "MiniMax-H3"
-        # V2 不支持 S2V 角色一致性（对齐 mmx-cli）
-        if is_v2 and subject_image:
-            return tool_result(
-                _hint_json(
-                    "MiniMax-H3 不支持 subjectImage",
-                    "V2 模型不支持角色一致性（S2V）。请改用 referenceImages 提供参考图片，或移除 subjectImage。",
-                    {"prompt": "A detective walking", "model": "MiniMax-H3"},
-                )
-            )
+        try:
+            validate_h3_subject(selected_model, subject_image)
+        except VideoInputError as exc:
+            return tool_result(json.dumps(exc.payload, ensure_ascii=False))
 
         # V2 媒体解析：本地图片转 data URI，URL/ mm_file:// 原样
         resolved_ref_images: list[str] | None = None
@@ -315,7 +276,22 @@ class GenerateVideoTool(FunctionTool):
                 "file_id": file_id,
                 "video_url": v2_url,
             }
-            if v2_url and not file_id:
+            # 先下载到 AstrBot 临时目录，失败才回退远程链接/手动下载
+            saved = None
+            try:
+                out_path = Path(self._cache_dir) / f"mmx_video_{task_id}.mp4"
+                saved = await self._api.download(
+                    file_id, str(out_path), video_url=v2_url or None
+                )
+            except Exception as e:
+                logger.warning(f"[mmx] 视频下载到本地失败，仅返回远程信息: {e}")
+            if saved:
+                resp["file_path"] = saved
+                resp["hint"] = (
+                    "视频已保存到本地。发送视频时必须使用 file_path 本地路径，"
+                    "不要使用 video_url 远程链接（接收端可能无法下载）。"
+                )
+            elif v2_url and not file_id:
                 resp["hint"] = "视频已完成，下载链接已返回（V2 直链）"
             else:
                 resp["hint"] = "使用 mmx_video_download 工具下载视频文件"
