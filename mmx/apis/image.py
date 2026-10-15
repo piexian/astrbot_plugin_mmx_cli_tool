@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -76,10 +77,10 @@ class ImageAPI:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
 
-        ts = int(time.time() * 1000)
+        token = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
 
         for i, url in enumerate(urls):
-            filename = f"{prefix}_{ts}_{i}.png"
+            filename = f"{prefix}_{token}_{i}.png"
             filepath = out / filename
             async with httpx.AsyncClient() as cl:
                 r = await cl.get(url)
@@ -90,7 +91,7 @@ class ImageAPI:
         import base64
 
         for i, b64 in enumerate(base64_images):
-            filename = f"{prefix}_{ts}_{i + len(urls)}.png"
+            filename = f"{prefix}_{token}_{i + len(urls)}.png"
             filepath = out / filename
             await asyncio.to_thread(filepath.write_bytes, base64.b64decode(b64))
             saved.append(str(filepath))

@@ -318,7 +318,10 @@ class MiniMaxService:
     async def get_video_task(self, task_id, model=None) -> dict:
         _text(task_id, "task_id")
         _optional_texts({"model": model}, ("model",))
-        return await self._plugin._video.get_task(task_id, model=model)
+        p = self._plugin
+        return await p._video.get_task(
+            task_id, model=model or p._default_video_model or None
+        )
 
     @_business
     async def wait_video_task(
@@ -338,7 +341,10 @@ class MiniMaxService:
         ):
             raise ValueError("poll_interval 必须为有限正数")
         return await p._video.wait_for_completion(
-            task_id, poll_interval=interval, timeout=deadline, model=model
+            task_id,
+            poll_interval=interval,
+            timeout=deadline,
+            model=model or p._default_video_model or None,
         )
 
     @_business

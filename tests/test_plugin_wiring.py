@@ -115,9 +115,10 @@ class PluginWiringTests(unittest.IsolatedAsyncioTestCase):
         self.plugin._transcription._api.transcribe.assert_not_awaited()
 
     async def test_image_tool_saves_to_temp_dir_and_prefers_local_path(self):
-        self.plugin._image.generate = AsyncMock(return_value={
+        generated = {
             "data": {"image_urls": ["https://example.com/i.png"], "task_id": "t1"}
-        })
+        }
+        self.plugin._image.generate = AsyncMock(return_value=generated)
         saved = str(self.plugin._cache_dir / "mmx_image_1.png")
         self.plugin._image.save = AsyncMock(return_value=[saved])
         tool = next(t for t in self.registered if t.name == "mmx_generate_image")
@@ -125,6 +126,7 @@ class PluginWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["ok"])
         self.assertEqual([saved], result["file_paths"])
         self.assertIn("本地路径", result["hint"])
+        self.assertEqual(generated, self.plugin._image.save.call_args.args[0])
         self.assertEqual(
             str(self.plugin._cache_dir),
             self.plugin._image.save.call_args.kwargs["out_dir"],
@@ -154,6 +156,14 @@ class PluginWiringTests(unittest.IsolatedAsyncioTestCase):
         result = json.loads(await tool.call(None, prompt="scene"))
         self.assertEqual(saved, result["file_path"])
         self.assertIn("本地路径", result["hint"])
+        self.plugin._video.generate = AsyncMock(
+            return_value={"task_id": "../escape", "status": "Processing"}
+        )
+        await tool.call(None, prompt="scene")
+        self.assertEqual(
+            self.plugin._cache_dir,
+            Path(self.plugin._video.download.call_args.args[1]).parent,
+        )
         self.plugin._video.download = AsyncMock(side_effect=OSError("cdn down"))
         result = json.loads(await tool.call(None, prompt="scene"))
         self.assertNotIn("file_path", result)

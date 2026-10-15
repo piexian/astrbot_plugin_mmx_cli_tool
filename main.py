@@ -11,6 +11,7 @@ import html
 import json
 import re
 import time as _time
+import uuid
 from pathlib import Path
 
 from astrbot.api import AstrBotConfig, logger, star
@@ -290,7 +291,7 @@ class Main(star.Star):
                 cache_dir=_cache_dir,
                 extra_allowed_dirs=_extra_dirs,
             ),
-            QueryVideoTaskTool(self._video),
+            QueryVideoTaskTool(self._video, self._default_video_model),
             DownloadVideoTool(self._video, _data_dir, cache_dir=_cache_dir),
             WebSearchTool(self._search),
             DescribeImageTool(self._vision, _data_dir, extra_allowed_dirs=_extra_dirs),
@@ -793,7 +794,12 @@ class Main(star.Star):
                     return
 
                 try:
-                    video_path = str(self._cache_dir / f"mmx_video_{task_id}.mp4")
+                    safe_task_id = (
+                        task_id
+                        if re.fullmatch(r"[A-Za-z0-9_-]+", str(task_id))
+                        else uuid.uuid4().hex
+                    )
+                    video_path = str(self._cache_dir / f"mmx_video_{safe_task_id}.mp4")
                     saved = await self._video.download(fid, video_path, video_url=v2_url or None)
                     yield event.chain_result([Video(file=saved)])
                 except Exception as e:

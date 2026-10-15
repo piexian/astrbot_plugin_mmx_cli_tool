@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -279,7 +281,12 @@ class GenerateVideoTool(FunctionTool):
             # 先下载到 AstrBot 临时目录，失败才回退远程链接/手动下载
             saved = None
             try:
-                out_path = Path(self._cache_dir) / f"mmx_video_{task_id}.mp4"
+                safe_task_id = (
+                    task_id
+                    if re.fullmatch(r"[A-Za-z0-9_-]+", str(task_id))
+                    else uuid.uuid4().hex
+                )
+                out_path = Path(self._cache_dir) / f"mmx_video_{safe_task_id}.mp4"
                 saved = await self._api.download(
                     file_id, str(out_path), video_url=v2_url or None
                 )

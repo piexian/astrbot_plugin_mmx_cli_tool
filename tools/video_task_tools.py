@@ -21,7 +21,7 @@ from .schema import object_parameters, string_param
 class QueryVideoTaskTool(FunctionTool):
     """LLM 工具：查询 MiniMax 视频生成任务状态。"""
 
-    def __init__(self, api: VideoAPI):
+    def __init__(self, api: VideoAPI, default_model: str = ""):
         super().__init__(
             name="mmx_video_task_get",
             description="Query the status of a video generation task. Returns status, progress, and file_id when completed.",
@@ -38,6 +38,7 @@ class QueryVideoTaskTool(FunctionTool):
             ),
         )
         self._api = api
+        self._default_model = default_model
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
@@ -57,7 +58,9 @@ class QueryVideoTaskTool(FunctionTool):
             )
 
         try:
-            result = await self._api.get_task(task_id, model=kwargs.get("model"))
+            result = await self._api.get_task(
+                task_id, model=kwargs.get("model") or self._default_model or None
+            )
         except Exception as e:
             logger.error(f"[mmx] 视频任务查询失败: {e}")
             return tool_result(

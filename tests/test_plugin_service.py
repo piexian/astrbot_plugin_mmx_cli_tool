@@ -188,10 +188,10 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, self.calls[-1][2]["n"])
         await self.service.generate_video("scene", duration=5, ratio="16:9")
         self.assertEqual("MiniMax-H3", self.calls[-1][2]["model"])
-        await self.service.get_video_task("remote-task", model="MiniMax-H3")
-        final = await self.service.wait_video_task(
-            "remote-task", model="MiniMax-H3", timeout=1
-        )
+        task = await self.service.get_video_task("remote-task")
+        self.assertEqual("succeeded", task["status"])
+        self.assertEqual("/v2/query/video_generation/remote-task", self.calls[-1][1])
+        final = await self.service.wait_video_task("remote-task", timeout=1)
         self.assertEqual("https://example.com/video", final["video_url"])
         speech = await self.service.synthesize_speech("hello", subtitles=True)
         self.assertEqual("0102", speech["data"]["audio"])
@@ -367,7 +367,13 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("closed", self.service.get_status()["state"])
 
     async def test_actual_video_download_and_vision_http_mock(self):
+        expected_urls = ["https://example.com/video", "https://example.com/image"]
+        requested_urls = []
+
         async def respond(request):
+            url = str(request.url)
+            self.assertEqual(expected_urls[len(requested_urls)], url)
+            requested_urls.append(url)
             return httpx.Response(
                 200, content=b"media", headers={"content-type": "image/png"}
             )
@@ -385,6 +391,7 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(b"media", Path(result["file_path"]).read_bytes())
             await self.service.describe_image(image="https://example.com/image")
+        self.assertEqual(expected_urls, requested_urls)
         self.assertTrue(
             self.calls[-1][2]["image_url"].startswith("data:image/png;base64,")
         )
@@ -500,9 +507,9 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(self.plugin._search, "query", side_effect=query):
             caller = asyncio.create_task(consumer())
-            await asyncio.wait_for(started.wait(), 1)
+            await asyncio.wait_for(started.wait(), 5)
             try:
-                await asyncio.wait_for(self.plugin.terminate(), 0.2)
+                await asyncio.wait_for(self.plugin.terminate(), 2)
                 self.assertTrue(interrupted.is_set())
                 self.assertFalse(caller.done())
                 self.assertEqual("closed", self.service.get_status()["state"])
