@@ -47,7 +47,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_check_quota` | 查询 API 剩余额度 | 无 |
 | `mmx_search_images` | 搜图并下载：检索真实网络图片并保存到本地临时目录，返回本地路径 | 需登录¹ |
 | `mmx_image_reverse_search` | 以图搜图：查找图片来源与相似网页，返回 Top 3 出处卡片 | 需登录¹ |
-| `mmx_generate_music` | Agent 账号体系 AI 音乐生成（可带歌词，mp3/wav/pcm），音频下载后返回本地路径 | 需登录¹ |
+| `mmx_generate_music` | Agent 账号体系 AI 音乐生成（可带歌词，mp3/wav），音频下载后返回本地路径 | 需登录¹ |
 | `mmx_generate_sound_effect` | Agent 账号体系 AI 音效生成，音频下载后返回本地路径 | 需登录¹ |
 
 ¹ 这四项走 MiniMax Agent Matrix 网关，优先使用 `/mmx login` 授权的账号 Token；未登录时回退静态 API Key，网关拒绝时会提示先登录。

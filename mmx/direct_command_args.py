@@ -525,6 +525,6 @@ def parse_music_command(raw: str) -> MusicCommandArgs:
     if not prompt:
         raise DirectCommandError("用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]")
     args = MusicCommandArgs(prompt=prompt, **values)
-    if args.audio_format not in {"mp3", "wav", "pcm"}:
-        raise DirectCommandError("--format 只支持 mp3、wav、pcm")
+    if args.audio_format not in {"mp3", "wav"}:
+        raise DirectCommandError("--format 只支持 mp3 或 wav")
     return args

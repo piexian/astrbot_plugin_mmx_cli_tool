@@ -174,6 +174,44 @@ class DownloadTests(unittest.TestCase):
                 )
             self.assertEqual("path_not_allowed", ctx.exception.kind)
 
+    def test_download_size_limit_by_content_length(self):
+        payload = b"x" * 100
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, content=payload, headers={"Content-Length": "999999"}
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            media = _make_media(_FakeAPI(), handler)
+            dest = Path(tmp) / "big.bin"
+            with self.assertRaises(MediaTransferError) as ctx:
+                asyncio.run(
+                    media.download_to_file(
+                        "https://x.example.com/big", dest, allowed_dir=tmp, max_bytes=1024
+                    )
+                )
+            self.assertEqual("file_too_large", ctx.exception.kind)
+            self.assertFalse(dest.exists())
+
+    def test_download_size_limit_by_running_total_and_cleanup(self):
+        payload = b"x" * 5000  # 无 Content-Length，超过 max_bytes
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=payload)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            media = _make_media(_FakeAPI(), handler)
+            dest = Path(tmp) / "partial.bin"
+            with self.assertRaises(MediaTransferError) as ctx:
+                asyncio.run(
+                    media.download_to_file(
+                        "https://x.example.com/a", dest, allowed_dir=tmp, max_bytes=1024
+                    )
+                )
+            self.assertEqual("file_too_large", ctx.exception.kind)
+            self.assertFalse(dest.exists())  # 半成品已清理
+
     def test_http_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             media = _make_media(_FakeAPI(), lambda req: httpx.Response(404))

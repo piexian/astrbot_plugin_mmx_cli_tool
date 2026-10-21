@@ -3,7 +3,7 @@
 
 ## 0.7.0 - 2026-10-21
 
-- 新增 MiniMax 账号 OAuth 登录：`/mmx login` 两阶段交互（选择区域 → 设备授权），RFC 8628 Device Authorization Grant + PKCE S256，Token 自动刷新并本地加密存储（0600）；`/mmx logout` 退出。
+- 新增 MiniMax 账号 OAuth 登录：`/mmx login` 两阶段交互（选择区域 → 设备授权），RFC 8628 Device Authorization Grant + PKCE S256，Token 自动刷新、加锁防并发覆盖，auth.json 原子写入并设置 0600 权限；`/mmx logout` 退出。
 - 接入 MiniMax Agent Matrix MCP 网关（`agent.minimax.cn/io` 的 `/mavis/api/v1/mcp/*`），新增 4 个 LLM 工具及对应指令：
 - `mmx_search_images` / `/mmx search-image`：搜图并下载到本地临时目录。
 - `mmx_image_reverse_search` / `/mmx reverse-image`：以图搜图，本地图片先经 OSS 预签名直传换取链接；返回 Top 3 出处卡片。

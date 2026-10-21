@@ -123,15 +123,18 @@ def _parse_scopes(value: Any) -> list[str]:
     return []
 
 
-def _normalize_account_expiry_seconds(expired_in: float | None) -> int | None:
-    """账号服务 expired_in 可能是剩余秒数或绝对毫秒时间戳。"""
+def _normalize_account_expiry_seconds(
+    expired_in: float | None, *, milliseconds: bool = False
+) -> int | None:
+    """账号服务 expired_in 可能是剩余量或绝对毫秒时间戳；user_code 变体相对值为毫秒。"""
     if expired_in is None:
         return None
+    if milliseconds and expired_in < 1_000_000_000_000:
+        expired_in = expired_in / 1000
     if expired_in < 1_000_000_000_000:
-        return int(expired_in)
+        return max(1, int(expired_in))
     remaining_ms = expired_in - time.time() * 1000
     return int(remaining_ms / 1000 + 0.5) if remaining_ms > 0 else None
-
 
 class OAuthClient:
     """MiniMax 账号 OAuth 设备码客户端。"""
@@ -201,7 +204,9 @@ class OAuthClient:
         expires_in = (
             int(expires_in_value)
             if expires_in_value
-            else _normalize_account_expiry_seconds(expired_in_ms)
+            else _normalize_account_expiry_seconds(
+                expired_in_ms, milliseconds=use_user_code_polling
+            )
         )
         raw_interval = _read_positive_number(body, "interval")
         interval = (
@@ -351,14 +356,15 @@ class TokenStore:
 
     def save(self, token: OAuthToken) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps(token.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
+            fp.write(json.dumps(token.to_dict(), ensure_ascii=False, indent=2))
+        os.replace(tmp, self._path)
         try:
             os.chmod(self._path, 0o600)
         except OSError:
             pass
-
     def clear(self) -> None:
         try:
             self._path.unlink()

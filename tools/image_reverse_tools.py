@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from astrbot.api import FunctionTool, logger
 from astrbot.core.agent.run_context import ContextWrapper
@@ -16,6 +17,8 @@ from ..mmx.utils import is_url, resolve_existing_data_path
 from .result import tool_result
 from .schema import object_parameters, string_param
 
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 def format_reverse_results(items: list[dict], limit: int = 3) -> str:
     """格式化以图搜图结果为 Markdown 卡片（Top N）。"""
@@ -72,21 +75,32 @@ class ImageReverseSearchTool(FunctionTool):
         self._data_dir = data_dir
         self._extra_allowed_dirs = extra_allowed_dirs
 
-    async def resolve_image_url(self, image: str) -> str:
-        """URL 直传；本地文件先经 OSS 上传换取 cdn_url。"""
+    async def resolve_image_url(self, image: str, *, trusted_local: bool = False) -> str:
+        """URL 直传；本地文件先经 OSS 上传换取 cdn_url。
+
+        本地文件仅限常见图片扩展名（防止 auth.json 等敏感文件被注入上传）；
+        trusted_local=True 用于聊天提取的已落盘图片，跳过沙箱目录校验。
+        """
         if is_url(image):
             return image
-        local = resolve_existing_data_path(self._data_dir, image, self._extra_allowed_dirs)
+        if trusted_local:
+            local = Path(image)
+        else:
+            local = resolve_existing_data_path(self._data_dir, image, self._extra_allowed_dirs)
         if local is None or not local.is_file():
             raise MediaTransferError(
                 "file_not_found",
                 f"图片不存在或不在允许目录内: {image}（允许：{self._data_dir}）",
             )
+        if local.suffix.lower() not in _IMAGE_EXTS:
+            raise MediaTransferError(
+                "invalid_type",
+                f"仅支持图片文件（{'/'.join(sorted(_IMAGE_EXTS))}），拒绝上传: {local.name}",
+            )
         uploaded = await self._media.upload_file(local, force_remote_url=True)
         if not uploaded.cdn_url:
             raise MediaTransferError("upload_failed", "图片上传未返回可访问 URL")
         return uploaded.cdn_url
-
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:

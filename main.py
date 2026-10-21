@@ -82,7 +82,11 @@ from .tools import (
     GenerateSoundEffectTool,
 )
 from .tools.image_reverse_tools import format_reverse_results
-from .tools.image_search_tools import _infer_ext
+from .tools.image_search_tools import search_and_download
+
+
+#: 刷新令牌被服务端明确拒绝的错误码（仅这些才清除本地登录态）
+_REFRESH_FATAL_CODES = {"invalid_grant", "invalid_token", "access_denied", "unauthorized_client"}
 
 
 def _clean_display_text(value: object, *, limit: int | None = None) -> str:
@@ -264,9 +268,10 @@ class Main(star.Star):
         self._static_keys = keys
         self._oauth = OAuthClient()
         self._token_store = TokenStore(self._plugin_data_dir / "auth.json")
-        self._matrix = MatrixAPI(self._client, self._matrix_region, self._get_matrix_token)
+        self._matrix = MatrixAPI(self._client, self._matrix_credentials, self._refresh_matrix_token)
         self._matrix_media = MatrixMediaClient(self._matrix)
         self._login_sessions: set[str] = set()
+        self._refresh_lock = asyncio.Lock()
 
         # 以图搜图工具实例（LLM 与直接指令共用）
         self._reverse_image_tool = ImageReverseSearchTool(
@@ -371,29 +376,51 @@ class Main(star.Star):
             self._terminate_task = asyncio.create_task(cleanup())
         await asyncio.shield(self._terminate_task)
 
-    def _matrix_region(self) -> str:
-        """Matrix 网关区域：已登录跟随 Token 区域，否则跟随插件配置。"""
-        token = self._token_store.load()
-        return token.region if token else self._region
+    async def _matrix_credentials(self) -> tuple[str, str]:
+        """Matrix 凭据 (region, token)：优先 OAuth Token（临期自动刷新），回退静态 API Key。
 
-    async def _get_matrix_token(self) -> str:
-        """Matrix 凭据：优先 OAuth Token（自动刷新），回退静态 API Key。"""
+        仅在刷新令牌被服务端明确拒绝时清除登录态；网络等临时故障保留 Token。
+        """
         token = self._token_store.load()
-        if token:
-            if not token.is_expired():
-                return token.access_token
+        if token and token.is_expired():
+            async with self._refresh_lock:
+                token = self._token_store.load()  # 双检：可能已被并发请求刷新
+                if token and token.is_expired():
+                    try:
+                        refreshed = await self._oauth.refresh(
+                            token.refresh_token, token.region
+                        )
+                    except OAuthError as e:
+                        if e.code in _REFRESH_FATAL_CODES:
+                            logger.warning(f"[mmx] 登录态已被服务端拒绝，清除本地 Token: {e}")
+                            self._token_store.clear()
+                            token = None
+                        else:
+                            logger.warning(f"[mmx] OAuth Token 刷新失败（临时故障）: {e}")
+                    else:
+                        self._token_store.save(refreshed)
+                        return refreshed.region, refreshed.access_token
+        if token and not token.is_expired():
+            return token.region, token.access_token
+        if self._static_keys:
+            return self._region, self._static_keys[0]
+        return self._region, ""
+
+    async def _refresh_matrix_token(self) -> tuple[str, str]:
+        """401/403 后强制刷新 OAuth Token（加锁，防止轮换时并发覆盖）。仅 OAuth 模式有效。"""
+        async with self._refresh_lock:
+            token = self._token_store.load()
+            if not token:
+                return self._region, ""
             try:
                 refreshed = await self._oauth.refresh(token.refresh_token, token.region)
             except OAuthError as e:
-                logger.warning(f"[mmx] OAuth Token 刷新失败: {e}")
-                self._token_store.clear()
-            else:
-                self._token_store.save(refreshed)
-                return refreshed.access_token
-        if self._static_keys:
-            return self._static_keys[0]
-        return ""
-
+                if e.code in _REFRESH_FATAL_CODES:
+                    self._token_store.clear()
+                logger.warning(f"[mmx] 强制刷新 Token 失败: {e}")
+                return self._region, ""
+            self._token_store.save(refreshed)
+            return refreshed.region, refreshed.access_token
     @staticmethod
     def _matrix_error_text(exc: MiniMaxError) -> str:
         """AUTH 错误保留 /mmx login 指引，其余走友好文案。"""
@@ -425,9 +452,13 @@ class Main(star.Star):
             "输入 1 或 2 继续，输入 c 取消。（60 秒内有效）"
         )
         choice: dict[str, str] = {}
+        initiator_id = event.get_sender_id()
 
         @session_waiter(timeout=60)
         async def region_waiter(controller: SessionController, ev: AstrMessageEvent):
+            if ev.get_sender_id() != initiator_id:
+                controller.keep(60, reset_timeout=False)  # 群聊中忽略非发起人的回复
+                return
             text = ev.message_str.strip().lower()
             if text in {"1", "cn", "国内", "国内站"}:
                 choice["region"] = "cn"
@@ -497,9 +528,9 @@ class Main(star.Star):
     @mmx_group.command("search-image")
     async def mmx_search_image(self, event: AstrMessageEvent, *, query: str = ""):
         """搜图并下载。用法: /mmx search-image <关键词> [--n 数量]"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=2)
-        raw_args = query or (parts[2] if len(parts) > 2 else "")
+        # AstrBot 按空格切分参数，query 只有第一个词；优先取消息原文尾部
+        parts = event.message_str.strip().split(maxsplit=2)
+        raw_args = (parts[2] if len(parts) > 2 else "").strip() or (query or "").strip()
         if not raw_args:
             yield event.plain_result("用法: /mmx search-image <关键词> [--n 数量]")
             return
@@ -509,7 +540,9 @@ class Main(star.Star):
             yield event.plain_result(str(e))
             return
         try:
-            results = await self._matrix.images_search_and_download(args.query)
+            resp = await search_and_download(
+                self._matrix, self._matrix_media, str(self._cache_dir), args.query, args.n
+            )
         except MiniMaxError as e:
             yield event.plain_result(self._matrix_error_text(e))
             return
@@ -517,44 +550,24 @@ class Main(star.Star):
             logger.error(f"[mmx] 搜图失败: {e}")
             yield event.plain_result(f"搜图失败: {e}")
             return
-
-        images: list[str] = []
-        server_error = None
-        if results and isinstance(results[0], dict):
-            server_error = results[0].get("error")
-            for item in results[0].get("images") or []:
-                if isinstance(item, dict) and item.get("image_url"):
-                    images.append(str(item["image_url"]))
-                if len(images) >= args.n:
-                    break
-        if not images:
-            suffix = f"（{server_error}）" if server_error else ""
-            yield event.plain_result(f"未找到相关图片{suffix}。")
+        if not resp.get("ok"):
+            yield event.plain_result(resp.get("error") or "未找到相关图片。")
             return
-
-        saved: list[str] = []
-        stamp = int(_time.time() * 1000)
-        for index, url in enumerate(images):
-            dest = self._cache_dir / f"mmx_search_image_{stamp}_{index}{_infer_ext(url)}"
-            try:
-                path = await self._matrix_media.download_to_file(
-                    url, dest, allowed_dir=str(self._cache_dir)
-                )
-                saved.append(str(path))
-            except Exception as e:
-                logger.warning(f"[mmx] 搜图下载失败 {url}: {e}")
-        if saved:
-            for path in saved:
+        if resp.get("file_paths"):
+            for path in resp["file_paths"]:
                 yield event.image_result(path)
             return
-        yield event.plain_result("图片下载失败，可直接访问：\n" + "\n".join(images))
+        yield event.plain_result(
+            "图片下载失败，可直接访问：\n" + "\n".join(resp.get("image_urls", []))
+        )
 
     @mmx_group.command("reverse-image")
     async def mmx_reverse_image(self, event: AstrMessageEvent, *, image: str = ""):
         """以图搜图。用法: /mmx reverse-image [图片URL]（可附带或引用图片）"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=2)
-        image_input = image.strip() or (parts[2] if len(parts) > 2 else "").strip()
+        # AstrBot 按空格切分参数，image 只有第一个词；优先取消息原文尾部
+        parts = event.message_str.strip().split(maxsplit=2)
+        image_input = (parts[2] if len(parts) > 2 else "").strip() or (image or "").strip()
+        trusted_local = False
         if not image_input:
             extracted, saw_image = await extract_image_input(
                 event.get_messages(),
@@ -573,8 +586,11 @@ class Main(star.Star):
                     )
                 return
             image_input = extracted
+            trusted_local = True  # 聊天图片已落盘 AstrBot 临时目录，属可信来源
         try:
-            image_url = await self._reverse_image_tool.resolve_image_url(image_input)
+            image_url = await self._reverse_image_tool.resolve_image_url(
+                image_input, trusted_local=trusted_local
+            )
             items = await self._matrix.image_reverse_search(image_url)
         except MediaTransferError as e:
             yield event.plain_result(str(e))
@@ -594,9 +610,9 @@ class Main(star.Star):
     @mmx_group.command("music")
     async def mmx_music(self, event: AstrMessageEvent, *, prompt: str = ""):
         """AI 音乐生成。用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=2)
-        raw_args = prompt or (parts[2] if len(parts) > 2 else "")
+        # AstrBot 按空格切分参数，prompt 只有第一个词；优先取消息原文尾部
+        parts = event.message_str.strip().split(maxsplit=2)
+        raw_args = (parts[2] if len(parts) > 2 else "").strip() or (prompt or "").strip()
         if not raw_args:
             yield event.plain_result("用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]")
             return
@@ -625,9 +641,9 @@ class Main(star.Star):
     @mmx_group.command("sfx")
     async def mmx_sfx(self, event: AstrMessageEvent, *, prompt: str = ""):
         """AI 音效生成。用法: /mmx sfx <音效描述>"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=2)
-        text = prompt or (parts[2] if len(parts) > 2 else "")
+        # AstrBot 按空格切分参数，prompt 只有第一个词；优先取消息原文尾部
+        parts = event.message_str.strip().split(maxsplit=2)
+        text = (parts[2] if len(parts) > 2 else "").strip() or (prompt or "").strip()
         if not text.strip():
             yield event.plain_result("用法: /mmx sfx <音效描述>")
             return

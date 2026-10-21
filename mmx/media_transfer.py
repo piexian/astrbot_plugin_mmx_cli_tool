@@ -20,6 +20,7 @@ from .matrix import MatrixAPI
 
 INLINE_LIMIT_BYTES = 600 * 1024
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 
 _MIME_BY_EXT = {
     ".png": "image/png",
@@ -83,7 +84,7 @@ class MatrixMediaClient:
 
     def __init__(self, api: MatrixAPI, http: httpx.AsyncClient | None = None) -> None:
         self._api = api
-        self._http = http or httpx.AsyncClient(timeout=httpx.Timeout(300))
+        self._http = http or httpx.AsyncClient(timeout=httpx.Timeout(300), follow_redirects=True)
         self._owns_http = http is None
 
     async def close(self) -> None:
@@ -152,26 +153,46 @@ class MatrixMediaClient:
         *,
         allowed_dir: str | Path,
         timeout: float = 300,
+        max_bytes: int = MAX_DOWNLOAD_BYTES,
     ) -> Path:
-        """流式下载到允许目录内的目标路径，返回落盘路径。"""
+        """流式下载到允许目录内的目标路径；超限或失败时清理半成品文件。"""
         base = Path(allowed_dir).resolve()
         target = Path(dest).resolve()
         if target != base and base not in target.parents:
             raise MediaTransferError(
                 "path_not_allowed", f"下载目标必须位于允许目录内: {allowed_dir}"
             )
+        started = False
         try:
             async with self._http.stream("GET", url, timeout=httpx.Timeout(timeout)) as res:
                 if not res.is_success:
                     raise MediaTransferError(
                         "download_failed", f"下载失败: HTTP {res.status_code}"
                     )
+                content_length = res.headers.get("content-length")
+                if content_length and int(content_length) > max_bytes:
+                    raise MediaTransferError(
+                        "file_too_large",
+                        f"文件超过下载上限 {max_bytes // 1024 // 1024} MiB",
+                    )
                 await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+                written = 0
                 with target.open("wb") as fp:
+                    started = True
                     async for chunk in res.aiter_bytes(1024 * 256):
+                        written += len(chunk)
+                        if written > max_bytes:
+                            raise MediaTransferError(
+                                "file_too_large",
+                                f"文件超过下载上限 {max_bytes // 1024 // 1024} MiB",
+                            )
                         await asyncio.to_thread(fp.write, chunk)
         except MediaTransferError:
+            if started:
+                await asyncio.to_thread(target.unlink, missing_ok=True)
             raise
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, OSError) as exc:
+            if started:
+                await asyncio.to_thread(target.unlink, missing_ok=True)
             raise MediaTransferError("download_failed", f"下载失败: {exc}") from exc
         return target

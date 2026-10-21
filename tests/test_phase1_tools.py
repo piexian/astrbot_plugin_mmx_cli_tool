@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+
+import httpx
 import sys
 import tempfile
 import unittest
@@ -214,6 +216,33 @@ class Phase1ToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(resp["ok"])
         self.assertEqual([], self.api.calls)
 
+    async def test_reverse_search_rejects_non_image_files(self):
+        """auth.json 等敏感文件不得被上传换取公开链接（提示词注入防线）。"""
+        data_dir = self.root / "plugin_data"
+        data_dir.mkdir()
+        secret = data_dir / "auth.json"
+        secret.write_text('{"access_token": "t"}')
+        tool = self.tools_pkg.ImageReverseSearchTool(
+            self.api, self.media, str(data_dir), []
+        )
+        resp = self._payload(await tool.call(None, image=str(secret)))
+        self.assertFalse(resp["ok"])
+        self.assertEqual([], self.media.uploads)
+        self.assertEqual([], self.api.calls)
+
+    async def test_reverse_search_trusted_local_path(self):
+        """聊天提取的落盘图片走 trusted_local，跳过沙箱目录校验。"""
+        outside = self.root / "chat.png"
+        outside.write_bytes(b"\x89PNG")
+        self.api.reverse_items = _reverse_items(1)
+        tool = self.tools_pkg.ImageReverseSearchTool(
+            self.api, self.media, str(self.root / "data"), []
+        )
+        # trusted_local 只能由指令层直调 resolve_image_url，不对 LLM 开放
+        url = await tool.resolve_image_url(str(outside), trusted_local=True)
+        self.assertEqual("https://cdn.example.com/uploaded.png", url)
+        self.assertEqual(1, len(self.media.uploads))
+
     async def test_reverse_search_empty(self):
         self.api.reverse_items = []
         tool = self.tools_pkg.ImageReverseSearchTool(
@@ -305,6 +334,8 @@ class Phase1ToolTests(unittest.IsolatedAsyncioTestCase):
             parse_music_command("")
         with self.assertRaises(DirectCommandError):
             parse_music_command("x --format flac")
+        with self.assertRaises(DirectCommandError):
+            parse_music_command("x --format pcm")  # 裸 PCM 平台无法播放，已移除
 
     def test_parse_image_search_command(self):
         from astrbot_plugin_mmx_cli_tool.mmx.direct_command_args import (
@@ -321,6 +352,106 @@ class Phase1ToolTests(unittest.IsolatedAsyncioTestCase):
             parse_image_search_command("")
         with self.assertRaises(DirectCommandError):
             parse_image_search_command("x --n 9")
+
+
+class MatrixAPITests(unittest.IsolatedAsyncioTestCase):
+    """Matrix 网关协议层：Bearer 注入、错误展开、401 刷新重试。"""
+
+    def _api(self, outcomes, creds=("cn", "tok1"), refresher=None):
+        from astrbot_plugin_mmx_cli_tool.mmx.matrix import MatrixAPI
+
+        class _FakeClient:
+            def __init__(self):
+                self.requests: list[dict] = []
+
+            async def request(self, method, url, **kwargs):
+                self.requests.append({"method": method, "url": url, **kwargs})
+                outcome = outcomes.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+
+        client = _FakeClient()
+        api = MatrixAPI(
+            client,
+            lambda: _async_return(creds),
+            refresher,
+        )
+        return api, client
+
+    async def test_no_credential_gives_login_hint(self):
+        from astrbot_plugin_mmx_cli_tool.mmx.errors import ErrorCategory, MiniMaxError
+
+        api, client = self._api([], creds=("cn", ""))
+        with self.assertRaises(MiniMaxError) as ctx:
+            await api.image_reverse_search("https://x.example.com/a.jpg")
+        self.assertEqual(ErrorCategory.AUTH, ctx.exception.category)
+        self.assertIn("/mmx login", str(ctx.exception))
+        self.assertEqual([], client.requests)
+
+    async def test_bearer_injection_and_payload(self):
+        api, client = self._api([httpx.Response(200, json={"data": [{"title": "t"}]})])
+        items = await api.image_reverse_search("https://x.example.com/a.jpg")
+        self.assertEqual([{"title": "t"}], items)
+        req = client.requests[0]
+        self.assertEqual("tok1", req["api_key_override"])
+        self.assertEqual(
+            "https://agent.minimax.cn/mavis/api/v1/mcp/image_reverse_search", req["url"]
+        )
+        self.assertEqual({"image_url": "https://x.example.com/a.jpg"}, req["body"])
+
+    async def test_401_refresh_and_retry_once(self):
+        from astrbot_plugin_mmx_cli_tool.mmx.errors import ErrorCategory, MiniMaxError
+
+        refresh_calls = []
+
+        async def refresher():
+            refresh_calls.append(1)
+            return "cn", "tok2"
+
+        api, client = self._api(
+            [
+                MiniMaxError(ErrorCategory.AUTH, "401"),
+                httpx.Response(200, json={"data": []}),
+            ],
+            refresher=refresher,
+        )
+        items = await api.image_reverse_search("https://x.example.com/a.jpg")
+        self.assertEqual([], items)
+        self.assertEqual(1, len(refresh_calls))
+        self.assertEqual(2, len(client.requests))
+        self.assertEqual("tok2", client.requests[1]["api_key_override"])
+
+    async def test_401_refresh_fails_gives_login_hint(self):
+        from astrbot_plugin_mmx_cli_tool.mmx.errors import ErrorCategory, MiniMaxError
+
+        async def refresher():
+            return "cn", ""
+
+        api, _ = self._api(
+            [MiniMaxError(ErrorCategory.AUTH, "401")], refresher=refresher
+        )
+        with self.assertRaises(MiniMaxError) as ctx:
+            await api.image_reverse_search("https://x.example.com/a.jpg")
+        self.assertIn("/mmx login", str(ctx.exception))
+
+    async def test_402_quota_and_business_code(self):
+        from astrbot_plugin_mmx_cli_tool.mmx.errors import ErrorCategory, MiniMaxError
+
+        api, _ = self._api([httpx.Response(200, json={"code": 402, "message": "x"})])
+        with self.assertRaises(MiniMaxError) as ctx:
+            await api.image_reverse_search("https://x.example.com/a.jpg")
+        self.assertEqual(ErrorCategory.QUOTA, ctx.exception.category)
+
+        api2, _ = self._api([httpx.Response(200, json={"code": 5001, "message": "bad"})])
+        with self.assertRaises(MiniMaxError) as ctx:
+            await api2.image_reverse_search("https://x.example.com/a.jpg")
+        self.assertEqual(ErrorCategory.GENERAL, ctx.exception.category)
+        self.assertIn("5001", str(ctx.exception))
+
+
+async def _async_return(value):
+    return value
 
 
 if __name__ == "__main__":

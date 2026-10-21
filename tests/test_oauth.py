@@ -124,7 +124,7 @@ class DeviceAuthorizationTests(unittest.TestCase):
         self.assertTrue(info.use_user_code_polling)
         self.assertEqual("XY-99", info.device_code)
         self.assertEqual("XY-99", info.user_code)
-        self.assertEqual(300000, info.expires_in)  # 相对值按秒直取，对齐上游行为
+        self.assertEqual(300, info.expires_in)  # user_code 变体相对值为毫秒，换算为秒
         self.assertEqual(2.0, info.interval)
         self.assertEqual("https://account.minimax.cn/active", info.verification_uri)
 

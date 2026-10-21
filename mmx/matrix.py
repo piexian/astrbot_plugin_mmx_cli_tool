@@ -36,19 +36,17 @@ class MatrixAPI:
     def __init__(
         self,
         client: MiniMaxClient,
-        region_getter: Callable[[], str],
-        token_getter: Callable[[], Awaitable[str]],
+        creds_getter: Callable[[], Awaitable[tuple[str, str]]],
+        token_refresher: Callable[[], Awaitable[tuple[str, str]]] | None = None,
     ) -> None:
+        """creds_getter/token_refresher 均返回 (region, token)，供调用与 401 重试使用。"""
         self._client = client
-        self._region_getter = region_getter
-        self._token_getter = token_getter
+        self._creds_getter = creds_getter
+        self._token_refresher = token_refresher
 
-    async def _call(self, tool: str, body: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
-        """调用 Matrix 工具并展开业务错误，返回剥掉 base_resp/code 的负载。"""
-        token = await self._token_getter()
-        if not token:
-            raise MiniMaxError(ErrorCategory.AUTH, LOGIN_HINT)
-        url = matrix_mcp_endpoint(self._region_getter(), tool)
+    async def _request(
+        self, url: str, tool: str, body: dict[str, Any], token: str, timeout: float | None
+    ) -> dict[str, Any]:
         res = await self._client.request(
             "POST",
             url,
@@ -57,7 +55,34 @@ class MatrixAPI:
             api_key_override=token,
             timeout=timeout or _TOOL_TIMEOUTS.get(tool, _DEFAULT_TIMEOUT),
         )
-        data = MiniMaxClient.decode_json_response(res, url)
+        return MiniMaxClient.decode_json_response(res, url)
+
+    async def _call(self, tool: str, body: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
+        """调用 Matrix 工具并展开业务错误，返回剥掉 base_resp/code 的负载。
+
+        401/403 时若有 token_refresher 则强制刷新后重试一次，仍失败提示重新登录。
+        """
+        region, token = await self._creds_getter()
+        if not token:
+            raise MiniMaxError(ErrorCategory.AUTH, LOGIN_HINT)
+        url = matrix_mcp_endpoint(region, tool)
+        try:
+            data = await self._request(url, tool, body, token, timeout)
+        except MiniMaxError as exc:
+            if exc.category is not ErrorCategory.AUTH or not self._token_refresher:
+                raise
+            region, token = await self._token_refresher()
+            if not token:
+                raise MiniMaxError(ErrorCategory.AUTH, LOGIN_HINT) from exc
+            url = matrix_mcp_endpoint(region, tool)
+            try:
+                data = await self._request(url, tool, body, token, timeout)
+            except MiniMaxError as retry_exc:
+                if retry_exc.category is ErrorCategory.AUTH:
+                    raise MiniMaxError(
+                        ErrorCategory.AUTH, f"登录凭据已失效。{LOGIN_HINT}"
+                    ) from retry_exc
+                raise
         # 兼容 {code, message, ...payload} 包装
         code = data.pop("code", None)
         message = data.pop("message", None)
@@ -71,7 +96,6 @@ class MatrixAPI:
                 ErrorCategory.GENERAL, f"Matrix 工具调用被拒绝 (code {code}): {message or '未知错误'}"
             )
         return data
-
     async def images_search_and_download(
         self, query: str, prompt: str | None = None, providers: list[str] | None = None
     ) -> list[dict[str, Any]]:
@@ -100,12 +124,12 @@ class MatrixAPI:
     ) -> dict[str, Any]:
         """文本生成音乐，返回 {output_url}；失败抛出 MiniMaxError。"""
         fmt = audio_format.lower()
-        if fmt not in {"mp3", "wav", "pcm"}:
+        if fmt not in {"mp3", "wav"}:  # pcm 裸流平台无法播放，不下放
             fmt = "mp3"
         item: dict[str, Any] = {"prompt": prompt, "output_file": f"slot_0.{fmt}"}
         if lyrics:
             item["lyrics"] = lyrics
-        if audio_format.lower() in {"mp3", "wav", "pcm"}:
+        if audio_format.lower() in {"mp3", "wav"}:
             item["format"] = fmt
         return await self._batch_audio("batch_text_to_music", [item])
 

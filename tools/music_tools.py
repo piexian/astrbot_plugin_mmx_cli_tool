@@ -62,7 +62,7 @@ class GenerateMusicTool(FunctionTool):
                         "Music description: style, mood, instruments, tempo, e.g. '轻快的 lo-fi 嘻哈，钢琴与萨克斯'"
                     ),
                     "lyrics": string_param("Optional lyrics text for the song"),
-                    "format": string_param("Audio format: mp3 (default), wav or pcm"),
+                    "format": string_param("Audio format: mp3 (default) or wav"),
                 },
                 required=["prompt"],
             ),
@@ -88,7 +88,7 @@ class GenerateMusicTool(FunctionTool):
                 )
             )
         audio_format = str(kwargs.get("format") or "mp3").strip().lower()
-        if audio_format not in {"mp3", "wav", "pcm"}:
+        if audio_format not in {"mp3", "wav"}:
             audio_format = "mp3"
         lyrics = str(kwargs.get("lyrics") or "").strip() or None
         try:
