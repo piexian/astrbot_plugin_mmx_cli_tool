@@ -67,8 +67,9 @@ class MiniMaxClient:
         auth_style: str = "bearer",
         model: str = "",
         api_key_override: str | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
-        """发送 HTTP 请求，返回原始 Response。"""
+        """发送 HTTP 请求，返回原始 Response；timeout 覆盖客户端默认超时。"""
         hdrs: dict[str, str] = {"User-Agent": "astrbot-plugin-mmx/0.5.1"}
         if headers:
             hdrs.update(headers)
@@ -105,6 +106,7 @@ class MiniMaxClient:
             content=body if isinstance(body, bytes) else None,
             data=data,
             files=files,
+            **({"timeout": httpx.Timeout(timeout)} if timeout is not None else {}),
         )
         res = await self._client.send(request, stream=stream)
         if not res.is_success:
@@ -138,6 +140,7 @@ class MiniMaxClient:
         auth_style: str = "bearer",
         model: str = "",
         api_key_override: str | None = None,
+        timeout: float | None = None,
     ) -> Any:
         """发送请求并解析 JSON 响应体。"""
         res = await self.request(
@@ -150,6 +153,7 @@ class MiniMaxClient:
             auth_style=auth_style,
             model=model,
             api_key_override=api_key_override,
+            timeout=timeout,
         )
         return self.decode_json_response(res, path)
 

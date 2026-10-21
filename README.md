@@ -1,10 +1,9 @@
 # MiniMax 多模态工具
 
-为 AstrBot 提供 MiniMax 图片、视频、语音合成与转写、联网搜索、视觉理解和额度查询能力。
+为 AstrBot 提供 MiniMax 图片、视频、语音合成与转写、联网搜索、搜图与以图搜图、AI 音乐音效、视觉理解和额度查询能力。
 
 > [!WARNING]
-> **音乐生成与翻唱已彻底移除。** MiniMax 已公告关闭音乐生成服务，mmx-cli 自 1.0.25 起移除全部音乐命令；本插件自 0.6.0 起同步移除 `mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get` 工具、`/mmx music` 指令及 `default_music_model`、`default_music_cover_model` 配置项。仍需音乐功能的用户请停留在 0.5.2。
-
+> **开放平台音乐生成与翻唱已彻底移除。** MiniMax 已公告关闭开放平台音乐生成服务，mmx-cli 自 1.0.25 起移除全部音乐命令；本插件自 0.6.0 起同步移除 `mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get` 工具及旧 `/mmx music` 指令。0.7.0 起提供的 `/mmx music`、`/mmx sfx` 是 MiniMax Agent 账号体系下的新接口，需先 `/mmx login` 授权，与已移除的开放平台接口无关。
 
 ## 环境要求
 
@@ -14,12 +13,12 @@
 
 ## 功能
 
-- 13 个 LLM Tool，支持图片/视频/语音合成与转写/联网搜索/视觉理解/文件管理
+- 17 个 LLM Tool，支持图片/视频/语音合成与转写/联网搜索/搜图与以图搜图/AI 音乐音效/视觉理解/文件管理
 - `/mmx` 命令组，用户可直接通过指令快速调用
+- `/mmx login` 账号 OAuth 登录（设备授权），解锁搜图、以图搜图、AI 音乐音效等 Agent 账号能力，Token 自动刷新
 - 智能参数校验与纠偏机制，对 AI 友好
 - API 多 Key 轮询与额度查询
 - 生成的图片/视频优先下载到 AstrBot 临时目录，发送不依赖远程链接；下载失败才回退 URL
-
 ## 安装
 
 **方式一**：在 AstrBot 插件市场搜索「MiniMax 多模态工具」，点击安装。
@@ -46,6 +45,12 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_web_search` | 联网搜索信息 | 无 |
 | `mmx_describe_image` | 分析/描述图片内容（视觉理解） | 无 |
 | `mmx_check_quota` | 查询 API 剩余额度 | 无 |
+| `mmx_search_images` | 搜图并下载：检索真实网络图片并保存到本地临时目录，返回本地路径 | 需登录¹ |
+| `mmx_image_reverse_search` | 以图搜图：查找图片来源与相似网页，返回 Top 3 出处卡片 | 需登录¹ |
+| `mmx_generate_music` | Agent 账号体系 AI 音乐生成（可带歌词，mp3/wav/pcm），音频下载后返回本地路径 | 需登录¹ |
+| `mmx_generate_sound_effect` | Agent 账号体系 AI 音效生成，音频下载后返回本地路径 | 需登录¹ |
+
+¹ 这四项走 MiniMax Agent Matrix 网关，优先使用 `/mmx login` 授权的账号 Token；未登录时回退静态 API Key，网关拒绝时会提示先登录。
 
 ## 使用
 
@@ -63,6 +68,12 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx vision <描述要求>         # 图片理解（支持当前消息带图或引用图片）
 /mmx quota                    # 查询额度（多 Key 默认每页显示 3 个）
 /mmx quota page <页码>        # 翻页查看 Key 额度
+/mmx login                     # 登录 MiniMax 账号（管理员，两阶段设备授权）
+/mmx logout                    # 退出账号登录（管理员）
+/mmx search-image <关键词> [--n 数量]   # 搜图并下载
+/mmx reverse-image [图片URL]    # 以图搜图（可附带或引用图片）
+/mmx music <提示词> [--lyrics 歌词] [--format mp3]  # AI 音乐生成（需登录）
+/mmx sfx <音效描述>             # AI 音效生成（需登录）
 ```
 
 

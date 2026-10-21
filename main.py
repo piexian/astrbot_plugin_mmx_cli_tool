@@ -20,6 +20,7 @@ from astrbot.core.message import components as Comp
 from astrbot.core.message.components import Record, Video
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from astrbot.api.util import SessionController, session_waiter
 from .mmx import MiniMaxClient
 from .mmx.plugin_service import MiniMaxService, ServiceError
 from .mmx.apis.image import ImageAPI
@@ -32,16 +33,21 @@ from .mmx.apis.transcription import SpeechToTextAPI, TranscriptionOptions
 from .mmx.transcription import TranscriptionService
 from .tools.transcription_tools import transcribe_event
 from .mmx.files import FileAPI
+from .mmx.matrix import MatrixAPI
+from .mmx.media_transfer import MatrixMediaClient, MediaTransferError
+from .mmx.oauth import OAuthClient, OAuthError, TokenStore
 from .mmx.vision_input import extract_image_input, extract_image_inputs
 from .mmx.direct_command_args import (
     DirectCommandError,
     parse_file_command,
     parse_image_command,
+    parse_image_search_command,
+    parse_music_command,
     parse_speech_command,
     parse_transcription_command,
     parse_video_command,
 )
-from .mmx.errors import MiniMaxError, friendly_message
+from .mmx.errors import ErrorCategory, MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
 from .mmx.quota_usage import (
     format_quota_reset_time,
@@ -70,7 +76,13 @@ from .tools import (
     UploadFileTool,
     ListFilesTool,
     DeleteFileTool,
+    SearchImagesTool,
+    ImageReverseSearchTool,
+    GenerateMusicTool,
+    GenerateSoundEffectTool,
 )
+from .tools.image_reverse_tools import format_reverse_results
+from .tools.image_search_tools import _infer_ext
 
 
 def _clean_display_text(value: object, *, limit: int | None = None) -> str:
@@ -247,6 +259,23 @@ class Main(star.Star):
 
         self._client = MiniMaxClient(**client_kwargs)
 
+        # OAuth 账号登录与 Matrix MCP 底座（搜图/以图搜图/音乐音效）
+        self._region = region
+        self._static_keys = keys
+        self._oauth = OAuthClient()
+        self._token_store = TokenStore(self._plugin_data_dir / "auth.json")
+        self._matrix = MatrixAPI(self._client, self._matrix_region, self._get_matrix_token)
+        self._matrix_media = MatrixMediaClient(self._matrix)
+        self._login_sessions: set[str] = set()
+
+        # 以图搜图工具实例（LLM 与直接指令共用）
+        self._reverse_image_tool = ImageReverseSearchTool(
+            self._matrix,
+            self._matrix_media,
+            str(self._plugin_data_dir),
+            extra_allowed_dirs=self._extra_dirs,
+        )
+
         self._image = ImageAPI(self._client)
         self._video = VideoAPI(self._client)
         self._search = SearchAPI(self._client)
@@ -308,6 +337,10 @@ class Main(star.Star):
             UploadFileTool(self._files, _data_dir, extra_allowed_dirs=_extra_dirs),
             ListFilesTool(self._files),
             DeleteFileTool(self._files),
+            SearchImagesTool(self._matrix, self._matrix_media, _cache_dir),
+            self._reverse_image_tool,
+            GenerateMusicTool(self._matrix, self._matrix_media, _cache_dir),
+            GenerateSoundEffectTool(self._matrix, self._matrix_media, _cache_dir),
         ]
         context.add_llm_tools(*self._tools)
 
@@ -327,12 +360,308 @@ class Main(star.Star):
                     await self._service._drain()
                 finally:
                     try:
-                        await self._client.close()
+                        try:
+                            await self._oauth.close()
+                            await self._matrix_media.close()
+                        finally:
+                            await self._client.close()
                     finally:
                         self._service._finish_close()
 
             self._terminate_task = asyncio.create_task(cleanup())
         await asyncio.shield(self._terminate_task)
+
+    def _matrix_region(self) -> str:
+        """Matrix 网关区域：已登录跟随 Token 区域，否则跟随插件配置。"""
+        token = self._token_store.load()
+        return token.region if token else self._region
+
+    async def _get_matrix_token(self) -> str:
+        """Matrix 凭据：优先 OAuth Token（自动刷新），回退静态 API Key。"""
+        token = self._token_store.load()
+        if token:
+            if not token.is_expired():
+                return token.access_token
+            try:
+                refreshed = await self._oauth.refresh(token.refresh_token, token.region)
+            except OAuthError as e:
+                logger.warning(f"[mmx] OAuth Token 刷新失败: {e}")
+                self._token_store.clear()
+            else:
+                self._token_store.save(refreshed)
+                return refreshed.access_token
+        if self._static_keys:
+            return self._static_keys[0]
+        return ""
+
+    @staticmethod
+    def _matrix_error_text(exc: MiniMaxError) -> str:
+        """AUTH 错误保留 /mmx login 指引，其余走友好文案。"""
+        if exc.category is ErrorCategory.AUTH:
+            return str(exc)
+        return friendly_message(exc)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @mmx_group.command("login")
+    async def mmx_login(self, event: AstrMessageEvent):
+        """登录 MiniMax 账号（OAuth 设备授权），解锁搜图/以图搜图/音乐音效。"""
+        session_key = getattr(event, "unified_msg_origin", "") or event.message_str
+        if session_key in self._login_sessions:
+            yield event.plain_result("当前会话已有进行中的登录流程，请先完成或等待超时。")
+            return
+        self._login_sessions.add(session_key)
+        try:
+            async for result in self._run_login_flow(event):
+                yield result
+        finally:
+            self._login_sessions.discard(session_key)
+
+    async def _run_login_flow(self, event: AstrMessageEvent):
+        """两阶段登录：1) 会话内选择区域；2) 设备授权 + 自动轮询绑定。"""
+        yield event.plain_result(
+            "请选择 MiniMax 账号服务区域：\n"
+            "1. 国内站 (cn) - https://account.minimax.cn\n"
+            "2. 国际站 (global) - https://account.minimax.io\n"
+            "输入 1 或 2 继续，输入 c 取消。（60 秒内有效）"
+        )
+        choice: dict[str, str] = {}
+
+        @session_waiter(timeout=60)
+        async def region_waiter(controller: SessionController, ev: AstrMessageEvent):
+            text = ev.message_str.strip().lower()
+            if text in {"1", "cn", "国内", "国内站"}:
+                choice["region"] = "cn"
+            elif text in {"2", "global", "en", "国际", "国际站", "海外"}:
+                choice["region"] = "global"
+            elif text in {"c", "cancel", "取消"}:
+                choice["region"] = ""
+            else:
+                await ev.send(ev.plain_result("输入无效，请输入 1、2 或 c。"))
+                controller.keep(60, reset_timeout=True)
+                return
+            controller.stop()
+
+        try:
+            await region_waiter(event)
+        except TimeoutError:
+            yield event.plain_result("登录已超时取消。")
+            return
+        region = choice.get("region")
+        if region is None:
+            yield event.plain_result("登录流程已结束。")
+            return
+        if not region:
+            yield event.plain_result("已取消登录。")
+            return
+
+        try:
+            auth_info = await self._oauth.start_device_authorization(region)
+        except OAuthError as e:
+            yield event.plain_result(f"发起设备授权失败: {e}")
+            return
+        yield event.plain_result(
+            "🔗 请打开链接完成 MiniMax 账号授权：\n"
+            f"{auth_info.verification_uri_complete}\n"
+            f"🔑 验证码：{auth_info.user_code}\n"
+            f"⏳ 有效期：{max(1, auth_info.expires_in // 60)} 分钟\n"
+            "授权完成后，Bot 将自动完成登录绑定。"
+        )
+        try:
+            token = await self._oauth.poll_device_token(auth_info, region, max_wait=600)
+        except OAuthError as e:
+            if e.code == "access_denied":
+                yield event.plain_result("❌ 授权已被拒绝。")
+            elif e.code == "expired_token":
+                yield event.plain_result("⏰ 授权已超时，请重新发起 /mmx login。")
+            else:
+                yield event.plain_result(f"登录失败: {e}")
+            return
+        self._token_store.save(token)
+        yield event.plain_result(
+            f"✅ MiniMax 账号登录成功（{'国内站' if region == 'cn' else '国际站'}）！\n"
+            "已解锁搜图、以图搜图、AI 音乐与音效生成能力。"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @mmx_group.command("logout")
+    async def mmx_logout(self, event: AstrMessageEvent):
+        """退出 MiniMax 账号登录并清除本地 Token。"""
+        token = self._token_store.load()
+        if not token:
+            yield event.plain_result("当前未登录 MiniMax 账号。")
+            return
+        await self._oauth.revoke(token.refresh_token, token.region)
+        self._token_store.clear()
+        yield event.plain_result("已退出 MiniMax 账号登录。")
+
+    @mmx_group.command("search-image")
+    async def mmx_search_image(self, event: AstrMessageEvent, *, query: str = ""):
+        """搜图并下载。用法: /mmx search-image <关键词> [--n 数量]"""
+        msg = event.message_str.strip()
+        parts = msg.split(maxsplit=2)
+        raw_args = query or (parts[2] if len(parts) > 2 else "")
+        if not raw_args:
+            yield event.plain_result("用法: /mmx search-image <关键词> [--n 数量]")
+            return
+        try:
+            args = parse_image_search_command(raw_args)
+        except DirectCommandError as e:
+            yield event.plain_result(str(e))
+            return
+        try:
+            results = await self._matrix.images_search_and_download(args.query)
+        except MiniMaxError as e:
+            yield event.plain_result(self._matrix_error_text(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] 搜图失败: {e}")
+            yield event.plain_result(f"搜图失败: {e}")
+            return
+
+        images: list[str] = []
+        server_error = None
+        if results and isinstance(results[0], dict):
+            server_error = results[0].get("error")
+            for item in results[0].get("images") or []:
+                if isinstance(item, dict) and item.get("image_url"):
+                    images.append(str(item["image_url"]))
+                if len(images) >= args.n:
+                    break
+        if not images:
+            suffix = f"（{server_error}）" if server_error else ""
+            yield event.plain_result(f"未找到相关图片{suffix}。")
+            return
+
+        saved: list[str] = []
+        stamp = int(_time.time() * 1000)
+        for index, url in enumerate(images):
+            dest = self._cache_dir / f"mmx_search_image_{stamp}_{index}{_infer_ext(url)}"
+            try:
+                path = await self._matrix_media.download_to_file(
+                    url, dest, allowed_dir=str(self._cache_dir)
+                )
+                saved.append(str(path))
+            except Exception as e:
+                logger.warning(f"[mmx] 搜图下载失败 {url}: {e}")
+        if saved:
+            for path in saved:
+                yield event.image_result(path)
+            return
+        yield event.plain_result("图片下载失败，可直接访问：\n" + "\n".join(images))
+
+    @mmx_group.command("reverse-image")
+    async def mmx_reverse_image(self, event: AstrMessageEvent, *, image: str = ""):
+        """以图搜图。用法: /mmx reverse-image [图片URL]（可附带或引用图片）"""
+        msg = event.message_str.strip()
+        parts = msg.split(maxsplit=2)
+        image_input = image.strip() or (parts[2] if len(parts) > 2 else "").strip()
+        if not image_input:
+            extracted, saw_image = await extract_image_input(
+                event.get_messages(),
+                image_type=Comp.Image,
+                reply_type=Comp.Reply,
+                event=event,
+            )
+            if not extracted:
+                if saw_image:
+                    yield event.plain_result(
+                        "检测到了图片，但当前无法在本地解析。请直接发送图片或提供图片 URL 后重试。"
+                    )
+                else:
+                    yield event.plain_result(
+                        "请附带/引用一张图片，或提供图片 URL：/mmx reverse-image <图片URL>"
+                    )
+                return
+            image_input = extracted
+        try:
+            image_url = await self._reverse_image_tool.resolve_image_url(image_input)
+            items = await self._matrix.image_reverse_search(image_url)
+        except MediaTransferError as e:
+            yield event.plain_result(str(e))
+            return
+        except MiniMaxError as e:
+            yield event.plain_result(self._matrix_error_text(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] 以图搜图失败: {e}")
+            yield event.plain_result(f"以图搜图失败: {e}")
+            return
+        if not items:
+            yield event.plain_result("未找到相似图片或出处。")
+            return
+        yield event.plain_result(format_reverse_results(items))
+
+    @mmx_group.command("music")
+    async def mmx_music(self, event: AstrMessageEvent, *, prompt: str = ""):
+        """AI 音乐生成。用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]"""
+        msg = event.message_str.strip()
+        parts = msg.split(maxsplit=2)
+        raw_args = prompt or (parts[2] if len(parts) > 2 else "")
+        if not raw_args:
+            yield event.plain_result("用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]")
+            return
+        try:
+            args = parse_music_command(raw_args)
+        except DirectCommandError as e:
+            yield event.plain_result(str(e))
+            return
+        yield event.plain_result("🎵 音乐生成中（可能需要几分钟）...")
+        try:
+            item = await self._matrix.batch_text_to_music(
+                args.prompt, args.lyrics, args.audio_format
+            )
+        except MiniMaxError as e:
+            yield event.plain_result(self._matrix_error_text(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] 音乐生成失败: {e}")
+            yield event.plain_result(f"音乐生成失败: {e}")
+            return
+        async for result in self._deliver_audio(
+            event, item, f"mmx_music_{int(_time.time() * 1000)}.{args.audio_format}"
+        ):
+            yield result
+
+    @mmx_group.command("sfx")
+    async def mmx_sfx(self, event: AstrMessageEvent, *, prompt: str = ""):
+        """AI 音效生成。用法: /mmx sfx <音效描述>"""
+        msg = event.message_str.strip()
+        parts = msg.split(maxsplit=2)
+        text = prompt or (parts[2] if len(parts) > 2 else "")
+        if not text.strip():
+            yield event.plain_result("用法: /mmx sfx <音效描述>")
+            return
+        yield event.plain_result("🔊 音效生成中（可能需要几分钟）...")
+        try:
+            item = await self._matrix.batch_text_to_audio(text.strip())
+        except MiniMaxError as e:
+            yield event.plain_result(self._matrix_error_text(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] 音效生成失败: {e}")
+            yield event.plain_result(f"音效生成失败: {e}")
+            return
+        async for result in self._deliver_audio(
+            event, item, f"mmx_sfx_{int(_time.time() * 1000)}.mp3"
+        ):
+            yield result
+
+    async def _deliver_audio(self, event: AstrMessageEvent, item: dict, filename: str):
+        """下载生成音频到临时目录并以语音组件发送，失败回退链接。"""
+        output_url = str(item.get("output_url") or "")
+        if not output_url:
+            yield event.plain_result("生成完成，但服务端未返回音频地址。")
+            return
+        dest = self._cache_dir / filename
+        try:
+            path = await self._matrix_media.download_to_file(
+                output_url, dest, allowed_dir=str(self._cache_dir)
+            )
+        except Exception as e:
+            logger.warning(f"[mmx] 音频下载失败: {e}")
+            yield event.plain_result(f"音频下载失败，可直接访问：\n{output_url}")
+            return
+        yield event.chain_result([Record(file=str(path))])
 
     async def _handle_speech_transcribe(self, event: AstrMessageEvent, raw_args: str):
         try:

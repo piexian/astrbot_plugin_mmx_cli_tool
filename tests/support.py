@@ -73,7 +73,7 @@ def command_group(*args):
 @contextmanager
 def plugin_modules(root: Path):
     names = (
-        "astrbot", "astrbot.api", "astrbot.api.event", "astrbot.core",
+        "astrbot", "astrbot.api", "astrbot.api.event", "astrbot.api.util", "astrbot.core",
         "astrbot.core.agent", "astrbot.core.agent.run_context", "astrbot.core.agent.tool",
         "astrbot.core.astr_agent_context", "astrbot.core.message",
         "astrbot.core.message.components", "astrbot.core.utils", "astrbot.core.utils.astrbot_path",
@@ -89,6 +89,10 @@ def plugin_modules(root: Path):
         command_group=command_group, permission_type=decorator,
         PermissionType=SimpleNamespace(ADMIN="admin"),
     )
+    api_util = modules["astrbot.api.util"]
+    api_util.SessionController = object
+    api_util.SessionWaiter = object
+    api_util.session_waiter = lambda *a, **k: decorator
     modules["astrbot.core.agent.run_context"].ContextWrapper = object
     modules["astrbot.core.agent.tool"].ToolExecResult = str
     modules["astrbot.core.astr_agent_context"].AstrAgentContext = object

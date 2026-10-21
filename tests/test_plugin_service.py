@@ -109,11 +109,11 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, await self.service.wait_ready(0))
         status["state"] = "closed"
         cap = self.service.capabilities()
-        self.assertEqual(12, len(cap["features"]))
+        self.assertEqual(16, len(cap["features"]))
         cap["features"].clear()
-        self.assertEqual(12, len(self.service.capabilities()["features"]))
+        self.assertEqual(16, len(self.service.capabilities()["features"]))
         self.assertEqual("ready", self.service.get_status()["state"])
-        self.assertEqual(13, len(self.tools))
+        self.assertEqual(17, len(self.tools))
         for name in ("client", "store", "config", "close", "cancel_task"):
             self.assertFalse(hasattr(self.service, name))
 

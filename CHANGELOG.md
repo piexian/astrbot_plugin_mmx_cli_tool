@@ -1,5 +1,16 @@
 # 更新日志
 
+
+## 0.7.0 - 2026-10-21
+
+- 新增 MiniMax 账号 OAuth 登录：`/mmx login` 两阶段交互（选择区域 → 设备授权），RFC 8628 Device Authorization Grant + PKCE S256，Token 自动刷新并本地加密存储（0600）；`/mmx logout` 退出。
+- 接入 MiniMax Agent Matrix MCP 网关（`agent.minimax.cn/io` 的 `/mavis/api/v1/mcp/*`），新增 4 个 LLM 工具及对应指令：
+- `mmx_search_images` / `/mmx search-image`：搜图并下载到本地临时目录。
+- `mmx_image_reverse_search` / `/mmx reverse-image`：以图搜图，本地图片先经 OSS 预签名直传换取链接；返回 Top 3 出处卡片。
+- `mmx_generate_music` / `/mmx music`、`mmx_generate_sound_effect` / `/mmx sfx`：Agent 账号体系下的 AI 音乐与音效生成（区别于 0.6.0 移除的开放平台音乐接口），音频下载后以语音组件发送。
+- Matrix 工具凭据双轨：优先 OAuth Token，未登录时回退静态 API Key；网关拒绝时提示管理员 `/mmx login`。
+- 媒体传输底座：≤600KB 内联 Base64、>600KB OSS 预签名直传（上限 500MB），下载强制限制在 AstrBot 临时目录内。
+- 新增 46 项测试（OAuth 设备码流程、媒体传输沙箱、三大工具 Mock 驱动），总数 145 项。
 ## 0.6.0 - 2026-10-15
 
 - 对齐 mmx-cli 1.0.28：上游已公告关闭音乐生成并下线服务端接口，本版本彻底移除音乐生成与翻唱。

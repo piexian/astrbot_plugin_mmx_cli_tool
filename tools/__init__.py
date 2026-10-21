@@ -9,6 +9,9 @@ from .quota_tools import CheckQuotaTool
 from .speech_tools import SpeechSynthesizeTool, ListVoicesTool
 from .file_tools import UploadFileTool, ListFilesTool, DeleteFileTool
 from .transcription_tools import SpeechTranscribeTool
+from .image_search_tools import SearchImagesTool
+from .image_reverse_tools import ImageReverseSearchTool
+from .music_tools import GenerateMusicTool, GenerateSoundEffectTool
 
 __all__ = [
     "GenerateImageTool",
@@ -24,4 +27,8 @@ __all__ = [
     "UploadFileTool",
     "ListFilesTool",
     "DeleteFileTool",
+    "SearchImagesTool",
+    "ImageReverseSearchTool",
+    "GenerateMusicTool",
+    "GenerateSoundEffectTool",
 ]
