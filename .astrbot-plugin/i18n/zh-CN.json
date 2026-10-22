@@ -1,4 +1,9 @@
 {
+  "views": {
+    "mcode_dashboard": {
+      "title": "MCode 工作台"
+    }
+  },
   "commands": {
     "image": {
       "description": "生成图片 - 使用 MiniMax AI 根据文本描述生成图片",

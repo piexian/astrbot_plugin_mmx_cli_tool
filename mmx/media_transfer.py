@@ -22,6 +22,9 @@ INLINE_LIMIT_BYTES = 600 * 1024
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 
+#: 图片专用能力（以图搜图等）接受的扩展名，拒绝其他类型文件上传
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+
 _MIME_BY_EXT = {
     ".png": "image/png",
     ".jpg": "image/jpeg",

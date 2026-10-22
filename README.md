@@ -10,6 +10,7 @@
 | 依赖 | 版本要求 |
 |------|----------|
 | httpx | >= 0.27.0 |
+| AstrBot | >= 4.26.0（「MCode 工作台」视图需要；旧版本下插件仅保留聊天指令与 LLM 工具） |
 
 ## 功能
 
@@ -19,6 +20,7 @@
 - 智能参数校验与纠偏机制，对 AI 友好
 - API 多 Key 轮询与额度查询
 - 生成的图片/视频优先下载到 AstrBot 临时目录，发送不依赖远程链接；下载失败才回退 URL
+- AstrBot 控制台内置「MCode 工作台」视图：状态与额度、扫码登录、无限画布批注、搜图/以图搜图/AI 音乐音效与终端事件流
 ## 安装
 
 **方式一**：在 AstrBot 插件市场搜索「MiniMax 多模态工具」，点击安装。
@@ -178,6 +180,23 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 `mmx_generate_image`、`mmx_generate_video`、`mmx_video_task_get`、`mmx_video_download`、`mmx_speech_synthesize`、`mmx_speech_voices`、`mmx_speech_transcribe`、`mmx_web_search`、`mmx_describe_image`、`mmx_file_upload`、`mmx_file_list`、`mmx_file_delete`、`mmx_check_quota`
 
 参数以各工具的实际声明为准（LLM 调用时自动可见），本文不再逐项展开。
+## MCode 工作台
+
+AstrBot 管理面板 → 插件 → 「MiniMax 多模态工具」→ 视图「MCode 工作台」，在控制台内直接使用本插件能力，页面在沙箱 iframe 中运行，不跳转外部站点。
+
+| 工作台面板 | 对接的后端能力 |
+|-----------|----------------|
+| 顶部状态栏（区域、凭据、模型、推理强度档位） | 插件运行状态与 OAuth Token 存储；档位写入插件配置 `thinking_effort` |
+| 额度侧栏 | Token Plan 双周期额度与账户余额，多 Key 汇总 |
+| 扫码登录 | OAuth 设备授权，与 `/mmx login` 共用同一份 `auth.json` |
+| 无限画布 | 画布文档落盘在 `data/plugin_data/astrbot_plugin_mmx_cli_tool/canvas/`；批注提交视觉理解模型 |
+| 媒体实验室 | 搜图、以图搜图、AI 音乐与音效（Matrix MCP），产物缓存到 AstrBot 临时目录 |
+| 终端事件流 | SSE 实时推送本插件的工具调用、耗时与错误 |
+
+- 视图路由沿用 AstrBot 控制台的登录鉴权，未登录无法调用。
+- 下载仅允许 AstrBot 临时目录内的文件（画布资产额外允许插件数据目录），拒绝绝对路径与 `..` 穿越；以图搜图的上传文件限定为图片扩展名，临时文件用后即删。
+- 「团队方案（Team Plan）」看板是前端演示数据，本插件未提供对应后端接口，不会读写任何账号数据。
+
 ## 安全设计
 
 - **API Key 脱敏**：错误日志中自动隐藏 API Key（仅显示前 4 后 4 字符）
@@ -211,6 +230,7 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
 | `default_speech_voice` | string | `English_expressive_narrator` | 默认语音合成音色（voice_id） |
 | `default_transcription_model` | string | `asr-1.0` | 默认语音转文字模型 |
+| `thinking_effort` | string | `default` | 工作台显示的推理强度档位（`default/low/medium/high/xhigh/max`），仅作偏好记录，不改变本插件的 MiniMax 请求参数 |
 
 ## 项目结构
 
@@ -226,6 +246,9 @@ astrbot_plugin_mmx_cli_tool/
 ├── .astrbot-plugin/
 │   └── i18n/
 │       └── zh-CN.json               # 中文翻译
+├── views/
+│   └── mcode_dashboard/             # MCode 工作台视图构建产物（index.html + assets）
+├── web/                             # MCode 工作台视图源码（Vue 3 + Vite）
 ├── mmx/                             # MiniMax API 客户端层
 │   ├── __init__.py
 │   ├── client.py                    # MiniMax HTTP 客户端与鉴权
@@ -236,6 +259,8 @@ astrbot_plugin_mmx_cli_tool/
 │   ├── plugin_service.py            # 插件协作 SDK v1 门面
 │   ├── video_business.py            # 视频生成模式与参数前置校验
 │   ├── quota_usage.py               # 额度数据标准化与汇总
+│   ├── canvas_store.py              # 画布文档持久化与变更幂等应用
+│   ├── web_api.py                   # MCode 工作台 Web API 路由与 SSE 事件
 │   └── apis/                        # MiniMax API 领域封装
 │       ├── image.py                 # 图片生成 API
 │       ├── video.py                 # 视频生成与任务轮询 API

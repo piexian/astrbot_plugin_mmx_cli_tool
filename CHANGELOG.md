@@ -10,7 +10,10 @@
 - `mmx_generate_music` / `/mmx music`、`mmx_generate_sound_effect` / `/mmx sfx`：Agent 账号体系下的 AI 音乐与音效生成（区别于 0.6.0 移除的开放平台音乐接口），音频下载后以语音组件发送。
 - Matrix 工具凭据双轨：优先 OAuth Token，未登录时回退静态 API Key；网关拒绝时提示管理员 `/mmx login`。
 - 媒体传输底座：≤600KB 内联 Base64、>600KB OSS 预签名直传（上限 500MB），下载强制限制在 AstrBot 临时目录内。
-- 新增 46 项测试（OAuth 设备码流程、媒体传输沙箱、三大工具 Mock 驱动），总数 145 项。
+- 新增 MCode 工作台视图后端接入：`mmx/web_api.py` 通过 `register_web_api` 暴露 17 条路由（状态、Token Plan 双周期额度与账户余额、OAuth 发起/轮询/解绑、推理强度档位、画布读写与批注提交、搜图/以图搜图/音乐/音效、临时文件下载、SSE 终端事件流），`terminate()` 注销本插件路由并停止后台授权轮询。
+- 新增 `mmx/canvas_store.py`：CanvasDocumentV1 按会话原子落盘（`data/plugin_data/.../canvas/`），CanvasOperationV1 依 operationId 幂等应用 add_file/update_layout/remove_node/批注增删改，限制节点与批注数量、拒绝绝对路径与 `..` 穿越。
+- 新增 `thinking_effort` 配置项与视图 i18n 标题；工作台文件下载限定 AstrBot 临时目录（画布资产另允许插件数据目录），以图搜图上传限定图片扩展名。
+- 新增 21 项工作台路由与画布测试（Mock HTTP，覆盖契约字段、幂等、白名单与降级），总数 175 项；AstrBot 4.29.1 真实 `register_web_api`、Dashboard 路由匹配、`PluginPageService` 视图发现与 `terminate` 注销已端到端验证。
 ## 0.6.0 - 2026-10-15
 
 - 对齐 mmx-cli 1.0.28：上游已公告关闭音乐生成并下线服务端接口，本版本彻底移除音乐生成与翻唱。

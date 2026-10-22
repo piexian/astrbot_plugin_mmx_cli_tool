@@ -36,6 +36,7 @@ from .mmx.files import FileAPI
 from .mmx.matrix import MatrixAPI
 from .mmx.media_transfer import MatrixMediaClient, MediaTransferError
 from .mmx.oauth import OAuthClient, OAuthError, TokenStore
+from .mmx.web_api import EFFORT_LEVELS, MCodeWebAPI
 from .mmx.vision_input import extract_image_input, extract_image_inputs
 from .mmx.direct_command_args import (
     DirectCommandError,
@@ -198,6 +199,7 @@ class Main(star.Star):
         super().__init__(context)
 
         # 读取配置
+        self._config = config
         raw_keys = config.get("api_key", [])
         keys: list[str] = (
             [str(k).strip() for k in raw_keys if str(k).strip()]
@@ -207,6 +209,8 @@ class Main(star.Star):
         region = str(config.get("region", "cn"))
         base_url_override = str(config.get("base_url", "")).strip() or None
         timeout = float(config.get("timeout", 300))
+        effort = str(config.get("thinking_effort", "default")).strip().lower()
+        self._thinking_effort = effort if effort in EFFORT_LEVELS else "default"
         self._video_poll_interval = int(config.get("video_poll_interval", 5))
         self._video_timeout = int(config.get("video_timeout", 600))
         self._default_image_model = str(config.get("default_image_model", "")).strip()
@@ -304,6 +308,7 @@ class Main(star.Star):
 
         self._service = MiniMaxService(self, configured=bool(keys))
         self._terminate_task: asyncio.Task | None = None
+        self._web_api: MCodeWebAPI | None = None
 
         # 注册 LLM 工具
         self._tools = [
@@ -356,8 +361,12 @@ class Main(star.Star):
 
     async def initialize(self) -> None:
         self._service._initialize()
+        self._web_api = MCodeWebAPI(self)
+        self._web_api.register()
 
     async def terminate(self) -> None:
+        if self._web_api is not None:
+            await self._web_api.close()
         self._service._begin_close()
         if self._terminate_task is None:
             async def cleanup():

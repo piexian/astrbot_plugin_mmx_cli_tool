@@ -16,6 +16,13 @@
     "type": "string",
     "default": ""
   },
+  "thinking_effort": {
+    "description": "MCode 工作台推理强度档位",
+    "type": "string",
+    "options": ["default", "low", "medium", "high", "xhigh", "max"],
+    "default": "default",
+    "hint": "供工作台与协作插件读取的偏好档位；本插件不会据此改写 MiniMax 请求参数。"
+  },
   "timeout": {
     "description": "请求超时（秒）",
     "type": "int",

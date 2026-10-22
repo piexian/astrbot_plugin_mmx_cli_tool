@@ -12,13 +12,13 @@ from astrbot.core.agent.tool import ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 
 from ..mmx.matrix import MatrixAPI
-from ..mmx.media_transfer import MatrixMediaClient, MediaTransferError
+from ..mmx.media_transfer import IMAGE_EXTENSIONS, MatrixMediaClient, MediaTransferError
 from ..mmx.utils import is_url, resolve_existing_data_path
 from .result import tool_result
 from .schema import object_parameters, string_param
 
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+_IMAGE_EXTS = IMAGE_EXTENSIONS
 
 def format_reverse_results(items: list[dict], limit: int = 3) -> str:
     """格式化以图搜图结果为 Markdown 卡片（Top N）。"""
