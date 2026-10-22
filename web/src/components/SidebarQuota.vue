@@ -8,7 +8,13 @@ import type {
   PluginStatusResponse,
   ServiceRegion,
 } from '../types/mcode';
-import { bridgeGet, bridgePost, copyToClipboard, pushToast } from '../composables/useBridge';
+import {
+  backendOnline,
+  bridgeGet,
+  bridgePost,
+  copyToClipboard,
+  pushToast,
+} from '../composables/useBridge';
 import { useCanvas } from '../composables/useCanvas';
 
 const props = defineProps<{
@@ -61,6 +67,7 @@ const deviceAuth = ref<OAuthDeviceStartResponse | null>(null);
 const qrSvgHtml = ref<string>('');
 const remainingSeconds = ref<number>(0);
 const isStartingOAuth = ref(false);
+const isSyncingOAuth = ref(false);
 
 let pollTimer: number | null = null;
 let countdownTimer: number | null = null;
@@ -194,6 +201,41 @@ function startOAuthTimers(): void {
       // Keep polling quietly
     }
   }, intervalMs);
+}
+
+/**
+ * 「我已完成授权，立即同步」：在线模式立刻查询一次授权结果，仅当后端返回
+ * authorized 才完成绑定；离线预览模式保持演示闭环。
+ */
+async function checkOAuthNow(): Promise<void> {
+  if (!deviceAuth.value) return;
+  const fallbackRegion = deviceAuth.value.region || selectedRegion.value;
+  if (!backendOnline.value) {
+    completeOAuthBinding(fallbackRegion);
+    return;
+  }
+  isSyncingOAuth.value = true;
+  try {
+    const pollRes = await bridgeGet<OAuthPollResponse>('oauth/poll', {
+      session_id: deviceAuth.value.session_id,
+    });
+    if (pollRes.status === 'authorized') {
+      completeOAuthBinding(pollRes.region || fallbackRegion);
+      return;
+    }
+    if (pollRes.status === 'denied' || pollRes.status === 'expired') {
+      stopOAuthTimers();
+      pushToast(pollRes.message || `授权已终止 (${pollRes.status})`, 'warn');
+      deviceAuth.value = null;
+      oauthStage.value = 'idle';
+      return;
+    }
+    pushToast(pollRes.message || '尚未收到授权结果，请先在浏览器或手机上确认', 'info');
+  } catch {
+    // 错误详情已由 bridge 统一提示，此处保持授权流程可继续轮询
+  } finally {
+    isSyncingOAuth.value = false;
+  }
 }
 
 function completeOAuthBinding(region: ServiceRegion): void {
@@ -372,9 +414,10 @@ onUnmounted(() => {
               type="button"
               class="btn btn-primary"
               style="flex: 1"
-              @click="completeOAuthBinding(deviceAuth.region)"
+              :disabled="isSyncingOAuth"
+              @click="checkOAuthNow"
             >
-              我已完成授权，立即同步
+              {{ isSyncingOAuth ? '同步中…' : '我已完成授权，立即同步' }}
             </button>
             <button type="button" class="btn" @click="cancelOAuthFlow">取消</button>
           </div>

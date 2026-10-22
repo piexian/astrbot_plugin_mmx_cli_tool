@@ -463,6 +463,138 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["data_dir"], str(self.plugin._plugin_data_dir))
         self.assertIn("保持暖色调", kwargs["prompt"])
 
+    async def test_canvas_keeps_long_preview_url(self):
+        preview_url = "data:image/png;base64," + "A" * 40_000
+        web_request.reset(
+            body={
+                "sessionId": "sess_preview",
+                "operation": {
+                    "schemaVersion": 1,
+                    "operationId": "op_preview",
+                    "mutations": [
+                        {
+                            "kind": "add_file",
+                            "nodeId": "node_preview",
+                            "relativePath": "a.png",
+                            "layout": {"x": 0, "y": 0, "width": 100, "height": 100, "zIndex": 1},
+                            "fileMeta": {"previewUrl": preview_url, "fileName": "x" * 5000},
+                        }
+                    ],
+                },
+            }
+        )
+        node = (await self.call("canvas/mutate"))["document"]["nodes"][0]
+        self.assertEqual(node["file"]["previewUrl"], preview_url)
+        self.assertEqual(len(node["file"]["fileName"]), 1024)
+
+        web_request.reset(query={"session_id": "sess_preview"})
+        reloaded = await self.call("canvas/doc")
+        self.assertEqual(reloaded["nodes"][0]["file"]["previewUrl"], preview_url)
+
+        oversized = "https://cdn.example.com/" + "B" * 70_000
+        web_request.reset(
+            body={
+                "sessionId": "sess_preview",
+                "operation": {
+                    "schemaVersion": 1,
+                    "operationId": "op_preview_2",
+                    "mutations": [
+                        {
+                            "kind": "add_annotation",
+                            "nodeId": "node_preview",
+                            "annotation": {"id": "ann_p", "normalizedRect": {}, "comment": "c"},
+                        }
+                    ],
+                },
+            }
+        )
+        await self.call("canvas/mutate")
+        web_request.reset(
+            body={
+                "sessionId": "sess_oversize",
+                "operation": {
+                    "schemaVersion": 1,
+                    "operationId": "op_oversize",
+                    "mutations": [
+                        {
+                            "kind": "add_file",
+                            "nodeId": "node_over",
+                            "relativePath": "b.png",
+                            "layout": {},
+                            "fileMeta": {"previewUrl": oversized},
+                        }
+                    ],
+                },
+            }
+        )
+        over_node = (await self.call("canvas/mutate"))["document"]["nodes"][0]
+        self.assertEqual(len(over_node["file"]["previewUrl"]), 65_536)
+        self.assertEqual(over_node["file"]["previewUrl"], oversized[:65_536])
+
+    async def test_canvas_remove_annotation_renumbers_remaining(self):
+        async def add_annotation(operation_id, annotation_id, number):
+            web_request.reset(
+                body={
+                    "sessionId": "sess_numbering",
+                    "operation": {
+                        "schemaVersion": 1,
+                        "operationId": operation_id,
+                        "mutations": [
+                            {
+                                "kind": "add_annotation",
+                                "nodeId": "node_a",
+                                "annotation": {
+                                    "id": annotation_id,
+                                    "number": number,
+                                    "normalizedRect": {"x": 0, "y": 0, "width": 0.2, "height": 0.2},
+                                    "comment": f"批注 {annotation_id}",
+                                    "action": "comment",
+                                },
+                            }
+                        ],
+                    },
+                }
+            )
+            return await self.call("canvas/mutate")
+
+        web_request.reset(
+            body={
+                "sessionId": "sess_numbering",
+                "operation": {
+                    "schemaVersion": 1,
+                    "operationId": "op_seed",
+                    "mutations": [
+                        {
+                            "kind": "add_file",
+                            "nodeId": "node_a",
+                            "relativePath": "a.png",
+                            "layout": {"x": 0, "y": 0, "width": 100, "height": 100, "zIndex": 1},
+                        }
+                    ],
+                },
+            }
+        )
+        await self.call("canvas/mutate")
+        for index, annotation_id in enumerate(("ann_1", "ann_2", "ann_3"), start=1):
+            await add_annotation(f"op_add_{index}", annotation_id, index)
+
+        web_request.reset(
+            body={
+                "sessionId": "sess_numbering",
+                "operation": {
+                    "schemaVersion": 1,
+                    "operationId": "op_remove",
+                    "mutations": [
+                        {"kind": "remove_annotation", "nodeId": "node_a", "annotationId": "ann_2"}
+                    ],
+                },
+            }
+        )
+        remaining = (await self.call("canvas/mutate"))["document"]["nodes"][0]["annotations"]
+        self.assertEqual([item["id"] for item in remaining], ["ann_1", "ann_3"])
+        self.assertEqual([item["number"] for item in remaining], [1, 2])
+        self.assertEqual([item["comment"] for item in remaining], ["批注 ann_1", "批注 ann_3"])
+
     async def test_canvas_iterate_requires_annotations(self):
         web_request.reset(
             body={
@@ -618,6 +750,78 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/mmx login", response.content["message"])
 
     # ------------------------------------------------------------------ 文件下载白名单
+
+    async def test_media_relative_paths_round_trip_through_canvas(self):
+        """搜图/音频返回的文件名可直接作为画布 relativePath 并经 canvas/download 取回。"""
+
+        async def _save(url, dest, *, allowed_dir=None, **_):
+            Path(dest).write_bytes(b"png")
+            return Path(dest)
+
+        self.plugin._matrix.images_search_and_download = AsyncMock(
+            return_value=[{"images": [{"image_url": "https://cdn.example.com/a.jpg"}]}]
+        )
+        self.plugin._matrix.batch_text_to_audio = AsyncMock(
+            return_value={"output_url": "https://cdn.example.com/s.mp3"}
+        )
+        self.plugin._matrix_media.download_to_file = AsyncMock(side_effect=_save)
+
+        web_request.reset(body={"query": "海报", "count": 1})
+        item = (await self.call("tools/image-search"))["items"][0]
+        self.assertEqual(item["local_path"], Path(item["local_path"]).name)
+        self.assertFalse(Path(item["local_path"]).is_absolute())
+        self.assertTrue(
+            (self.plugin._cache_dir / item["local_path"]).is_file(),
+        )
+
+        web_request.reset(body={"prompt": "木门关闭的闷响"})
+        sfx = await self.call("tools/sfx")
+        self.assertEqual(sfx["local_path"], Path(sfx["local_path"]).name)
+
+        self.plugin._reverse_image_tool.resolve_image_url = AsyncMock(
+            return_value="https://cdn.example.com/a.jpg"
+        )
+        self.plugin._matrix.image_reverse_search = AsyncMock(return_value=[])
+        web_request.reset(body={"image": item["local_path"]})
+        self.assertEqual((await self.call("tools/image-reverse"))["matches"], [])
+        self.plugin._reverse_image_tool.resolve_image_url.assert_awaited_once_with(
+            item["local_path"]
+        )
+
+        web_request.reset(
+            body={
+                "sessionId": "sess_round",
+                "operation": {
+                    "schemaVersion": 1,
+                    "operationId": "op_round",
+                    "mutations": [
+                        {
+                            "kind": "add_file",
+                            "nodeId": "node_round",
+                            "relativePath": item["local_path"],
+                            "layout": {
+                                "x": 0,
+                                "y": 0,
+                                "width": 300,
+                                "height": 200,
+                                "zIndex": 1,
+                            },
+                            "fileMeta": {"fileName": "a.jpg"},
+                        }
+                    ],
+                },
+            }
+        )
+        node = (await self.call("canvas/mutate"))["document"]["nodes"][0]
+        self.assertEqual(node["file"]["relativePath"], item["local_path"])
+
+        web_request.reset(query={"path": item["local_path"]})
+        served = await self.call("canvas/download")
+        self.assertEqual(Path(served.path).name, item["local_path"])
+
+        web_request.reset(query={"path": item["local_path"]})
+        temp_served = await self.call("tools/download-temp")
+        self.assertEqual(Path(temp_served.path).name, item["local_path"])
 
     async def test_download_endpoints_only_serve_whitelisted_files(self):
         cache = self.plugin._cache_dir

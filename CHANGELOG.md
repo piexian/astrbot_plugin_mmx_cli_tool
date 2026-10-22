@@ -13,7 +13,10 @@
 - 新增 MCode 工作台视图后端接入：`mmx/web_api.py` 通过 `register_web_api` 暴露 17 条路由（状态、Token Plan 双周期额度与账户余额、OAuth 发起/轮询/解绑、推理强度档位、画布读写与批注提交、搜图/以图搜图/音乐/音效、临时文件下载、SSE 终端事件流），`terminate()` 注销本插件路由并停止后台授权轮询。
 - 新增 `mmx/canvas_store.py`：CanvasDocumentV1 按会话原子落盘（`data/plugin_data/.../canvas/`），CanvasOperationV1 依 operationId 幂等应用 add_file/update_layout/remove_node/批注增删改，限制节点与批注数量、拒绝绝对路径与 `..` 穿越。
 - 新增 `thinking_effort` 配置项与视图 i18n 标题；工作台文件下载限定 AstrBot 临时目录（画布资产另允许插件数据目录），以图搜图上传限定图片扩展名。
-- 新增 21 项工作台路由与画布测试（Mock HTTP，覆盖契约字段、幂等、白名单与降级），总数 175 项；AstrBot 4.29.1 真实 `register_web_api`、Dashboard 路由匹配、`PluginPageService` 视图发现与 `terminate` 注销已端到端验证。
+- 工作台临时产物改回相对文件名：`tools/image-search` 与音乐/音效返回的 `local_path` 为 AstrBot 临时目录内文件名，可直接作为画布 `relativePath` 并被 `tools/download-temp`、`canvas/download`、`canvas/iterate`、`tools/image-reverse` 复用。
+- 画布 `previewUrl` 上限独立为 65536 字符（其余元数据仍为 1024），`remove_annotation` 后剩余批注按顺序重排序号。
+- 前端 bridge 仅在未注册路由（`plans/*`）使用演示回退，后端业务错误直接提示并上抛；「我已完成授权，立即同步」改为立即查询一次 `oauth/poll`，仅 `authorized` 才完成绑定。
+- 新增 24 项工作台路由与画布测试（Mock HTTP，覆盖契约字段、幂等、白名单、相对路径联动与降级），总数 178 项；AstrBot 4.29.1 真实 `register_web_api`、Dashboard 路由匹配、`PluginPageService` 视图发现与 `terminate` 注销已端到端验证。
 ## 0.6.0 - 2026-10-15
 
 - 对齐 mmx-cli 1.0.28：上游已公告关闭音乐生成并下线服务端接口，本版本彻底移除音乐生成与翻唱。

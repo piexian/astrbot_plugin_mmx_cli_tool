@@ -20,6 +20,7 @@ MAX_MUTATIONS = 64
 MAX_ID_LENGTH = 64
 MAX_COMMENT_LENGTH = 4000
 MAX_TEXT_LENGTH = 100_000
+MAX_PREVIEW_URL_LENGTH = 65_536
 MAX_APPLIED_OPERATIONS = 64
 
 _ID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,%d}" % MAX_ID_LENGTH)
@@ -122,9 +123,11 @@ def _annotation(value: object) -> dict[str, Any]:
 def _file(value: object, relative_path: str) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     item: dict[str, Any] = {"relativePath": relative_path}
-    for key in ("assetId", "fileName", "mimeType", "sha256", "previewUrl"):
+    for key in ("assetId", "fileName", "mimeType", "sha256"):
         if raw.get(key) is not None:
             item[key] = _text(raw.get(key), 1024)
+    if raw.get("previewUrl") is not None:
+        item["previewUrl"] = _text(raw.get("previewUrl"), MAX_PREVIEW_URL_LENGTH)
     if raw.get("textContent") is not None:
         item["textContent"] = _text(raw.get("textContent"), MAX_TEXT_LENGTH)
     size = raw.get("sizeBytes")
@@ -322,11 +325,14 @@ class CanvasStore:
                         raise CanvasStoreError(
                             "node_not_found", f"节点不存在: {node_id}"
                         )
-                    node["annotations"] = [
+                    remaining = [
                         item
                         for item in node["annotations"]
                         if item["id"] != annotation_id
                     ]
+                    for index, item in enumerate(remaining):
+                        item["number"] = index + 1
+                    node["annotations"] = remaining
                     continue
                 if kind not in {"add_annotation", "update_annotation"}:
                     raise CanvasStoreError(

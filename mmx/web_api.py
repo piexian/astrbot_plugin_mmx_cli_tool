@@ -959,7 +959,7 @@ class MCodeWebAPI:
                 saved = await plugin._matrix_media.download_to_file(
                     url, dest, allowed_dir=cache_dir
                 )
-                return str(saved)
+                return Path(saved).name
             except Exception as exc:  # noqa: BLE001 - 单张失败保留远程链接
                 logger.warning(f"[mmx-web] 搜图下载失败 {url}: {exc}")
                 return None
@@ -1085,7 +1085,7 @@ class MCodeWebAPI:
             saved = await plugin._matrix_media.download_to_file(
                 output_url, dest, allowed_dir=cache_dir
             )
-            local_path = str(saved)
+            local_path = Path(saved).name
         except Exception as exc:  # noqa: BLE001 - 下载失败仍回传远程地址
             logger.warning(f"[mmx-web] 音频下载失败 {output_url}: {exc}")
         return {

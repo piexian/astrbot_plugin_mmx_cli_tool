@@ -31,6 +31,23 @@ interface AstrBotPluginViewSDK {
   unsubscribeSSE(subscriptionId: string): Promise<any>;
 }
 
+/**
+ * Bridge endpoints with no backend counterpart: the plugin exposes no team-plan
+ * data source, so these always fall back to the bundled demo payload. Every other
+ * endpoint must surface backend errors instead of silently rendering fake data.
+ */
+const DEMO_ONLY_ENDPOINTS = new Set(['plans/current', 'plans/approve']);
+
+function isDemoOnlyEndpoint(endpoint: string): boolean {
+  const path = endpoint.split('?')[0].replace(/^\//, '');
+  return DEMO_ONLY_ENDPOINTS.has(path);
+}
+
+function bridgeError(err: unknown): Error {
+  const message =
+    err instanceof Error ? err.message : typeof err === 'string' ? err : '未知错误';
+  return new Error(message);
+}
 declare global {
   interface Window {
     AstrBotPluginView?: AstrBotPluginViewSDK;
@@ -47,7 +64,7 @@ export interface ToastNotice {
 const isDark = ref(document.documentElement.getAttribute('data-theme') === 'dark');
 const locale = ref('zh-CN');
 const bridgeConnected = ref(false);
-const backendOnline = ref(false);
+export const backendOnline = ref(false);
 const toasts = ref<ToastNotice[]>([]);
 let toastSeq = 0;
 let initialized = false;
@@ -163,7 +180,12 @@ export async function bridgeGet<T>(
       backendOnline.value = true;
       return res;
     } catch (err) {
-      if (!fallback) throw err;
+      const error = bridgeError(err);
+      if (backendOnline.value && !isDemoOnlyEndpoint(endpoint)) {
+        pushToast(error.message, 'warn');
+        throw error;
+      }
+      if (!fallback) throw error;
     }
   }
   if (fallback) {
@@ -184,7 +206,12 @@ export async function bridgePost<T>(
       backendOnline.value = true;
       return res;
     } catch (err) {
-      if (!fallback) throw err;
+      const error = bridgeError(err);
+      if (backendOnline.value && !isDemoOnlyEndpoint(endpoint)) {
+        pushToast(error.message, 'warn');
+        throw error;
+      }
+      if (!fallback) throw error;
     }
   }
   if (fallback) {
@@ -205,7 +232,12 @@ export async function bridgeUpload<T>(
       backendOnline.value = true;
       return res;
     } catch (err) {
-      if (!fallback) throw err;
+      const error = bridgeError(err);
+      if (backendOnline.value && !isDemoOnlyEndpoint(endpoint)) {
+        pushToast(error.message, 'warn');
+        throw error;
+      }
+      if (!fallback) throw error;
     }
   }
   if (fallback) {
