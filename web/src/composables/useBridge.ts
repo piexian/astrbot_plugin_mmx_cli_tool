@@ -43,10 +43,17 @@ function isDemoOnlyEndpoint(endpoint: string): boolean {
   return DEMO_ONLY_ENDPOINTS.has(path);
 }
 
-function bridgeError(err: unknown): Error {
+/** Bridge-reported errors are already toasted once; callers must not toast again. */
+export interface BridgeError extends Error {
+  bridgeReported?: boolean;
+}
+
+function bridgeError(err: unknown): BridgeError {
   const message =
     err instanceof Error ? err.message : typeof err === 'string' ? err : '未知错误';
-  return new Error(message);
+  const error: BridgeError = new Error(message);
+  error.bridgeReported = true;
+  return error;
 }
 declare global {
   interface Window {

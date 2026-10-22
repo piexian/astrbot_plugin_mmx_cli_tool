@@ -16,7 +16,9 @@
 - 工作台临时产物改回相对文件名：`tools/image-search` 与音乐/音效返回的 `local_path` 为 AstrBot 临时目录内文件名，可直接作为画布 `relativePath` 并被 `tools/download-temp`、`canvas/download`、`canvas/iterate`、`tools/image-reverse` 复用。
 - 画布 `previewUrl` 上限独立为 65536 字符（其余元数据仍为 1024），`remove_annotation` 后剩余批注按顺序重排序号。
 - 前端 bridge 仅在未注册路由（`plans/*`）使用演示回退，后端业务错误直接提示并上抛；「我已完成授权，立即同步」改为立即查询一次 `oauth/poll`，仅 `authorized` 才完成绑定。
-- 新增 24 项工作台路由与画布测试（Mock HTTP，覆盖契约字段、幂等、白名单、相对路径联动与降级），总数 178 项；AstrBot 4.29.1 真实 `register_web_api`、Dashboard 路由匹配、`PluginPageService` 视图发现与 `terminate` 注销已端到端验证。
+- 试验台预置与离线回退数据的 `local_path` 改为相对文件名（`search_01.png`、`slot_0.wav` 等），在线点击「置入无限画布」不再被画布路径校验拒绝。
+- bridge 上抛的后端错误标记 `bridgeReported`，`oauth/start` 等调用失败时只提示一次，本地二维码渲染失败仍单独提示。
+- 新增 26 项工作台路由与画布测试（Mock HTTP，覆盖契约字段、幂等、白名单、相对路径联动、前端预置路径与降级），总数 179 项；AstrBot 4.29.1 真实 `register_web_api`、Dashboard 路由匹配、`PluginPageService` 视图发现与 `terminate` 注销已端到端验证。
 ## 0.6.0 - 2026-10-15
 
 - 对齐 mmx-cli 1.0.28：上游已公告关闭音乐生成并下线服务端接口，本版本彻底移除音乐生成与翻唱。

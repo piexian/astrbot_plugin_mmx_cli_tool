@@ -160,7 +160,10 @@ async function startOAuthStage2(): Promise<void> {
     oauthStage.value = 'authorizing';
     startOAuthTimers();
   } catch (err: any) {
-    pushToast(err?.message || '启动 OAuth 设备授权失败', 'warn');
+    // 后端错误已由 bridge 统一提示，仅本地二维码渲染失败需要另行说明
+    if (!err?.bridgeReported) {
+      pushToast(err?.message || '启动 OAuth 设备授权失败', 'warn');
+    }
   } finally {
     isStartingOAuth.value = false;
   }

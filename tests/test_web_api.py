@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import time
@@ -822,6 +823,61 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         web_request.reset(query={"path": item["local_path"]})
         temp_served = await self.call("tools/download-temp")
         self.assertEqual(Path(temp_served.path).name, item["local_path"])
+
+    async def test_playground_preset_paths_are_canvas_accepted(self):
+        """试验台预置/回退数据的 local_path 必须是画布可接受的相对文件名。"""
+        source = Path(__file__).resolve().parents[1] / "web/src/components/MediaPlayground.vue"
+        if not source.is_file():
+            self.skipTest(f"缺少前端源码: {source}")
+        presets = re.findall(r"local_path: '([^']+)'", source.read_text(encoding="utf-8"))
+        self.assertEqual(presets, ["search_01.png", "search_02.png", "search_03.png", "slot_0.wav"])
+
+        for name in presets:
+            with self.subTest(name=name):
+                web_request.reset(
+                    body={
+                        "sessionId": "sess_presets",
+                        "operation": {
+                            "schemaVersion": 1,
+                            "operationId": f"op_preset_{name}",
+                            "mutations": [
+                                {
+                                    "kind": "add_file",
+                                    "nodeId": f"node_{name.replace('.', '_')}",
+                                    "relativePath": name,
+                                    "layout": {
+                                        "x": 0,
+                                        "y": 0,
+                                        "width": 300,
+                                        "height": 200,
+                                        "zIndex": 1,
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                )
+                result = await self.call("canvas/mutate")
+                self.assertEqual(result["document"]["nodes"][-1]["file"]["relativePath"], name)
+
+        web_request.reset(
+            body={
+                "sessionId": "sess_presets",
+                "operation": {
+                    "schemaVersion": 1,
+                    "operationId": "op_absolute",
+                    "mutations": [
+                        {
+                            "kind": "add_file",
+                            "nodeId": "node_absolute",
+                            "relativePath": "/tmp/astrbot_mmx_media/search_01.png",
+                            "layout": {},
+                        }
+                    ],
+                },
+            }
+        )
+        self.assertEqual((await self.call("canvas/mutate")).status_code, 400)
 
     async def test_download_endpoints_only_serve_whitelisted_files(self):
         cache = self.plugin._cache_dir
