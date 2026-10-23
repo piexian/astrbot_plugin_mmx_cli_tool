@@ -20,6 +20,7 @@ from astrbot.core.message import components as Comp
 from astrbot.core.message.components import Record, Video
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
+from astrbot.api.util import SessionController, session_waiter
 from .mmx import MiniMaxClient
 from .mmx.plugin_service import MiniMaxService, ServiceError
 from .mmx.apis.image import ImageAPI
@@ -32,16 +33,23 @@ from .mmx.apis.transcription import SpeechToTextAPI, TranscriptionOptions
 from .mmx.transcription import TranscriptionService
 from .tools.transcription_tools import transcribe_event
 from .mmx.files import FileAPI
+from .mmx.matrix import MatrixAPI
+from .mmx.account import MiniMaxCodeAccount
+from .mmx.media_transfer import MatrixMediaClient, MediaTransferError
+from .mmx.oauth import OAuthClient, OAuthError, TokenStore
+from .mmx.web_api import EFFORT_LEVELS, MCodeWebAPI
 from .mmx.vision_input import extract_image_input, extract_image_inputs
 from .mmx.direct_command_args import (
     DirectCommandError,
     parse_file_command,
     parse_image_command,
+    parse_image_search_command,
+    parse_music_command,
     parse_speech_command,
     parse_transcription_command,
     parse_video_command,
 )
-from .mmx.errors import MiniMaxError, friendly_message
+from .mmx.errors import ErrorCategory, MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
 from .mmx.quota_usage import (
     format_quota_reset_time,
@@ -70,7 +78,22 @@ from .tools import (
     UploadFileTool,
     ListFilesTool,
     DeleteFileTool,
+    SearchImagesTool,
+    ImageReverseSearchTool,
+    GenerateMusicTool,
+    GenerateSoundEffectTool,
 )
+from .tools.image_reverse_tools import format_reverse_results
+from .tools.image_search_tools import search_and_download
+
+
+#: 刷新令牌被服务端明确拒绝的错误码（仅这些才清除本地登录态）
+_REFRESH_FATAL_CODES = {
+    "invalid_grant",
+    "invalid_token",
+    "access_denied",
+    "unauthorized_client",
+}
 
 
 def _clean_display_text(value: object, *, limit: int | None = None) -> str:
@@ -182,6 +205,7 @@ class Main(star.Star):
         super().__init__(context)
 
         # 读取配置
+        self._config = config
         raw_keys = config.get("api_key", [])
         keys: list[str] = (
             [str(k).strip() for k in raw_keys if str(k).strip()]
@@ -191,6 +215,8 @@ class Main(star.Star):
         region = str(config.get("region", "cn"))
         base_url_override = str(config.get("base_url", "")).strip() or None
         timeout = float(config.get("timeout", 300))
+        effort = str(config.get("thinking_effort", "default")).strip().lower()
+        self._thinking_effort = effort if effort in EFFORT_LEVELS else "default"
         self._video_poll_interval = int(config.get("video_poll_interval", 5))
         self._video_timeout = int(config.get("video_timeout", 600))
         self._default_image_model = str(config.get("default_image_model", "")).strip()
@@ -247,6 +273,35 @@ class Main(star.Star):
 
         self._client = MiniMaxClient(**client_kwargs)
 
+        # OAuth 账号登录与 Matrix MCP 底座（搜图/以图搜图/音乐音效）
+        self._region = region
+        self._static_keys = keys
+        self._oauth = OAuthClient()
+        self._token_store = TokenStore(self._plugin_data_dir / "auth.json")
+        self._matrix = MatrixAPI(
+            self._client, self._matrix_credentials, self._refresh_matrix_token
+        )
+        self._matrix_media = MatrixMediaClient(self._matrix)
+        self._login_sessions: set[str] = set()
+        self._refresh_lock = asyncio.Lock()
+
+        # MiniMax Code 账户（签到/积分/余量）与 LLM Provider
+        self._account = MiniMaxCodeAccount(
+            self._client, self._matrix_credentials, self._refresh_matrix_token
+        )
+        self._llm_provider = None
+        self._auto_signin_task: asyncio.Task | None = None
+        self._auto_signin_enabled = bool(config.get("auto_signin", False))
+        self._signin_claimed_day = ""
+        self._provider_source_warning = ""
+        # 以图搜图工具实例（LLM 与直接指令共用）
+        self._reverse_image_tool = ImageReverseSearchTool(
+            self._matrix,
+            self._matrix_media,
+            str(self._plugin_data_dir),
+            extra_allowed_dirs=self._extra_dirs,
+        )
+
         self._image = ImageAPI(self._client)
         self._video = VideoAPI(self._client)
         self._search = SearchAPI(self._client)
@@ -259,7 +314,9 @@ class Main(star.Star):
             str(self._plugin_data_dir),
             str(self._cache_dir),
             extra_allowed_dirs=self._extra_dirs,
-            default_model=str(config.get("default_transcription_model", "asr-1.0")).strip(),
+            default_model=str(
+                config.get("default_transcription_model", "asr-1.0")
+            ).strip(),
         )
 
         # 插件数据目录路径（字符串）
@@ -270,6 +327,7 @@ class Main(star.Star):
 
         self._service = MiniMaxService(self, configured=bool(keys))
         self._terminate_task: asyncio.Task | None = None
+        self._web_api: MCodeWebAPI | None = None
 
         # 注册 LLM 工具
         self._tools = [
@@ -308,6 +366,10 @@ class Main(star.Star):
             UploadFileTool(self._files, _data_dir, extra_allowed_dirs=_extra_dirs),
             ListFilesTool(self._files),
             DeleteFileTool(self._files),
+            SearchImagesTool(self._matrix, self._matrix_media, _cache_dir),
+            self._reverse_image_tool,
+            GenerateMusicTool(self._matrix, self._matrix_media, _cache_dir),
+            GenerateSoundEffectTool(self._matrix, self._matrix_media, _cache_dir),
         ]
         context.add_llm_tools(*self._tools)
 
@@ -318,29 +380,775 @@ class Main(star.Star):
 
     async def initialize(self) -> None:
         self._service._initialize()
+        self._web_api = MCodeWebAPI(self)
+        self._web_api.register()
+        try:
+            from .mmx import llm_provider as _llm_module
+
+            if _llm_module.register_provider_adapter_type():
+                logger.info(
+                    "[mmx] 供应商类型 minimax_code 已注册进 AstrBot 适配器表："
+                    "WebUI「模型供应商 → 添加供应商」的类型下拉可选 MiniMax Code"
+                )
+            else:
+                logger.warning(
+                    "[mmx] MiniMax Code 供应商类型注册未生效（当前 AstrBot 版本可能不支持）"
+                )
+        except Exception as e:
+            logger.warning(f"[mmx] MiniMax Code 供应商类型注册失败: {e}")
+        try:
+            from .mmx.llm_provider import set_token_source
+
+            set_token_source(self._provider_token, self._provider_refresh)
+        except Exception as e:
+            logger.warning(f"[mmx] LLM 运行时来源绑定失败: {e}")
+        await self._ensure_provider_source()
+        if self._provider_source_warning:
+            # 提供商源 ID 被外部配置占用：退回运行时直注册，保证会话下拉可用
+            self._register_llm_provider()
+        if self._auto_signin_enabled:
+            self._auto_signin_task = asyncio.create_task(self._auto_signin_loop())
 
     async def terminate(self) -> None:
+        if self._auto_signin_task is not None:
+            self._auto_signin_task.cancel()
+            self._auto_signin_task = None
+        self._unregister_llm_provider()  # 仅回退路径的运行时实例需要注销
+        try:
+            from .mmx import llm_provider as _llm_module
+
+            # 无论是否走过运行时直注册，都清理模块级令牌/模型来源绑定
+            _llm_module.clear_token_source()
+            _llm_module.unregister_provider_adapter_type()
+        except Exception:
+            pass
+        if self._web_api is not None:
+            await self._web_api.close()
         self._service._begin_close()
         if self._terminate_task is None:
+
             async def cleanup():
                 try:
                     await self._service._drain()
                 finally:
                     try:
-                        await self._client.close()
+                        try:
+                            await self._oauth.close()
+                            await self._matrix_media.close()
+                        finally:
+                            await self._client.close()
                     finally:
                         self._service._finish_close()
 
             self._terminate_task = asyncio.create_task(cleanup())
         await asyncio.shield(self._terminate_task)
 
+    async def _matrix_credentials(self) -> tuple[str, str]:
+        """Matrix 凭据 (region, token)：优先 OAuth Token（临期自动刷新），回退静态 API Key。
+
+        仅在刷新令牌被服务端明确拒绝时清除登录态；网络等临时故障保留 Token。
+        """
+        token = self._token_store.load()
+        if token and token.is_expired():
+            async with self._refresh_lock:
+                token = self._token_store.load()  # 双检：可能已被并发请求刷新
+                if token and token.is_expired():
+                    try:
+                        refreshed = await self._oauth.refresh(
+                            token.refresh_token, token.region
+                        )
+                    except OAuthError as e:
+                        if e.code in _REFRESH_FATAL_CODES:
+                            logger.warning(
+                                f"[mmx] 登录态已被服务端拒绝，清除本地 Token: {e}"
+                            )
+                            self._token_store.clear()
+                            token = None
+                        else:
+                            logger.warning(
+                                f"[mmx] OAuth Token 刷新失败（临时故障）: {e}"
+                            )
+                    else:
+                        self._token_store.save(refreshed)
+                        return refreshed.region, refreshed.access_token
+        if token and not token.is_expired():
+            return token.region, token.access_token
+        if self._static_keys:
+            return self._region, self._static_keys[0]
+        return self._region, ""
+
+    async def _refresh_matrix_token(self) -> tuple[str, str]:
+        """401/403 后强制刷新 OAuth Token（加锁，防止轮换时并发覆盖）。仅 OAuth 模式有效。"""
+        async with self._refresh_lock:
+            token = self._token_store.load()
+            if not token:
+                return self._region, ""
+            try:
+                refreshed = await self._oauth.refresh(token.refresh_token, token.region)
+            except OAuthError as e:
+                if e.code in _REFRESH_FATAL_CODES:
+                    self._token_store.clear()
+                logger.warning(f"[mmx] 强制刷新 Token 失败: {e}")
+                return self._region, ""
+            self._token_store.save(refreshed)
+            return refreshed.region, refreshed.access_token
+
+    def _provider_token(self) -> str:
+        """LLM Provider 当前访问令牌（每次请求读取，令牌轮换即时生效）。"""
+        token = self._token_store.load()
+        return token.access_token if token else ""
+
+    async def _provider_refresh(self) -> None:
+        """Provider 401 时的强制刷新钩子；失败抛 MiniMaxError 由调用方中止重试。"""
+        _, token = await self._refresh_matrix_token()
+        if not token:
+            raise MiniMaxError(ErrorCategory.AUTH, "登录凭据已失效，请重新 /mmx login")
+
+    def _register_llm_provider(self) -> bool:
+        """OAuth 登录态存在时注册 MiniMax Code LLM 供应商（幂等，可重复调用）。"""
+        if self._llm_provider is not None:
+            return True
+        token = self._token_store.load()
+        if not token:
+            return False
+        try:
+            from .mmx.llm_provider import (
+                PROVIDER_ID,
+                MiniMaxCodeProvider,
+                set_token_source,
+            )
+
+            set_token_source(self._provider_token, self._provider_refresh)
+        except Exception as e:
+            logger.warning(
+                f"[mmx] AstrBot 供应商 API 不可用，跳过 LLM Provider 注册: {e}"
+            )
+            return False
+        provider = MiniMaxCodeProvider(
+            region=token.region,
+            token_getter=self._provider_token,
+            auth_refresher=self._provider_refresh,
+        )
+        self._llm_provider = provider
+        try:
+            manager = self.context.provider_manager
+            # 卸载旧实例（插件重载场景），避免同 id 重复注册
+            manager.provider_insts[:] = [
+                p
+                for p in manager.provider_insts
+                if getattr(p, "provider_config", {}).get("id") != PROVIDER_ID
+            ]
+            manager.provider_insts.append(provider)
+            manager.inst_map[PROVIDER_ID] = provider
+        except Exception as e:
+            logger.warning(f"[mmx] LLM Provider 注册失败: {e}")
+            self._llm_provider = None
+            return False
+        logger.info(
+            f"[mmx] MiniMax Code LLM Provider 已注册（{PROVIDER_ID}），"
+            "请在 WebUI 会话/Agent 设置中选择该供应商"
+        )
+        return True
+
+    def _unregister_llm_provider(self) -> None:
+        if self._llm_provider is None:
+            return
+        try:
+            from .mmx.llm_provider import PROVIDER_ID, clear_token_source
+
+            manager = self.context.provider_manager
+            manager.provider_insts[:] = [
+                p for p in manager.provider_insts if p is not self._llm_provider
+            ]
+            manager.inst_map.pop(PROVIDER_ID, None)
+            clear_token_source()
+        except Exception:
+            pass
+
+        self._llm_provider = None
+
+    async def _ensure_provider_source(self) -> None:
+        """把 mmx_minimax_code 提供商源与默认模型条目写入 AstrBot 配置。
+
+        源 ID 被外部配置占用时不改写并记录告警（工作台弹提示）；
+        模型条目只补缺，用户自定义或修改过的条目保持原样。
+        """
+        try:
+            from .mmx.llm_provider import (
+                API_BASE_PLACEHOLDER,
+                API_KEY_NOTICE,
+                DEFAULT_CONTEXT_TOKENS,
+                DEFAULT_MODELS,
+                MANAGED_BY,
+                PROVIDER_SOURCE_ID,
+                PROVIDER_TYPE,
+            )
+        except ImportError:
+            # AstrBot 供应商 API 不可用的环境（离线测试桩）直接跳过
+            return
+
+        self._provider_source_warning = ""
+        try:
+            config = self.context.get_config()
+            manager = self.context.provider_manager
+        except Exception as e:
+            logger.warning(f"[mmx] 读取 AstrBot 供应商配置失败，跳过提供商源注册: {e}")
+            return
+
+        sources = config.setdefault("provider_sources", [])
+        if manager.provider_sources_config is not sources:
+            manager.provider_sources_config = sources
+
+        token = self._token_store.load()
+        region = token.region if token else "cn"
+        existing = next(
+            (
+                s
+                for s in sources
+                if isinstance(s, dict) and s.get("id") == PROVIDER_SOURCE_ID
+            ),
+            None,
+        )
+        if existing is not None and existing.get("managed_by") != MANAGED_BY:
+            self._provider_source_warning = (
+                f"提供商源 ID {PROVIDER_SOURCE_ID} 已被其他配置占用，"
+                "插件未写入 MiniMax Code 源；请处理重名后重载插件。"
+            )
+            logger.warning(f"[mmx] {self._provider_source_warning}")
+            return
+
+        dirty = False
+        region_changed = False
+        if existing is None:
+            sources.append(
+                {
+                    "id": PROVIDER_SOURCE_ID,
+                    "type": PROVIDER_TYPE,
+                    "provider_type": "chat_completion",
+                    "provider": "minimax",
+                    "enable": True,
+                    "key": [API_KEY_NOTICE],
+                    "api_base": API_BASE_PLACEHOLDER,
+                    "timeout": 120,
+                    "proxy": "",
+                    "custom_headers": {},
+                    "region": region,
+                    "managed_by": MANAGED_BY,
+                }
+            )
+            dirty = True
+            logger.info(
+                "[mmx] 已写入提供商源 mmx_minimax_code（模型供应商页可见，可添加自定义模型）"
+            )
+        elif existing.get("region") != region:
+            existing["region"] = region
+            dirty = True
+            region_changed = True
+
+        providers = config.setdefault("provider", [])
+        for model in DEFAULT_MODELS:
+            entry_id = f"{PROVIDER_SOURCE_ID}/{model}"
+            if any(isinstance(p, dict) and p.get("id") == entry_id for p in providers):
+                continue
+            providers.append(
+                {
+                    "id": entry_id,
+                    "enable": True,
+                    "provider_source_id": PROVIDER_SOURCE_ID,
+                    "model": model,
+                    "modalities": ["text", "tool_use"],
+                    "custom_extra_body": {},
+                    "max_context_tokens": DEFAULT_CONTEXT_TOKENS,
+                }
+            )
+            dirty = True
+
+        if dirty:
+            try:
+                await config.save_config_async()
+            except Exception as e:
+                logger.warning(f"[mmx] 提供商源配置落盘失败（重启后仍会生效）: {e}")
+
+        # 仅当 AstrBot 已完成原生供应商初始化（配置中已有条目加载进 inst_map）
+        # 才即时补齐/重载；冷启动交给原生 initialize，避免同一模型被加载两次。
+        native_loaded = any(
+            isinstance(p, dict) and p.get("id") in manager.inst_map for p in providers
+        )
+        if not native_loaded:
+            return
+        for model in DEFAULT_MODELS:
+            entry_id = f"{PROVIDER_SOURCE_ID}/{model}"
+            entry = next(
+                (
+                    p
+                    for p in providers
+                    if isinstance(p, dict) and p.get("id") == entry_id
+                ),
+                None,
+            )
+            if entry is None or not entry.get("enable", True):
+                continue
+            if entry_id in manager.inst_map and not region_changed:
+                # 已加载且区域未变：无需重复实例化
+                continue
+            try:
+                manager.provider_insts[:] = [
+                    p
+                    for p in manager.provider_insts
+                    if getattr(p, "provider_config", {}).get("id") != entry_id
+                ]
+                manager.inst_map.pop(entry_id, None)
+                await manager.load_provider(dict(entry))
+            except Exception as e:
+                logger.warning(f"[mmx] 模型 {model} 即时加载失败（重启后生效）: {e}")
+
+    async def _auto_signin_loop(self) -> None:
+        """自动签到：启动即巡检一次，此后每 30 分钟一次；上游按天幂等，本地仅省调用。"""
+        logger.info("[mmx] 自动签到已开启（每 30 分钟巡检）")
+        while True:
+            try:
+                await self._auto_signin_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[mmx] 自动签到任务异常: {e}")
+            await asyncio.sleep(30 * 60)
+
+    async def _auto_signin_once(self) -> None:
+        today = _time.strftime("%Y-%m-%d")
+        if self._signin_claimed_day == today:
+            return
+        if not self._token_store.load():
+            return
+        try:
+            result = await self._account.signin_claim()
+        except MiniMaxError as e:
+            logger.warning(f"[mmx] 自动签到失败: {e}")
+            return
+        self._signin_claimed_day = today
+        logger.info(
+            f"[mmx] 自动签到完成：第 {result.get('day_no')} 天，积分 {result.get('points')}"
+        )
+
+    @staticmethod
+    def _matrix_error_text(exc: MiniMaxError) -> str:
+        """AUTH 错误保留 /mmx login 指引，其余走友好文案。"""
+        if exc.category is ErrorCategory.AUTH:
+            return str(exc)
+        return friendly_message(exc)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @mmx_group.command("login")
+    async def mmx_login(self, event: AstrMessageEvent):
+        """登录 MiniMax 账号（OAuth 设备授权），解锁搜图/以图搜图/音乐音效。"""
+        session_key = getattr(event, "unified_msg_origin", "") or event.message_str
+        if session_key in self._login_sessions:
+            yield event.plain_result(
+                "当前会话已有进行中的登录流程，请先完成或等待超时。"
+            )
+            return
+        self._login_sessions.add(session_key)
+        try:
+            async for result in self._run_login_flow(event):
+                yield result
+        finally:
+            self._login_sessions.discard(session_key)
+
+    async def _run_login_flow(self, event: AstrMessageEvent):
+        """两阶段登录：1) 会话内选择区域；2) 设备授权 + 自动轮询绑定。"""
+        yield event.plain_result(
+            "请选择 MiniMax 账号服务区域：\n"
+            "1. 国内站 (cn) - https://account.minimax.cn\n"
+            "2. 国际站 (global) - https://account.minimax.io\n"
+            "输入 1 或 2 继续，输入 c 取消。（60 秒内有效）"
+        )
+        choice: dict[str, str] = {}
+        initiator_id = event.get_sender_id()
+
+        @session_waiter(timeout=60)
+        async def region_waiter(controller: SessionController, ev: AstrMessageEvent):
+            if ev.get_sender_id() != initiator_id:
+                controller.keep(60, reset_timeout=False)  # 群聊中忽略非发起人的回复
+                return
+            text = ev.message_str.strip().lower()
+            if text in {"1", "cn", "国内", "国内站"}:
+                choice["region"] = "cn"
+            elif text in {"2", "global", "en", "国际", "国际站", "海外"}:
+                choice["region"] = "global"
+            elif text in {"c", "cancel", "取消"}:
+                choice["region"] = ""
+            else:
+                await ev.send(ev.plain_result("输入无效，请输入 1、2 或 c。"))
+                controller.keep(60, reset_timeout=True)
+                return
+            controller.stop()
+
+        try:
+            await region_waiter(event)
+        except TimeoutError:
+            yield event.plain_result("登录已超时取消。")
+            return
+        region = choice.get("region")
+        if region is None:
+            yield event.plain_result("登录流程已结束。")
+            return
+        if not region:
+            yield event.plain_result("已取消登录。")
+            return
+
+        try:
+            auth_info = await self._oauth.start_device_authorization(region)
+        except OAuthError as e:
+            yield event.plain_result(f"发起设备授权失败: {e}")
+            return
+        yield event.plain_result(
+            "🔗 请打开链接完成 MiniMax 账号授权：\n"
+            f"{auth_info.verification_uri_complete}\n"
+            f"🔑 验证码：{auth_info.user_code}\n"
+            f"⏳ 有效期：{max(1, auth_info.expires_in // 60)} 分钟\n"
+            "授权完成后，Bot 将自动完成登录绑定。"
+        )
+        try:
+            token = await self._oauth.poll_device_token(auth_info, region, max_wait=600)
+        except OAuthError as e:
+            if e.code == "access_denied":
+                yield event.plain_result("❌ 授权已被拒绝。")
+            elif e.code == "expired_token":
+                yield event.plain_result("⏰ 授权已超时，请重新发起 /mmx login。")
+            else:
+                yield event.plain_result(f"登录失败: {e}")
+            return
+        self._token_store.save(token)
+        from .mmx.llm_provider import DEFAULT_MODELS
+
+        await self._ensure_provider_source()
+        if self._provider_source_warning:
+            self._register_llm_provider()
+        extra = (
+            "\n已在「模型供应商」页注册提供商源 mmx_minimax_code"
+            f"（默认模型 {' / '.join(DEFAULT_MODELS)}，可继续添加自定义模型），"
+            "会话或 Agent 设置选择后对话走 MiniMax Code 官方通道（可用签到积分）。"
+            if not self._provider_source_warning
+            else "\n提供商源 ID mmx_minimax_code 已被其他配置占用，已回退为运行时注册，"
+            "会话/Agent 设置中仍可直接选择 mmx_minimax_code。"
+        )
+        yield event.plain_result(
+            f"✅ MiniMax 账号登录成功（{'国内站' if region == 'cn' else '国际站'}）！\n"
+            "已解锁搜图、以图搜图、AI 音乐与音效生成能力。" + extra
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @mmx_group.command("logout")
+    async def mmx_logout(self, event: AstrMessageEvent):
+        """退出 MiniMax 账号登录并清除本地 Token。"""
+        token = self._token_store.load()
+        if not token:
+            yield event.plain_result("当前未登录 MiniMax 账号。")
+            return
+        await self._oauth.revoke(token.refresh_token, token.region)
+        self._token_store.clear()
+        self._unregister_llm_provider()
+        yield event.plain_result(
+            "已退出 MiniMax 账号登录。\n"
+            "若默认聊天模型为 mmx_minimax_code，请在 WebUI 切换其他供应商，"
+            "否则对话会因未登录而失败。"
+        )
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @mmx_group.command("signin")
+    async def mmx_signin(self, event: AstrMessageEvent):
+        """领取今日 MiniMax Code 签到积分（按天幂等，重复领取不叠加）。"""
+        if not self._token_store.load():
+            yield event.plain_result(
+                "签到需要已登录的 MiniMax 账号，请管理员先发送 /mmx login 完成绑定。"
+            )
+            return
+        try:
+            result = await self._account.signin_claim()
+        except MiniMaxError as e:
+            yield event.plain_result(f"签到失败：{self._matrix_error_text(e)}")
+            return
+        lines = [
+            f"✅ 签到成功（第 {result.get('day_no')} 天），积分 +{result.get('points')}。"
+        ]
+        try:
+            status = await self._account.signin_status()
+            days = status.get("days")
+            if isinstance(days, list) and days:
+                lines.append(
+                    f"签到周期共 {len(days)} 天，可用 /mmx usage 查看积分详情。"
+                )
+        except MiniMaxError:
+            pass
+        yield event.plain_result("\n".join(lines))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @mmx_group.command("usage")
+    async def mmx_usage(self, event: AstrMessageEvent):
+        """查询 MiniMax Code 账号积分与套餐余量（需已登录）。"""
+        if not self._token_store.load():
+            yield event.plain_result(
+                "用量查询需要已登录的 MiniMax 账号，请管理员先发送 /mmx login 完成绑定。"
+            )
+            return
+        lines: list[str] = []
+        identity = None
+        try:
+            identity = await self._account.identity()
+            lines.append(
+                f"账号：{identity.user_name or identity.real_user_id}"
+                f"（{identity.email or '邮箱未公开'}）"
+            )
+        except MiniMaxError as e:
+            lines.append(f"账号信息获取失败：{self._matrix_error_text(e)}")
+
+        fallback_text = "未知"
+        try:
+            pool = await self._account.credit_pool()
+            fallback = pool.get("token_plan_credit_fallback_enabled")
+            if fallback is not None:
+                fallback_text = "已开启" if fallback else "未开启"
+        except MiniMaxError as e:
+            fallback_text = f"查询失败（{self._matrix_error_text(e)}）"
+        balance = identity.credit_balance if identity else ""
+        lines.append(f"积分余额：{balance or '未知'}（积分兜底：{fallback_text}）")
+
+        try:
+            details = await self._account.credit_details()
+            items = details.get("details")
+            if isinstance(items, list) and items:
+                remain_total = 0.0
+                for item in items[:3]:
+                    if not isinstance(item, dict):
+                        continue
+                    expire = item.get("expire_at_ms")
+                    expire_text = (
+                        _time.strftime("%Y-%m-%d", _time.localtime(expire / 1000))
+                        if isinstance(expire, (int, float))
+                        else "未标注"
+                    )
+                    lines.append(
+                        f"- 积分条目：剩余 {item.get('remaining_amount', '?')}"
+                        f" / {item.get('granted_amount', '?')}，到期 {expire_text}"
+                    )
+                for item in items:
+                    if isinstance(item, dict):
+                        try:
+                            remain_total += float(item.get("remaining_amount") or 0)
+                        except (TypeError, ValueError):
+                            pass
+                lines.append(f"积分明细：共 {len(items)} 条，剩余合计 {remain_total:g}")
+            else:
+                lines.append("积分明细：暂无条目")
+        except MiniMaxError as e:
+            lines.append(f"积分明细查询失败：{self._matrix_error_text(e)}")
+
+        try:
+            group_id = identity.group_id if identity else ""
+            remains = await self._account.remains(group_id)
+            models = remains.get("model_remains")
+            if isinstance(models, list) and models:
+                for model in models[:5]:
+                    if isinstance(model, dict):
+                        lines.append(
+                            f"- 套餐 {model.get('model_name', '?')}："
+                            f"剩余 {model.get('usage_count', '?')} 次"
+                        )
+            else:
+                lines.append("套餐余量：暂无数据")
+        except MiniMaxError as e:
+            lines.append(f"套餐余量查询失败：{self._matrix_error_text(e)}")
+
+        try:
+            status = await self._account.signin_status()
+            days = status.get("days")
+            if isinstance(days, list):
+                today = next(
+                    (d for d in days if isinstance(d, dict) and d.get("is_today")), None
+                )
+                tip = (
+                    f"今日第 {today.get('day_no')} 天（{today.get('points')} 积分）"
+                    if today
+                    else "今日暂无记录"
+                )
+                lines.append(f"签到：周期 {len(days)} 天，{tip}")
+        except MiniMaxError:
+            pass
+        yield event.plain_result("\n".join(lines))
+
+    @mmx_group.command("search-image")
+    async def mmx_search_image(self, event: AstrMessageEvent, *, query: str = ""):
+        """搜图并下载。用法: /mmx search-image <关键词> [--n 数量]"""
+        # AstrBot 按空格切分参数，query 只有第一个词；优先取消息原文尾部
+        parts = event.message_str.strip().split(maxsplit=2)
+        raw_args = (parts[2] if len(parts) > 2 else "").strip() or (query or "").strip()
+        if not raw_args:
+            yield event.plain_result("用法: /mmx search-image <关键词> [--n 数量]")
+            return
+        try:
+            args = parse_image_search_command(raw_args)
+        except DirectCommandError as e:
+            yield event.plain_result(str(e))
+            return
+        try:
+            resp = await search_and_download(
+                self._matrix,
+                self._matrix_media,
+                str(self._cache_dir),
+                args.query,
+                args.n,
+            )
+        except MiniMaxError as e:
+            yield event.plain_result(self._matrix_error_text(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] 搜图失败: {e}")
+            yield event.plain_result(f"搜图失败: {e}")
+            return
+        if not resp.get("ok"):
+            yield event.plain_result(resp.get("error") or "未找到相关图片。")
+            return
+        if resp.get("file_paths"):
+            for path in resp["file_paths"]:
+                yield event.image_result(path)
+            return
+        yield event.plain_result(
+            "图片下载失败，可直接访问：\n" + "\n".join(resp.get("image_urls", []))
+        )
+
+    @mmx_group.command("reverse-image")
+    async def mmx_reverse_image(self, event: AstrMessageEvent, *, image: str = ""):
+        """以图搜图。用法: /mmx reverse-image [图片URL]（可附带或引用图片）"""
+        # AstrBot 按空格切分参数，image 只有第一个词；优先取消息原文尾部
+        parts = event.message_str.strip().split(maxsplit=2)
+        image_input = (parts[2] if len(parts) > 2 else "").strip() or (
+            image or ""
+        ).strip()
+        trusted_local = False
+        if not image_input:
+            extracted, saw_image = await extract_image_input(
+                event.get_messages(),
+                image_type=Comp.Image,
+                reply_type=Comp.Reply,
+                event=event,
+            )
+            if not extracted:
+                if saw_image:
+                    yield event.plain_result(
+                        "检测到了图片，但当前无法在本地解析。请直接发送图片或提供图片 URL 后重试。"
+                    )
+                else:
+                    yield event.plain_result(
+                        "请附带/引用一张图片，或提供图片 URL：/mmx reverse-image <图片URL>"
+                    )
+                return
+            image_input = extracted
+            trusted_local = True  # 聊天图片已落盘 AstrBot 临时目录，属可信来源
+        try:
+            image_url = await self._reverse_image_tool.resolve_image_url(
+                image_input, trusted_local=trusted_local
+            )
+            items = await self._matrix.image_reverse_search(image_url)
+        except MediaTransferError as e:
+            yield event.plain_result(str(e))
+            return
+        except MiniMaxError as e:
+            yield event.plain_result(self._matrix_error_text(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] 以图搜图失败: {e}")
+            yield event.plain_result(f"以图搜图失败: {e}")
+            return
+        if not items:
+            yield event.plain_result("未找到相似图片或出处。")
+            return
+        yield event.plain_result(format_reverse_results(items))
+
+    @mmx_group.command("music")
+    async def mmx_music(self, event: AstrMessageEvent, *, prompt: str = ""):
+        """AI 音乐生成。用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]"""
+        # AstrBot 按空格切分参数，prompt 只有第一个词；优先取消息原文尾部
+        parts = event.message_str.strip().split(maxsplit=2)
+        raw_args = (parts[2] if len(parts) > 2 else "").strip() or (
+            prompt or ""
+        ).strip()
+        if not raw_args:
+            yield event.plain_result(
+                "用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]"
+            )
+            return
+        try:
+            args = parse_music_command(raw_args)
+        except DirectCommandError as e:
+            yield event.plain_result(str(e))
+            return
+        yield event.plain_result("🎵 音乐生成中（可能需要几分钟）...")
+        try:
+            item = await self._matrix.batch_text_to_music(
+                args.prompt, args.lyrics, args.audio_format
+            )
+        except MiniMaxError as e:
+            yield event.plain_result(self._matrix_error_text(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] 音乐生成失败: {e}")
+            yield event.plain_result(f"音乐生成失败: {e}")
+            return
+        async for result in self._deliver_audio(
+            event, item, f"mmx_music_{int(_time.time() * 1000)}.{args.audio_format}"
+        ):
+            yield result
+
+    @mmx_group.command("sfx")
+    async def mmx_sfx(self, event: AstrMessageEvent, *, prompt: str = ""):
+        """AI 音效生成。用法: /mmx sfx <音效描述>"""
+        # AstrBot 按空格切分参数，prompt 只有第一个词；优先取消息原文尾部
+        parts = event.message_str.strip().split(maxsplit=2)
+        text = (parts[2] if len(parts) > 2 else "").strip() or (prompt or "").strip()
+        if not text.strip():
+            yield event.plain_result("用法: /mmx sfx <音效描述>")
+            return
+        yield event.plain_result("🔊 音效生成中（可能需要几分钟）...")
+        try:
+            item = await self._matrix.batch_text_to_audio(text.strip())
+        except MiniMaxError as e:
+            yield event.plain_result(self._matrix_error_text(e))
+            return
+        except Exception as e:
+            logger.error(f"[mmx] 音效生成失败: {e}")
+            yield event.plain_result(f"音效生成失败: {e}")
+            return
+        async for result in self._deliver_audio(
+            event, item, f"mmx_sfx_{int(_time.time() * 1000)}.mp3"
+        ):
+            yield result
+
+    async def _deliver_audio(self, event: AstrMessageEvent, item: dict, filename: str):
+        """下载生成音频到临时目录并以语音组件发送，失败回退链接。"""
+        output_url = str(item.get("output_url") or "")
+        if not output_url:
+            yield event.plain_result("生成完成，但服务端未返回音频地址。")
+            return
+        dest = self._cache_dir / filename
+        try:
+            path = await self._matrix_media.download_to_file(
+                output_url, dest, allowed_dir=str(self._cache_dir)
+            )
+        except Exception as e:
+            logger.warning(f"[mmx] 音频下载失败: {e}")
+            yield event.plain_result(f"音频下载失败，可直接访问：\n{output_url}")
+            return
+        yield event.chain_result([Record(file=str(path))])
+
     async def _handle_speech_transcribe(self, event: AstrMessageEvent, raw_args: str):
         try:
             args = parse_transcription_command(raw_args)
             options = TranscriptionOptions(
                 model=args.model or self._transcription.default_model,
-                response_format=args.response_format, language=args.language,
-                timestamp_level=args.timestamp_level, stream=args.stream,
+                response_format=args.response_format,
+                language=args.language,
+                timestamp_level=args.timestamp_level,
+                stream=args.stream,
             )
             result = await transcribe_event(
                 self._transcription, event, options, file=args.file, out=args.out
@@ -353,7 +1161,9 @@ class Main(star.Star):
             return
         except Exception as exc:
             logger.warning(f"[mmx] 转写失败: {exc}")
-            yield event.plain_result("转写未完成或状态未确认，请勿自动重复提交计费请求。")
+            yield event.plain_result(
+                "转写未完成或状态未确认，请勿自动重复提交计费请求。"
+            )
             return
         if result.get("warning"):
             yield event.plain_result(result["warning"])
@@ -363,12 +1173,16 @@ class Main(star.Star):
             return
         data = result["data"]
         if isinstance(data, dict):
-            content = json.dumps(data, ensure_ascii=False) if args.response_format == "verbose_json" else data["text"]
+            content = (
+                json.dumps(data, ensure_ascii=False)
+                if args.response_format == "verbose_json"
+                else data["text"]
+            )
         else:
             content = data
         content = content or "未识别到语音。"
         for offset in range(0, len(content), 3500):
-            yield event.plain_result(content[offset:offset + 3500])
+            yield event.plain_result(content[offset : offset + 3500])
 
     @mmx_group.command("speech")
     async def mmx_speech(self, event: AstrMessageEvent, *, text: str = ""):
@@ -376,7 +1190,11 @@ class Main(star.Star):
         raw_args = text
         if not raw_args:
             parts = event.message_str.strip().split(maxsplit=2)
-            if len(parts) >= 2 and parts[0].lstrip("/") == "mmx" and parts[1] == "speech":
+            if (
+                len(parts) >= 2
+                and parts[0].lstrip("/") == "mmx"
+                and parts[1] == "speech"
+            ):
                 raw_args = parts[2] if len(parts) > 2 else ""
         parts = raw_args.strip().split(maxsplit=1)
         action = parts[0] if parts else ""
@@ -696,9 +1514,7 @@ class Main(star.Star):
             last_frame = (
                 await resolve_image(
                     last_frame_ref,
-                    data_dir=None
-                    if last_frame_trusted
-                    else str(self._plugin_data_dir),
+                    data_dir=None if last_frame_trusted else str(self._plugin_data_dir),
                     allow_trusted_local_path=last_frame_trusted,
                     extra_allowed_dirs=self._extra_dirs,
                 )
@@ -791,7 +1607,9 @@ class Main(star.Star):
                         else uuid.uuid4().hex
                     )
                     video_path = str(self._cache_dir / f"mmx_video_{safe_task_id}.mp4")
-                    saved = await self._video.download(fid, video_path, video_url=v2_url or None)
+                    saved = await self._video.download(
+                        fid, video_path, video_url=v2_url or None
+                    )
                     yield event.chain_result([Video(file=saved)])
                 except Exception as e:
                     logger.warning(f"[mmx] 视频下载失败: {e}")
@@ -926,7 +1744,9 @@ class Main(star.Star):
                     try:
                         page = int(parts[1])
                     except ValueError:
-                        yield event.plain_result("页码无效，请输入数字。如 /mmx quota page 2")
+                        yield event.plain_result(
+                            "页码无效，请输入数字。如 /mmx quota page 2"
+                        )
                         return
                 if page < 1:
                     yield event.plain_result("页码必须大于 0。")
@@ -988,7 +1808,10 @@ class Main(star.Star):
                 lines.append(f"Key [{ki + 1}] {masked}:")
             else:
                 lines.append(f"💰 Key [{ki + 1}] {masked} 额度:")
-            if isinstance(raw_result, dict) and raw_result.get("kind") == "account_balance":
+            if (
+                isinstance(raw_result, dict)
+                and raw_result.get("kind") == "account_balance"
+            ):
                 lines.extend(_format_account_balance(raw_result))
             elif not model_remains:
                 lines.append("查询失败或无额度信息。")

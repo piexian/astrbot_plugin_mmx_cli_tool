@@ -477,3 +477,54 @@ def _file_usage() -> str:
         "/mmx file list\n"
         "/mmx file delete --file-id <id>"
     )
+
+
+@dataclass(frozen=True)
+class ImageSearchCommandArgs:
+    query: str
+    n: int = 3
+
+
+@dataclass(frozen=True)
+class MusicCommandArgs:
+    prompt: str
+    lyrics: str | None = None
+    audio_format: str = "mp3"
+
+
+def parse_image_search_command(raw: str) -> ImageSearchCommandArgs:
+    values, positional = _parse_cli_args(
+        raw,
+        bool_flags={},
+        value_flags={"--n": "n"},
+        unsupported={},
+        usage="用法: /mmx search-image <关键词> [--n 数量]",
+    )
+    query = " ".join(positional).strip()
+    if not query:
+        raise DirectCommandError("用法: /mmx search-image <关键词> [--n 数量]")
+    _coerce_ints(values, ("n",))
+    args = ImageSearchCommandArgs(query=query, **values)
+    if args.n < 1 or args.n > 5:
+        raise DirectCommandError("--n 必须在 1 到 5 之间")
+    return args
+
+
+def parse_music_command(raw: str) -> MusicCommandArgs:
+    values, positional = _parse_cli_args(
+        raw,
+        bool_flags={},
+        value_flags={
+            "--lyrics": "lyrics",
+            "--format": "audio_format",
+        },
+        unsupported={},
+        usage="用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]",
+    )
+    prompt = " ".join(positional).strip()
+    if not prompt:
+        raise DirectCommandError("用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]")
+    args = MusicCommandArgs(prompt=prompt, **values)
+    if args.audio_format not in {"mp3", "wav"}:
+        raise DirectCommandError("--format 只支持 mp3 或 wav")
+    return args

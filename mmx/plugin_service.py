@@ -22,11 +22,15 @@ from .video_business import validate_h3_subject, validate_video_mode
 
 FEATURES = (
     "image.generate",
+    "image.search",
+    "image.reverse_search",
     "video.generate",
     "video.tasks",
     "audio.synthesize",
     "audio.transcribe",
     "audio.voices",
+    "audio.music_generate",
+    "audio.sound_effect",
     "web.search",
     "image.describe",
     "file.upload",

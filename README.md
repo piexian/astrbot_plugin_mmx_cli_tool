@@ -1,25 +1,26 @@
 # MiniMax 多模态工具
 
-为 AstrBot 提供 MiniMax 图片、视频、语音合成与转写、联网搜索、视觉理解和额度查询能力。
+为 AstrBot 提供 MiniMax 图片、视频、语音合成与转写、联网搜索、搜图与以图搜图、AI 音乐音效、视觉理解和额度查询能力。
 
 > [!WARNING]
-> **音乐生成与翻唱已彻底移除。** MiniMax 已公告关闭音乐生成服务，mmx-cli 自 1.0.25 起移除全部音乐命令；本插件自 0.6.0 起同步移除 `mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get` 工具、`/mmx music` 指令及 `default_music_model`、`default_music_cover_model` 配置项。仍需音乐功能的用户请停留在 0.5.2。
-
+> **开放平台音乐生成与翻唱已彻底移除。** MiniMax 已公告关闭开放平台音乐生成服务，mmx-cli 自 1.0.25 起移除全部音乐命令；本插件自 0.6.0 起同步移除 `mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get` 工具及旧 `/mmx music` 指令。0.7.0 起提供的 `/mmx music`、`/mmx sfx` 是 MiniMax Agent 账号体系下的新接口，需先 `/mmx login` 授权，与已移除的开放平台接口无关。
 
 ## 环境要求
 
 | 依赖 | 版本要求 |
 |------|----------|
 | httpx | >= 0.27.0 |
+| AstrBot | >= 4.26.0（「MCode 工作台」视图需要；旧版本下插件仅保留聊天指令与 LLM 工具） |
 
 ## 功能
 
-- 13 个 LLM Tool，支持图片/视频/语音合成与转写/联网搜索/视觉理解/文件管理
+- 17 个 LLM Tool，支持图片/视频/语音合成与转写/联网搜索/搜图与以图搜图/AI 音乐音效/视觉理解/文件管理
 - `/mmx` 命令组，用户可直接通过指令快速调用
+- `/mmx login` 账号 OAuth 登录（设备授权），解锁搜图、以图搜图、AI 音乐音效等 Agent 账号能力，Token 自动刷新
 - 智能参数校验与纠偏机制，对 AI 友好
 - API 多 Key 轮询与额度查询
 - 生成的图片/视频优先下载到 AstrBot 临时目录，发送不依赖远程链接；下载失败才回退 URL
-
+- AstrBot 控制台内置「MCode 工作台」视图：状态与额度、扫码登录、无限画布批注、搜图/以图搜图/AI 音乐音效与终端事件流
 ## 安装
 
 **方式一**：在 AstrBot 插件市场搜索「MiniMax 多模态工具」，点击安装。
@@ -46,6 +47,12 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `mmx_web_search` | 联网搜索信息 | 无 |
 | `mmx_describe_image` | 分析/描述图片内容（视觉理解） | 无 |
 | `mmx_check_quota` | 查询 API 剩余额度 | 无 |
+| `mmx_search_images` | 搜图并下载：检索真实网络图片并保存到本地临时目录，返回本地路径 | 需登录¹ |
+| `mmx_image_reverse_search` | 以图搜图：查找图片来源与相似网页，返回 Top 3 出处卡片 | 需登录¹ |
+| `mmx_generate_music` | Agent 账号体系 AI 音乐生成（可带歌词，mp3/wav），音频下载后返回本地路径 | 需登录¹ |
+| `mmx_generate_sound_effect` | Agent 账号体系 AI 音效生成，音频下载后返回本地路径 | 需登录¹ |
+
+¹ 这四项走 MiniMax Agent Matrix 网关，优先使用 `/mmx login` 授权的账号 Token；未登录时回退静态 API Key，网关拒绝时会提示先登录。
 
 ## 使用
 
@@ -63,6 +70,14 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx vision <描述要求>         # 图片理解（支持当前消息带图或引用图片）
 /mmx quota                    # 查询额度（多 Key 默认每页显示 3 个）
 /mmx quota page <页码>        # 翻页查看 Key 额度
+/mmx login                     # 登录 MiniMax 账号（管理员，两阶段设备授权）
+/mmx logout                    # 退出账号登录（管理员）
+/mmx signin                   # 领取今日签到积分（管理员，需登录）
+/mmx usage                    # 查看积分/套餐余量/签到进度（管理员，需登录）
+/mmx search-image <关键词> [--n 数量]   # 搜图并下载
+/mmx reverse-image [图片URL]    # 以图搜图（可附带或引用图片）
+/mmx music <提示词> [--lyrics 歌词] [--format mp3]  # AI 音乐生成（需登录）
+/mmx sfx <音效描述>             # AI 音效生成（需登录）
 ```
 
 
@@ -149,6 +164,18 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 例如对 AI 说「帮我把这段话合成语音：你好」→ 自动调用 `mmx_speech_synthesize`。
 生成的图片/视频会先下载到 AstrBot 临时目录，工具结果返回 `file_paths`/`file_path` 本地路径，发送时优先使用本地路径而非远程链接（远程链接可能过期或无法被接收端下载）。
 
+### MiniMax Code 对话通道与签到
+
+插件会把 `minimax_code` 适配器类型与提供商源 `mmx_minimax_code` 写入 AstrBot：WebUI「模型供应商」页可见该源，默认提供 `MiniMax-M3.1-Flash` 与 `MiniMax-M3` 两个模型条目，可继续添加自定义模型（上下文窗口默认 512K，可按条目调整；「获取模型列表」按钮实时拉取云端公开目录 `/mavis/api/v1/models`，无需登录）；源的 API Base URL 与 API Key 为占位提醒，实际请求由插件按登录区域注入 OAuth 令牌（走 Claude Messages 协议直连 `agent.minimax.cn` / `agent.minimax.io`，消耗订阅额度与签到积分）。源 ID `mmx_minimax_code` 若被其他配置占用，插件跳过写入并在工作台弹出告警，同时回退为运行时注册供会话/Agent 直接选用。令牌到期或 401 时自动刷新并重试。卸载插件前请先在「模型供应商」页删除 `mmx_minimax_code` 源及其模型条目，否则 AstrBot 重启时会提示找不到 `minimax_code` 适配器。
+
+签到与用量：
+
+```
+/mmx signin    # 领取今日签到积分（管理员；按天幂等，重复领取不叠加）
+/mmx usage     # 查看积分余额、积分明细、套餐余量与签到进度（管理员）
+```
+
+配置项 `auto_signin`（默认关闭）开启后，插件每 30 分钟巡检一次并自动领取当日签到积分。
 
 ## 智能错误提示与参数规范
 
@@ -167,6 +194,26 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 `mmx_generate_image`、`mmx_generate_video`、`mmx_video_task_get`、`mmx_video_download`、`mmx_speech_synthesize`、`mmx_speech_voices`、`mmx_speech_transcribe`、`mmx_web_search`、`mmx_describe_image`、`mmx_file_upload`、`mmx_file_list`、`mmx_file_delete`、`mmx_check_quota`
 
 参数以各工具的实际声明为准（LLM 调用时自动可见），本文不再逐项展开。
+## MCode 工作台
+
+AstrBot 管理面板 → 插件 → 「MiniMax 多模态工具」→ 视图「MCode 工作台」，在控制台内直接使用本插件能力，页面在沙箱 iframe 中运行，不跳转外部站点。
+
+| 工作台面板 | 对接的后端能力 |
+|-----------|----------------|
+| 顶部状态栏（区域、凭据、模型、推理强度档位） | 插件运行状态与 OAuth Token 存储；档位写入插件配置 `thinking_effort` |
+| 额度侧栏 | Token Plan 双周期额度与账户余额，多 Key 汇总 |
+| 扫码登录 | OAuth 设备授权，与 `/mmx login` 共用同一份 `auth.json` |
+| 无限画布 | 画布文档落盘在 `data/plugin_data/astrbot_plugin_mmx_cli_tool/canvas/`；批注提交视觉理解模型 |
+| 媒体实验室 | 搜图、以图搜图、AI 音乐与音效（Matrix MCP），产物缓存到 AstrBot 临时目录 |
+| 终端事件流 | SSE 实时推送由工作台发起的后端调用（额度、登录、画布、搜图与音乐/音效等）的耗时与结果；聊天侧的 LLM 工具与指令调用不在其中 |
+
+- 视图路由沿用 AstrBot 控制台的登录鉴权，未登录无法调用。
+- 下载仅允许 AstrBot 临时目录内的文件（画布资产额外允许插件数据目录），拒绝绝对路径与 `..` 穿越；以图搜图的上传文件限定为图片扩展名，临时文件用后即删。
+- 搜图与音乐/音效返回的 `local_path` 是 AstrBot 临时目录内的文件名，可直接作为画布节点的路径引用，并被下载、画布批注与以图搜图复用。
+- 扫码登录面板的「我已完成授权，立即同步」会立刻查询一次授权结果，仅在后端确认完成后才绑定；仍在等待时提示先在浏览器或手机上确认。
+- 「团队方案（Team Plan）」看板始终是前端演示数据（卡片标有「演示数据」），本插件未提供对应后端接口，不会读写任何账号数据。
+- 演示内容仅在离线预览（页面未连上后端）时出现：终端示例日志与「+ 模拟实时事件」、画布「+ 新建规格便签」按钮、媒体实验室的示例搜图结果/溯源来源/音轨；连接后端后这些位置只显示真实结果。
+
 ## 安全设计
 
 - **API Key 脱敏**：错误日志中自动隐藏 API Key（仅显示前 4 后 4 字符）
@@ -200,6 +247,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 | `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
 | `default_speech_voice` | string | `English_expressive_narrator` | 默认语音合成音色（voice_id） |
 | `default_transcription_model` | string | `asr-1.0` | 默认语音转文字模型 |
+| `thinking_effort` | string | `default` | 工作台显示的推理强度档位（`default/low/medium/high/xhigh/max`），仅作偏好记录，不改变本插件的 MiniMax 请求参数 |
+| `auto_signin` | bool | `false` | MiniMax Code 账号每日自动签到（需登录）：每 30 分钟巡检并领取当日积分，上游按天幂等 |
 
 ## 项目结构
 
@@ -215,6 +264,9 @@ astrbot_plugin_mmx_cli_tool/
 ├── .astrbot-plugin/
 │   └── i18n/
 │       └── zh-CN.json               # 中文翻译
+├── views/
+│   └── mcode_dashboard/             # MCode 工作台视图构建产物（index.html + assets）
+├── web/                             # MCode 工作台视图源码（Vue 3 + Vite）
 ├── mmx/                             # MiniMax API 客户端层
 │   ├── __init__.py
 │   ├── client.py                    # MiniMax HTTP 客户端与鉴权
@@ -225,6 +277,8 @@ astrbot_plugin_mmx_cli_tool/
 │   ├── plugin_service.py            # 插件协作 SDK v1 门面
 │   ├── video_business.py            # 视频生成模式与参数前置校验
 │   ├── quota_usage.py               # 额度数据标准化与汇总
+│   ├── canvas_store.py              # 画布文档持久化与变更幂等应用
+│   ├── web_api.py                   # MCode 工作台 Web API 路由与 SSE 事件
 │   └── apis/                        # MiniMax API 领域封装
 │       ├── image.py                 # 图片生成 API
 │       ├── video.py                 # 视频生成与任务轮询 API

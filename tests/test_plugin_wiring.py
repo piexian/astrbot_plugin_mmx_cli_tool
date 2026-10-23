@@ -62,7 +62,7 @@ class PluginWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("12小时额度", summary["current_window"])
 
     async def test_transcription_registration_and_command_aliases(self):
-        self.assertEqual(13, len(self.registered))
+        self.assertEqual(17, len(self.registered))
         for action in ("transcribe", "recognize"):
             results = [r async for r in self.plugin.mmx_speech(Event(f"/mmx speech {action} --file audio.mp3"))]
             self.assertEqual(["转写结果"], results)

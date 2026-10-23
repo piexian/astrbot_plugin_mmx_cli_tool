@@ -126,3 +126,46 @@ def file_delete_endpoint(base: str) -> str:
 def file_retrieve_endpoint(base: str, file_id: str) -> str:
     """文件信息检索端点。"""
     return f"{base}/v1/files/retrieve?file_id={file_id}"
+
+
+# OAuth 账号服务区域 → 认证地址（RFC 8628 Device Authorization Grant）
+ACCOUNT_ORIGINS: dict[str, str] = {
+    "cn": "https://account.minimax.cn",
+    "global": "https://account.minimax.io",
+}
+
+# Matrix MCP 网关区域 → 基础地址
+MATRIX_BASES: dict[str, str] = {
+    "cn": "https://agent.minimax.cn",
+    "global": "https://agent.minimax.io",
+}
+
+OAUTH_CLIENT_ID = "mcode-public"
+OAUTH_SCOPE = "agent.default"
+OAUTH_AUDIENCE = "agent-backend"
+OAUTH_DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+
+def _account_origin(region: str) -> str:
+    return ACCOUNT_ORIGINS.get(region, ACCOUNT_ORIGINS["cn"])
+
+
+def oauth_device_code_endpoint(region: str) -> str:
+    """OAuth 设备码发起端点。"""
+    return f"{_account_origin(region)}/oauth2/device/code"
+
+
+def oauth_token_endpoint(region: str) -> str:
+    """OAuth Token 端点（设备码轮询与刷新）。"""
+    return f"{_account_origin(region)}/oauth2/token"
+
+
+def oauth_revoke_endpoint(region: str) -> str:
+    """OAuth Token 撤销端点。"""
+    return f"{_account_origin(region)}/oauth2/revoke"
+
+
+def matrix_mcp_endpoint(region: str, tool: str) -> str:
+    """Matrix MCP 工具端点（桌面网关 /mavis 前缀）。"""
+    base = MATRIX_BASES.get(region, MATRIX_BASES["cn"])
+    return f"{base}/mavis/api/v1/mcp/{tool}"
