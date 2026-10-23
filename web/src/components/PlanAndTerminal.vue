@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, type Ref } from 'vue';
 import type { TeamPlanState, TerminalLogEntry } from '../types/mcode';
 import { bridgeGet, bridgePost, pushToast, useBridge } from '../composables/useBridge';
 
-const { subscribeSSE, unsubscribeSSE } = useBridge();
+const { backendOnline, subscribeSSE, unsubscribeSSE } = useBridge();
 
 const plan = ref<TeamPlanState>({
   plan_id: 'plan_mcode_314_sync',
@@ -49,7 +49,8 @@ const plan = ref<TeamPlanState>({
   ],
 });
 
-const logs = ref<TerminalLogEntry[]>([
+// Sample entries for the offline preview only; never mixed into the live SSE list.
+const demoLogs = ref<TerminalLogEntry[]>([
   {
     id: 'log_1',
     ts_ms: Date.now() - 180000,
@@ -79,6 +80,9 @@ const logs = ref<TerminalLogEntry[]>([
   },
 ]);
 
+const liveLogs = ref<TerminalLogEntry[]>([]);
+const logs = computed(() => (backendOnline.value ? liveLogs.value : demoLogs.value));
+
 const logSourceFilter = ref<string>('all');
 let sseSubId: string | null = null;
 
@@ -103,28 +107,32 @@ async function handlePlanDecision(decision: 'approve' | 'reject'): Promise<void>
     plan.value.tasks = plan.value.tasks.map((t) =>
       t.status === 'pending' ? { ...t, status: 'in_progress' } : t,
     );
-    appendLog({
+    appendLog(demoLogs, {
       source: 'plan',
       level: 'ok',
       command: `TeamPlan.approve(${plan.value.plan_id})`,
       detail: 'Plan approved by operator -> dispatched pending tasks to active workers',
       latency_ms: 22,
     });
-    pushToast('已批准当前 M-Plan 方案并分发子任务', 'ok');
+    pushToast('已批准当前 M-Plan 方案并分发子任务（演示）', 'ok');
   } else {
-    pushToast('已标记方案需重新修订', 'info');
+    pushToast('已标记方案需重新修订（演示）', 'info');
   }
 }
 
-function appendLog(entry: Omit<TerminalLogEntry, 'id' | 'ts_ms'>): void {
-  logs.value = [
+function appendLog(target: Ref<TerminalLogEntry[]>, entry: Omit<TerminalLogEntry, 'id' | 'ts_ms'>): void {
+  target.value = [
     {
       id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       ts_ms: Date.now(),
       ...entry,
     },
-    ...logs.value.slice(0, 79),
+    ...target.value.slice(0, 79),
   ];
+}
+
+function clearLogs(): void {
+  (backendOnline.value ? liveLogs : demoLogs).value = [];
 }
 
 function simulateLiveEvent(): void {
@@ -151,8 +159,8 @@ function simulateLiveEvent(): void {
       latency_ms: 48,
     },
   ];
-  const pick = samples[logs.value.length % samples.length];
-  appendLog(pick);
+  const pick = samples[demoLogs.value.length % samples.length];
+  appendLog(demoLogs, pick);
 }
 
 onMounted(async () => {
@@ -165,7 +173,7 @@ onMounted(async () => {
     const id = await subscribeSSE?.('events', {
       onMessage(evt) {
         if (evt.parsed && typeof evt.parsed === 'object' && evt.parsed.command) {
-          appendLog({
+          appendLog(liveLogs, {
             source: evt.parsed.source || 'matrix_mcp',
             level: evt.parsed.level || 'info',
             command: evt.parsed.command,
@@ -195,7 +203,10 @@ onUnmounted(() => {
       <div class="plan-review-card">
         <div class="plan-top-bar">
           <div>
-            <div class="plan-eyebrow mono-num">TEAM PLAN · {{ plan.plan_id }}</div>
+            <div class="plan-eyebrow-row">
+              <div class="plan-eyebrow mono-num">TEAM PLAN · {{ plan.plan_id }}</div>
+              <span class="pill-badge warn" title="插件暂无 Team Plan 后端，此卡片始终为演示内容">演示数据</span>
+            </div>
             <h2 class="serif-heading plan-heading">{{ plan.title }}</h2>
           </div>
           <div class="plan-actions">
@@ -277,10 +288,10 @@ onUnmounted(() => {
             <option value="plan">Team Plan</option>
             <option value="llm">LLM M3.1</option>
           </select>
-          <button type="button" class="term-btn" @click="simulateLiveEvent">
+          <button v-if="!backendOnline" type="button" class="term-btn" @click="simulateLiveEvent">
             + 模拟实时事件
           </button>
-          <button type="button" class="term-btn" @click="logs = []">清空</button>
+          <button type="button" class="term-btn" @click="clearLogs">清空</button>
         </div>
       </div>
 
@@ -296,7 +307,13 @@ onUnmounted(() => {
           <span v-if="item.latency_ms !== undefined" class="term-latency">{{ item.latency_ms }}ms</span>
           <div class="term-detail">{{ item.detail }}</div>
         </div>
-        <div v-if="!logs.length" class="term-empty">等待后端 SSE 推送实时运行日志...</div>
+        <div v-if="!logs.length" class="term-empty">
+          {{
+            backendOnline
+              ? '暂无运行事件：在工作台发起搜图、画布分析等操作后，将在此实时显示'
+              : '离线预览：暂无日志，可点击「+ 模拟实时事件」生成示例'
+          }}
+        </div>
       </div>
     </section>
   </div>
@@ -327,6 +344,12 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.plan-eyebrow-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .plan-eyebrow {

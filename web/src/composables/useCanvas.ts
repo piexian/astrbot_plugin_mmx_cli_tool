@@ -3,6 +3,7 @@ import type {
   CanvasDocumentV1,
   CanvasFileNodeV1,
   CanvasImageAnnotationV1,
+  CanvasIterateResponse,
   CanvasLayoutV1,
   CanvasMutationV1,
   CanvasOperationV1,
@@ -291,11 +292,11 @@ export function useCanvas() {
     pushToast('已从画布移除节点', 'info');
   }
 
-  async function submitIterationToAgent(extraInstruction = ''): Promise<{ submitted: number; prompt_preview: string }> {
+  async function submitIterationToAgent(extraInstruction = ''): Promise<CanvasIterateResponse> {
     const annotatedNodes = documentState.value.nodes.filter((n) => n.annotations.length > 0);
     if (annotatedNodes.length === 0) {
       pushToast('请先在图片节点上框选区域并添加批注', 'warn');
-      return { submitted: 0, prompt_preview: '' };
+      return { ok: false, submitted: 0, prompt_preview: '', skipped: 0, results: [] };
     }
     isSubmittingIteration.value = true;
     try {
@@ -312,7 +313,7 @@ export function useCanvas() {
         })),
       };
 
-      const res = await bridgePost<{ ok: boolean; submitted: number; prompt_preview: string }>(
+      const res = await bridgePost<CanvasIterateResponse>(
         'canvas/iterate',
         payload,
         () => {
@@ -322,14 +323,27 @@ export function useCanvas() {
                 `[${n.file.fileName} #${a.number} (${a.action}) rect=(${a.normalizedRect.x},${a.normalizedRect.y},${a.normalizedRect.width},${a.normalizedRect.height})]: ${a.comment}`,
             ),
           );
+          // Offline demo: no vision model is called, so no analysis text is fabricated.
           return {
             ok: true,
-            submitted: lines.length,
+            submitted: 0,
             prompt_preview: lines.join(' | '),
+            skipped: 0,
+            results: [],
           };
         },
       );
-      pushToast(`已提交 ${res.submitted} 条画布批注至 MCode Agent 迭代队列`, 'ok');
+      const failed = res.results.filter((item) => !item.ok).length;
+      if (res.results.length === 0) {
+        pushToast('当前为离线演示模式，未调用视觉模型进行批注分析', 'info');
+      } else {
+        const failedNote = failed > 0 ? `，${failed} 个失败` : '';
+        const skippedNote = res.skipped > 0 ? `，${res.skipped} 个未提交` : '';
+        pushToast(
+          `已完成 ${res.submitted} 个节点的批注分析${failedNote}${skippedNote}`,
+          failed > 0 ? 'warn' : 'ok',
+        );
+      }
       return res;
     } finally {
       isSubmittingIteration.value = false;

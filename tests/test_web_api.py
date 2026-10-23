@@ -16,6 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from support import UploadFile, WebApiContext, plugin_modules, web_request
 
+from astrbot_plugin_mmx_cli_tool.mmx.canvas_store import (
+    MAX_APPLIED_OPERATIONS,
+    CanvasStoreError,
+)
 from astrbot_plugin_mmx_cli_tool.mmx.errors import ErrorCategory, MiniMaxError
 from astrbot_plugin_mmx_cli_tool.mmx.oauth import (
     DeviceAuthInfo,
@@ -74,6 +78,13 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def call(self, endpoint: str):
         return await self.context.handler(f"{PREFIX}/{endpoint}")()
+
+    def touch_cache(self, relative: str) -> Path:
+        """在临时目录创建画布可引用的资产文件（add_file 要求文件真实存在）。"""
+        path = self.plugin._cache_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"png")
+        return path
 
     # ------------------------------------------------------------------ 注册与生命周期
 
@@ -267,6 +278,7 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
     # ------------------------------------------------------------------ 画布
 
     async def test_canvas_document_round_trip_is_idempotent(self):
+        self.touch_cache(".mavis/canvas/assets/a.png")
         web_request.reset(query={"session_id": "sess_1"})
         empty = await self.call("canvas/doc")
         self.assertEqual(empty["schemaVersion"], 1)
@@ -459,12 +471,122 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
             result["prompt_preview"],
         )
         self.assertEqual(result["results"][0]["text"], "建议降低边框对比度")
+        self.assertEqual(result["results"][0]["file_name"], "a.png")
+        self.assertEqual(result["skipped"], 0)
         kwargs = described.call_args.kwargs
         self.assertEqual(kwargs["image"], "a.png")
         self.assertEqual(kwargs["data_dir"], str(self.plugin._plugin_data_dir))
         self.assertIn("保持暖色调", kwargs["prompt"])
 
+    @staticmethod
+    def _iterate_node(node_id, file_name, comment=None):
+        annotations = []
+        if comment:
+            annotations.append(
+                {
+                    "id": f"ann_{node_id}",
+                    "number": 1,
+                    "normalizedRect": {"x": 0.1, "y": 0.2, "width": 0.3, "height": 0.4},
+                    "comment": comment,
+                    "action": "comment",
+                }
+            )
+        return {
+            "node_id": node_id,
+            "relative_path": file_name,
+            "file_name": file_name,
+            "annotations": annotations,
+        }
+
+    async def test_canvas_iterate_builds_prompt_per_node(self):
+        described = AsyncMock(side_effect=[{"content": "结果 A"}, {"content": "结果 B"}])
+        self.plugin._vision.describe = described
+        web_request.reset(
+            body={
+                "instruction": "保持暖色调",
+                "nodes": [
+                    self._iterate_node("node_a", "a.png", "A 图过曝"),
+                    self._iterate_node("node_b", "b.png", "B 图偏色"),
+                ],
+            }
+        )
+        result = await self.call("canvas/iterate")
+        self.assertEqual(described.await_count, 2)
+        by_image = {
+            call.kwargs["image"]: call.kwargs["prompt"]
+            for call in described.call_args_list
+        }
+        self.assertIn("A 图过曝", by_image["a.png"])
+        self.assertNotIn("B 图偏色", by_image["a.png"])
+        self.assertIn("B 图偏色", by_image["b.png"])
+        self.assertNotIn("A 图过曝", by_image["b.png"])
+        for prompt in by_image.values():
+            self.assertTrue(prompt.startswith("保持暖色调\n\n以下是画布上的图片批注"))
+        self.assertEqual(result["submitted"], 2)
+        self.assertEqual(result["skipped"], 0)
+        self.assertEqual(
+            [(item["node_id"], item["file_name"]) for item in result["results"]],
+            [("node_a", "a.png"), ("node_b", "b.png")],
+        )
+        self.assertEqual(
+            result["prompt_preview"], "\n\n".join(by_image[name] for name in ("a.png", "b.png"))
+        )
+
+    async def test_canvas_iterate_skips_nodes_without_annotations(self):
+        described = AsyncMock(return_value={"content": "结果"})
+        self.plugin._vision.describe = described
+        web_request.reset(
+            body={
+                "nodes": [
+                    self._iterate_node("node_a", "a.png", "A 图过曝"),
+                    self._iterate_node("node_empty", "empty.png"),
+                ]
+            }
+        )
+        result = await self.call("canvas/iterate")
+        described.assert_awaited_once()
+        self.assertEqual(described.call_args.kwargs["image"], "a.png")
+        self.assertEqual([item["node_id"] for item in result["results"]], ["node_a"])
+        self.assertEqual(result["submitted"], 1)
+        self.assertEqual(result["skipped"], 1)
+
+    async def test_canvas_iterate_skipped_counts_nodes_over_limit(self):
+        described = AsyncMock(return_value={"content": "结果"})
+        self.plugin._vision.describe = described
+        limit = sys.modules[type(self.web).__module__].MAX_ITERATE_NODES
+        # 第 1 个节点无批注，超出上限的 2 个节点不会被提交
+        nodes = [self._iterate_node("node_0", "0.png")] + [
+            self._iterate_node(f"node_{index}", f"{index}.png", f"批注 {index}")
+            for index in range(1, limit + 2)
+        ]
+        web_request.reset(body={"nodes": nodes})
+        result = await self.call("canvas/iterate")
+        self.assertEqual(described.await_count, limit - 1)
+        self.assertEqual(result["submitted"], limit - 1)
+        self.assertEqual(result["skipped"], len(nodes) - (limit - 1))
+
+    async def test_canvas_iterate_reports_failed_node_with_file_name(self):
+        described = AsyncMock(side_effect=[{"content": "结果 A"}, RuntimeError("vlm 失败")])
+        self.plugin._vision.describe = described
+        web_request.reset(
+            body={
+                "nodes": [
+                    self._iterate_node("node_a", "a.png", "A 图过曝"),
+                    self._iterate_node("node_b", "b.png", "B 图偏色"),
+                ]
+            }
+        )
+        result = await self.call("canvas/iterate")
+        self.assertEqual(result["submitted"], 1)
+        failed = result["results"][1]
+        self.assertEqual(
+            (failed["node_id"], failed["file_name"], failed["ok"], failed["error"]),
+            ("node_b", "b.png", False, "vlm 失败"),
+        )
+
     async def test_canvas_keeps_long_preview_url(self):
+        self.touch_cache("a.png")
+        self.touch_cache("b.png")
         preview_url = "data:image/png;base64," + "A" * 40_000
         web_request.reset(
             body={
@@ -478,7 +600,7 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
                             "nodeId": "node_preview",
                             "relativePath": "a.png",
                             "layout": {"x": 0, "y": 0, "width": 100, "height": 100, "zIndex": 1},
-                            "fileMeta": {"previewUrl": preview_url, "fileName": "x" * 5000},
+                            "fileMeta": {"previewUrl": preview_url},
                         }
                     ],
                 },
@@ -486,7 +608,6 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         )
         node = (await self.call("canvas/mutate"))["document"]["nodes"][0]
         self.assertEqual(node["file"]["previewUrl"], preview_url)
-        self.assertEqual(len(node["file"]["fileName"]), 1024)
 
         web_request.reset(query={"session_id": "sess_preview"})
         reloaded = await self.call("canvas/doc")
@@ -509,7 +630,9 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
         )
-        await self.call("canvas/mutate")
+        annotated = await self.call("canvas/mutate")
+        self.assertEqual(annotated["document"]["nodes"][0]["file"]["previewUrl"], preview_url)
+        self.assertEqual(len(annotated["document"]["nodes"][0]["annotations"]), 1)
         web_request.reset(
             body={
                 "sessionId": "sess_oversize",
@@ -522,17 +645,19 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
                             "nodeId": "node_over",
                             "relativePath": "b.png",
                             "layout": {},
-                            "fileMeta": {"previewUrl": oversized},
+                            "fileMeta": {"previewUrl": oversized, "fileName": "x" * 5000},
                         }
                     ],
                 },
             }
         )
         over_node = (await self.call("canvas/mutate"))["document"]["nodes"][0]
+        self.assertEqual(len(over_node["file"]["fileName"]), 1024)
         self.assertEqual(len(over_node["file"]["previewUrl"]), 65_536)
         self.assertEqual(over_node["file"]["previewUrl"], oversized[:65_536])
 
     async def test_canvas_remove_annotation_renumbers_remaining(self):
+        self.touch_cache("a.png")
         async def add_annotation(operation_id, annotation_id, number):
             web_request.reset(
                 body={
@@ -595,6 +720,268 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["id"] for item in remaining], ["ann_1", "ann_3"])
         self.assertEqual([item["number"] for item in remaining], [1, 2])
         self.assertEqual([item["comment"] for item in remaining], ["批注 ann_1", "批注 ann_3"])
+
+    @staticmethod
+    def _add_file(node_id, path, file_name=None):
+        return {
+            "kind": "add_file",
+            "nodeId": node_id,
+            "relativePath": path,
+            "layout": {},
+            "fileMeta": {"fileName": file_name or path},
+        }
+
+    @staticmethod
+    def _annotation_mutation(node_id, annotation_id, number, kind="add_annotation", comment=None):
+        return {
+            "kind": kind,
+            "nodeId": node_id,
+            "annotation": {
+                "id": annotation_id,
+                "number": number,
+                "normalizedRect": {"x": 0, "y": 0, "width": 0.2, "height": 0.2},
+                "comment": comment or annotation_id,
+            },
+        }
+
+    async def canvas_apply(self, operation_id, mutations, session_id="sess_rules"):
+        return await self.web._canvas.apply(
+            session_id,
+            {"schemaVersion": 1, "operationId": operation_id, "mutations": mutations},
+        )
+
+    async def assert_canvas_rejected(self, code, operation_id, mutations, session_id="sess_rules"):
+        """变更被拒绝，且文档（含 changeSeq 与回执）保持原样。"""
+        before = await self.web._canvas.load(session_id)
+        with self.assertRaises(CanvasStoreError) as raised:
+            await self.canvas_apply(operation_id, mutations, session_id)
+        self.assertEqual(raised.exception.code, code)
+        self.assertEqual(await self.web._canvas.load(session_id), before)
+        return raised.exception
+
+    async def test_canvas_operation_id_replay_is_idempotent_and_reuse_rejected(self):
+        self.touch_cache("a.png")
+        self.touch_cache("b.png")
+        first = await self.canvas_apply("op_1", [self._add_file("node_a", "a.png")])
+        self.assertEqual(first["changeSeq"], 1)
+        receipts = first["appliedOperations"]
+        self.assertEqual([item["operationId"] for item in receipts], ["op_1"])
+        self.assertRegex(receipts[0]["fingerprint"], r"^[0-9a-f]{64}$")
+
+        # 同一内容（键顺序不同）重放：返回当前文档，不再递增 changeSeq
+        reordered = {
+            "relativePath": "a.png",
+            "fileMeta": {"fileName": "a.png"},
+            "layout": {},
+            "nodeId": "node_a",
+            "kind": "add_file",
+        }
+        replayed = await self.canvas_apply("op_1", [reordered])
+        self.assertEqual(replayed, first)
+
+        await self.assert_canvas_rejected(
+            "operation_id_reused", "op_1", [self._add_file("node_b", "b.png")]
+        )
+
+    async def test_canvas_operation_receipts_are_pruned_and_legacy_dropped(self):
+        self.touch_cache("a.png")
+        await self.canvas_apply("op_seed", [self._add_file("node_a", "a.png")])
+        for index in range(MAX_APPLIED_OPERATIONS):
+            layout = {"x": index, "y": 0, "width": 100, "height": 100, "zIndex": 1}
+            document = await self.canvas_apply(
+                f"op_move_{index}",
+                [{"kind": "update_layout", "nodeId": "node_a", "layout": layout}],
+            )
+        ids = [item["operationId"] for item in document["appliedOperations"]]
+        self.assertEqual(len(ids), MAX_APPLIED_OPERATIONS)
+        self.assertNotIn("op_seed", ids)
+        self.assertEqual(ids[-1], f"op_move_{MAX_APPLIED_OPERATIONS - 1}")
+
+        legacy = self.plugin._plugin_data_dir / "canvas" / "sess_legacy.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "nodes": [],
+                    "appliedOperations": [
+                        "op_old",
+                        {"operationId": "op_partial"},
+                        {"operationId": "op_ok", "fingerprint": "f" * 64},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        loaded = await self.web._canvas.load("sess_legacy")
+        self.assertEqual(
+            loaded["appliedOperations"], [{"operationId": "op_ok", "fingerprint": "f" * 64}]
+        )
+
+    async def test_canvas_add_file_rejects_existing_node_id(self):
+        self.touch_cache("a.png")
+        self.touch_cache("b.png")
+        await self.canvas_apply("op_1", [self._add_file("node_a", "a.png")])
+        await self.assert_canvas_rejected(
+            "node_already_exists", "op_2", [self._add_file("node_a", "b.png")]
+        )
+        # 同一次操作内先新增再重复新增同样被拒绝，且前一条变更不落盘
+        await self.assert_canvas_rejected(
+            "node_already_exists",
+            "op_3",
+            [self._add_file("node_b", "b.png"), self._add_file("node_b", "b.png")],
+        )
+
+    async def test_canvas_add_file_rejects_file_already_on_canvas(self):
+        self.touch_cache("a.png")
+        self.touch_cache("b.png")
+        await self.canvas_apply("op_1", [self._add_file("node_a", "a.png")])
+        error = await self.assert_canvas_rejected(
+            "file_already_on_canvas", "op_2", [self._add_file("node_b", "a.png")]
+        )
+        self.assertEqual(str(error), "此文件已在画布中")
+        await self.assert_canvas_rejected(
+            "file_already_on_canvas",
+            "op_3",
+            [self._add_file("node_c", "b.png"), self._add_file("node_d", "b.png")],
+        )
+
+        # 同一次操作内先移除占用节点，则文件可重新置入
+        document = await self.canvas_apply(
+            "op_4",
+            [
+                {"kind": "remove_node", "nodeId": "node_a"},
+                self._add_file("node_e", "a.png"),
+            ],
+        )
+        self.assertEqual([node["id"] for node in document["nodes"]], ["node_e"])
+
+    async def test_canvas_remove_node_requires_existing_node(self):
+        self.touch_cache("a.png")
+        await self.canvas_apply("op_1", [self._add_file("node_a", "a.png")])
+        await self.assert_canvas_rejected(
+            "node_not_found", "op_2", [{"kind": "remove_node", "nodeId": "missing"}]
+        )
+        await self.assert_canvas_rejected(
+            "node_not_found",
+            "op_3",
+            [
+                {"kind": "remove_node", "nodeId": "node_a"},
+                {"kind": "remove_node", "nodeId": "node_a"},
+            ],
+        )
+
+    async def test_canvas_remove_annotation_requires_existing_annotation(self):
+        self.touch_cache("a.png")
+        await self.canvas_apply(
+            "op_1",
+            [self._add_file("node_a", "a.png"), self._annotation_mutation("node_a", "ann_1", 1)],
+        )
+        await self.assert_canvas_rejected(
+            "annotation_not_found",
+            "op_2",
+            [{"kind": "remove_annotation", "nodeId": "node_a", "annotationId": "ann_missing"}],
+        )
+
+    async def test_canvas_add_annotation_rejects_duplicates_and_non_images(self):
+        self.touch_cache("a.png")
+        self.touch_cache("voice.mp3")
+        self.touch_cache("b.PNG")
+        self.touch_cache("c.png")
+        await self.canvas_apply(
+            "op_1",
+            [
+                self._add_file("node_a", "a.png"),
+                self._add_file("node_audio", "voice.mp3"),
+                # 无 fileName 时回退 relativePath；扩展名大小写不敏感
+                {**self._add_file("node_upper", "b.PNG"), "fileMeta": {}},
+                # fileName 优先于 relativePath
+                self._add_file("node_note", "c.png", "note.md"),
+                self._annotation_mutation("node_a", "ann_1", 1),
+            ],
+        )
+        await self.assert_canvas_rejected(
+            "annotation_exists", "op_2", [self._annotation_mutation("node_a", "ann_1", 2)]
+        )
+        await self.assert_canvas_rejected(
+            "annotation_number_conflict",
+            "op_3",
+            [self._annotation_mutation("node_a", "ann_2", 1)],
+        )
+        for index, node_id in enumerate(("node_audio", "node_note")):
+            with self.subTest(node=node_id):
+                error = await self.assert_canvas_rejected(
+                    "annotation_unsupported",
+                    f"op_unsupported_{index}",
+                    [self._annotation_mutation(node_id, "ann_x", 1)],
+                )
+                self.assertEqual(str(error), "仅图片节点支持批注")
+
+        document = await self.canvas_apply(
+            "op_4", [self._annotation_mutation("node_upper", "ann_u", 1)]
+        )
+        by_id = {node["id"]: node for node in document["nodes"]}
+        self.assertEqual(len(by_id["node_upper"]["annotations"]), 1)
+
+    async def test_canvas_update_annotation_rejects_number_conflict(self):
+        self.touch_cache("a.png")
+        await self.canvas_apply(
+            "op_1",
+            [
+                self._add_file("node_a", "a.png"),
+                self._annotation_mutation("node_a", "ann_1", 1),
+                self._annotation_mutation("node_a", "ann_2", 2),
+            ],
+        )
+        await self.assert_canvas_rejected(
+            "annotation_number_conflict",
+            "op_2",
+            [self._annotation_mutation("node_a", "ann_2", 1, "update_annotation")],
+        )
+        # 保持自身序号的更新不算冲突
+        document = await self.canvas_apply(
+            "op_3",
+            [self._annotation_mutation("node_a", "ann_2", 2, "update_annotation", "新批注")],
+        )
+        self.assertEqual(
+            [(item["id"], item["number"], item["comment"]) for item in document["nodes"][0]["annotations"]],
+            [("ann_1", 1, "ann_1"), ("ann_2", 2, "新批注")],
+        )
+
+    async def test_canvas_failed_operation_persists_nothing(self):
+        self.touch_cache("a.png")
+        self.touch_cache("b.png")
+        await self.canvas_apply("op_1", [self._add_file("node_a", "a.png")])
+        path = self.plugin._plugin_data_dir / "canvas" / "sess_rules.json"
+        stored = path.read_text(encoding="utf-8")
+        mutations = [
+            self._add_file("node_b", "b.png"),
+            {"kind": "update_layout", "nodeId": "missing", "layout": {}},
+        ]
+        await self.assert_canvas_rejected("node_not_found", "op_fail", mutations)
+        self.assertEqual(path.read_text(encoding="utf-8"), stored)
+
+        # 失败的操作不留回执：同一 operationId 可用修正后的内容重新提交
+        document = await self.canvas_apply("op_fail", [self._add_file("node_b", "b.png")])
+        self.assertEqual(document["changeSeq"], 2)
+        self.assertEqual([node["id"] for node in document["nodes"]], ["node_a", "node_b"])
+
+    async def test_canvas_rule_violations_map_to_http_400(self):
+        self.touch_cache("a.png")
+        await self.canvas_apply("op_1", [self._add_file("node_a", "a.png")])
+        operation = {
+            "schemaVersion": 1,
+            "operationId": "op_1",
+            "mutations": [self._add_file("node_b", "a.png")],
+        }
+        web_request.reset(body={"sessionId": "sess_rules", "operation": operation})
+        response = await self.call("canvas/mutate")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("operationId", response.content["message"])
+
+        operation = {**operation, "operationId": "op_2"}
+        web_request.reset(body={"sessionId": "sess_rules", "operation": operation})
+        response = await self.call("canvas/mutate")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.content["message"], "此文件已在画布中")
 
     async def test_canvas_iterate_requires_annotations(self):
         web_request.reset(
@@ -824,60 +1211,56 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         temp_served = await self.call("tools/download-temp")
         self.assertEqual(Path(temp_served.path).name, item["local_path"])
 
-    async def test_playground_preset_paths_are_canvas_accepted(self):
-        """试验台预置/回退数据的 local_path 必须是画布可接受的相对文件名。"""
-        source = Path(__file__).resolve().parents[1] / "web/src/components/MediaPlayground.vue"
-        if not source.is_file():
-            self.skipTest(f"缺少前端源码: {source}")
-        presets = re.findall(r"local_path: '([^']+)'", source.read_text(encoding="utf-8"))
-        self.assertEqual(presets, ["search_01.png", "search_02.png", "search_03.png", "slot_0.wav"])
+    async def test_canvas_add_file_requires_existing_file(self):
+        """add_file 只接受白名单目录内真实存在的文件，拒绝悬空引用与绝对路径。"""
+        data_file = self.plugin._plugin_data_dir / "asset_in_data.png"
+        data_file.write_bytes(b"png")
+        accepted = (self.touch_cache("cached.png").name, data_file.name)
+        rejected = ("missing.png", "/tmp/astrbot_mmx_media/search_01.png")
 
-        for name in presets:
-            with self.subTest(name=name):
-                web_request.reset(
-                    body={
-                        "sessionId": "sess_presets",
-                        "operation": {
-                            "schemaVersion": 1,
-                            "operationId": f"op_preset_{name}",
-                            "mutations": [
-                                {
-                                    "kind": "add_file",
-                                    "nodeId": f"node_{name.replace('.', '_')}",
-                                    "relativePath": name,
-                                    "layout": {
-                                        "x": 0,
-                                        "y": 0,
-                                        "width": 300,
-                                        "height": 200,
-                                        "zIndex": 1,
-                                    },
-                                }
-                            ],
-                        },
-                    }
-                )
+        def add_file(name: str, index: int) -> None:
+            web_request.reset(
+                body={
+                    "sessionId": "sess_files",
+                    "operation": {
+                        "schemaVersion": 1,
+                        "operationId": f"op_file_{index}",
+                        "mutations": [
+                            {
+                                "kind": "add_file",
+                                "nodeId": f"node_file_{index}",
+                                "relativePath": name,
+                                "layout": {},
+                            }
+                        ],
+                    },
+                }
+            )
+
+        for index, name in enumerate(accepted):
+            with self.subTest(accepted=name):
+                add_file(name, index)
                 result = await self.call("canvas/mutate")
                 self.assertEqual(result["document"]["nodes"][-1]["file"]["relativePath"], name)
 
-        web_request.reset(
-            body={
-                "sessionId": "sess_presets",
-                "operation": {
-                    "schemaVersion": 1,
-                    "operationId": "op_absolute",
-                    "mutations": [
-                        {
-                            "kind": "add_file",
-                            "nodeId": "node_absolute",
-                            "relativePath": "/tmp/astrbot_mmx_media/search_01.png",
-                            "layout": {},
-                        }
-                    ],
-                },
-            }
+        for index, name in enumerate(rejected, start=len(accepted)):
+            with self.subTest(rejected=name):
+                add_file(name, index)
+                self.assertEqual((await self.call("canvas/mutate")).status_code, 400)
+
+        web_request.reset(query={"session_id": "sess_files"})
+        document = await self.call("canvas/doc")
+        self.assertEqual(
+            [node["file"]["relativePath"] for node in document["nodes"]], list(accepted)
         )
-        self.assertEqual((await self.call("canvas/mutate")).status_code, 400)
+
+    async def test_playground_demo_items_carry_no_local_path(self):
+        """试验台预置与离线回退数据不得伪造 local_path，只有后端真实缓存的文件可置入画布。"""
+        source = Path(__file__).resolve().parents[1] / "web/src/components/MediaPlayground.vue"
+        if not source.is_file():
+            self.skipTest(f"缺少前端源码: {source}")
+        assignments = re.findall(r"\blocal_path\s*:[^\n]*", source.read_text(encoding="utf-8"))
+        self.assertEqual(assignments, [])
 
     async def test_download_endpoints_only_serve_whitelisted_files(self):
         cache = self.plugin._cache_dir

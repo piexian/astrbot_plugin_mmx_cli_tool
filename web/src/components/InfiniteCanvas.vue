@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, reactive } from 'vue';
-import type { CanvasFileNodeV1 } from '../types/mcode';
+import type { CanvasFileNodeV1, CanvasIterateResponse } from '../types/mcode';
 import { useCanvas } from '../composables/useCanvas';
-import { bridgeDownload, copyToClipboard } from '../composables/useBridge';
+import { bridgeDownload, copyToClipboard, reportError, useBridge } from '../composables/useBridge';
 
 const {
   documentState,
@@ -22,10 +22,11 @@ const {
   resetViewport,
   zoomBy,
 } = useCanvas();
+const { backendOnline } = useBridge();
 
 const inspectorOpen = ref(true);
 const extraPrompt = ref('');
-const lastSubmittedPreview = ref('');
+const lastIterateResponse = ref<CanvasIterateResponse | null>(null);
 
 // Panning state
 const isPanning = ref(false);
@@ -81,8 +82,19 @@ const draftRect = reactive<{
   action: 'comment',
 });
 
+// Mime-based on purpose: audio nodes also carry a previewUrl (their playable output_url).
 function isImageNode(node: CanvasFileNodeV1): boolean {
-  return Boolean(node.file.mimeType?.startsWith('image/') || node.file.previewUrl);
+  return Boolean(node.file.mimeType?.startsWith('image/'));
+}
+
+// Mirrors the backend rule (canvas_store._supports_annotation): annotations are accepted
+// only when the file extension of fileName (fallback relativePath) is an image type.
+const ANNOTATABLE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
+
+function isAnnotatableNode(node: CanvasFileNodeV1): boolean {
+  const name = node.file.fileName || node.file.relativePath;
+  const dot = name.lastIndexOf('.');
+  return dot >= 0 && ANNOTATABLE_EXTENSIONS.has(name.slice(dot).toLowerCase());
 }
 
 function isAudioNode(node: CanvasFileNodeV1): boolean {
@@ -100,9 +112,13 @@ function handleSurfaceMouseDown(e: MouseEvent): void {
   panStart.originPanY = viewport.value.panY;
 }
 
+function bringToFront(nodeId: string): void {
+  bringNodeToFront(nodeId).catch((err) => reportError(err, '调整节点层级失败'));
+}
+
 function startNodeDrag(e: MouseEvent, node: CanvasFileNodeV1, mode: 'move' | 'resize'): void {
   e.stopPropagation();
-  bringNodeToFront(node.id);
+  bringToFront(node.id);
   draggingNode.nodeId = node.id;
   draggingNode.mode = mode;
   draggingNode.startX = e.clientX;
@@ -115,10 +131,10 @@ function startNodeDrag(e: MouseEvent, node: CanvasFileNodeV1, mode: 'move' | 're
 }
 
 function startImageDraw(e: MouseEvent, node: CanvasFileNodeV1): void {
-  if (interactionMode.value !== 'annotate' || !isImageNode(node)) return;
+  if (interactionMode.value !== 'annotate' || !isAnnotatableNode(node)) return;
   e.stopPropagation();
   e.preventDefault();
-  bringNodeToFront(node.id);
+  bringToFront(node.id);
   const container = e.currentTarget as HTMLElement;
   const rect = container.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return;
@@ -161,18 +177,23 @@ function endImageDraw(): void {
 
 async function confirmDraftAnnotation(): Promise<void> {
   if (!draftRect.active || !draftRect.nodeId) return;
-  await addImageAnnotation(
-    draftRect.nodeId,
-    {
-      x: draftRect.x,
-      y: draftRect.y,
-      width: draftRect.width,
-      height: draftRect.height,
-    },
-    draftRect.comment,
-    draftRect.action,
-  );
-  cancelDraftAnnotation();
+  try {
+    await addImageAnnotation(
+      draftRect.nodeId,
+      {
+        x: draftRect.x,
+        y: draftRect.y,
+        width: draftRect.width,
+        height: draftRect.height,
+      },
+      draftRect.comment,
+      draftRect.action,
+    );
+    cancelDraftAnnotation();
+  } catch (err) {
+    // Keep the draft box so the user can retry or cancel.
+    reportError(err, '添加批注失败');
+  }
 }
 
 function cancelDraftAnnotation(): void {
@@ -218,7 +239,11 @@ async function handleGlobalMouseUp(): Promise<void> {
     draggingNode.nodeId = null;
     const target = documentState.value.nodes.find((n) => n.id === nodeId);
     if (target) {
-      await updateNodeLayout(nodeId, { ...target.layout });
+      try {
+        await updateNodeLayout(nodeId, { ...target.layout });
+      } catch (err) {
+        reportError(err, '保存节点布局失败');
+      }
     }
   }
   if (draftRect.drawing) {
@@ -232,18 +257,43 @@ function handleWheel(e: WheelEvent): void {
 }
 
 async function handleAddSampleNote(): Promise<void> {
-  await addFileNodeToCanvas({
-    fileName: `iteration_note_${documentState.value.nodes.length + 1}.md`,
-    mimeType: 'text/markdown',
-    textContent: `# 视觉迭代备注\n\n- 保持羊皮纸低饱和底色\n- 重点核对归一化批注区域与主体边缘对齐`,
-  });
+  try {
+    await addFileNodeToCanvas({
+      fileName: `iteration_note_${documentState.value.nodes.length + 1}.md`,
+      mimeType: 'text/markdown',
+      textContent: `# 视觉迭代备注\n\n- 保持羊皮纸低饱和底色\n- 重点核对归一化批注区域与主体边缘对齐`,
+    });
+  } catch (err) {
+    reportError(err, '新建便签失败');
+  }
+}
+
+async function handleRemoveNode(nodeId: string): Promise<void> {
+  try {
+    await removeNode(nodeId);
+  } catch (err) {
+    reportError(err, '移除节点失败');
+  }
+}
+
+async function handleRemoveAnnotation(nodeId: string, annotationId: string): Promise<void> {
+  try {
+    await removeAnnotation(nodeId, annotationId);
+  } catch (err) {
+    reportError(err, '删除批注失败');
+  }
 }
 
 async function handleTriggerIteration(): Promise<void> {
-  const res = await submitIterationToAgent(extraPrompt.value);
-  if (res.prompt_preview) {
-    lastSubmittedPreview.value = res.prompt_preview;
-    extraPrompt.value = '';
+  lastIterateResponse.value = null;
+  try {
+    const res = await submitIterationToAgent(extraPrompt.value);
+    if (res.prompt_preview) {
+      lastIterateResponse.value = res;
+      extraPrompt.value = '';
+    }
+  } catch (err) {
+    reportError(err, '画布批注分析失败');
   }
 }
 </script>
@@ -292,7 +342,8 @@ async function handleTriggerIteration(): Promise<void> {
       </div>
 
       <div class="toolbar-right">
-        <button type="button" class="btn" @click="handleAddSampleNote">
+        <!-- Demo-only: the fixed note has no backing file, so the backend would reject it. -->
+        <button v-if="!backendOnline" type="button" class="btn" @click="handleAddSampleNote">
           + 新建规格便签
         </button>
         <button
@@ -301,7 +352,7 @@ async function handleTriggerIteration(): Promise<void> {
           :disabled="isSubmittingIteration"
           @click="handleTriggerIteration"
         >
-          {{ isSubmittingIteration ? '推送迭代中...' : `提交批注给 Bot 迭代 (${totalAnnotationsCount})` }}
+          {{ isSubmittingIteration ? '分析中...' : `提交批注分析 (${totalAnnotationsCount})` }}
         </button>
         <button
           type="button"
@@ -341,7 +392,7 @@ async function handleTriggerIteration(): Promise<void> {
               height: `${node.layout.height}px`,
               zIndex: node.layout.zIndex,
             }"
-            @mousedown="bringNodeToFront(node.id)"
+            @mousedown="bringToFront(node.id)"
           >
             <!-- Node Header (Drag Handle) -->
             <div class="node-header" @mousedown="startNodeDrag($event, node, 'move')">
@@ -367,7 +418,7 @@ async function handleTriggerIteration(): Promise<void> {
                   type="button"
                   class="node-icon-btn danger"
                   title="移除节点"
-                  @click.stop="removeNode(node.id)"
+                  @click.stop="handleRemoveNode(node.id)"
                 >
                   ×
                 </button>
@@ -537,7 +588,7 @@ async function handleTriggerIteration(): Promise<void> {
                   type="button"
                   class="btn-ghost"
                   style="padding: 1px 5px; font-size: 11px"
-                  @click="removeAnnotation(selectedNode.id, ann.id)"
+                  @click="handleRemoveAnnotation(selectedNode.id, ann.id)"
                 >
                   删除
                 </button>
@@ -566,10 +617,21 @@ async function handleTriggerIteration(): Promise<void> {
             :disabled="isSubmittingIteration"
             @click="handleTriggerIteration"
           >
-            推送至会话执行重绘
+            提交批注分析
           </button>
-          <div v-if="lastSubmittedPreview" class="submitted-preview mono-num">
-            最近提交载荷：{{ lastSubmittedPreview }}
+          <div v-if="lastIterateResponse" class="submitted-preview mono-num">
+            最近提交载荷：{{ lastIterateResponse.prompt_preview }}
+          </div>
+          <div v-if="lastIterateResponse && lastIterateResponse.results.length" class="iterate-results">
+            <div
+              v-for="item in lastIterateResponse.results"
+              :key="item.node_id"
+              class="iterate-result"
+              :class="{ failed: !item.ok }"
+            >
+              <div class="iterate-result-name">{{ item.file_name }}</div>
+              <div class="iterate-result-body">{{ item.ok ? item.text : item.error }}</div>
+            </div>
           </div>
         </div>
       </aside>
@@ -1040,5 +1102,48 @@ async function handleTriggerIteration(): Promise<void> {
   color: var(--text-secondary);
   max-height: 64px;
   overflow-y: auto;
+}
+
+.iterate-results {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.iterate-result {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+}
+
+.iterate-result.failed {
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger);
+}
+
+.iterate-result-name {
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.iterate-result.failed .iterate-result-name {
+  color: var(--status-danger);
+}
+
+.iterate-result-body {
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.iterate-result.failed .iterate-result-body {
+  color: var(--status-danger);
 }
 </style>

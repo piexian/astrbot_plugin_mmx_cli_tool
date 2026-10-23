@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import math
 import os
@@ -11,7 +12,9 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from .media_transfer import IMAGE_EXTENSIONS
 
 SCHEMA_VERSION = 1
 MAX_NODES = 64
@@ -136,6 +139,21 @@ def _file(value: object, relative_path: str) -> dict[str, Any]:
     return item
 
 
+def _fingerprint(mutations: list[object]) -> str:
+    """operationId 回执指纹：同一 operationId 复用于不同变更时据此拒绝。"""
+    payload = json.dumps(
+        mutations, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _supports_annotation(node: dict[str, Any]) -> bool:
+    """仅图片节点支持批注，按 fileName（缺省回退 relativePath）的扩展名判定。"""
+    file = node["file"]
+    name = file.get("fileName") or file["relativePath"]
+    return Path(name).suffix.lower() in IMAGE_EXTENSIONS
+
+
 def _node(value: object) -> dict[str, Any] | None:
     """规范化磁盘上的节点，结构不符时丢弃。"""
     if not isinstance(value, dict):
@@ -193,9 +211,11 @@ def _sanitize(raw: object, session_id: str) -> dict[str, Any]:
         ],
         "updatedAtMs": int(_number(raw.get("updatedAtMs"), _now_ms())),
         "appliedOperations": [
-            _identifier(item, "operationId")
+            {"operationId": item["operationId"], "fingerprint": item["fingerprint"]}
             for item in (raw.get("appliedOperations") or [])
-            if isinstance(item, str)
+            if isinstance(item, dict)
+            and isinstance(item.get("operationId"), str)
+            and isinstance(item.get("fingerprint"), str)
         ][-MAX_APPLIED_OPERATIONS:],
     }
     doc["nodes"] = doc["nodes"][:MAX_NODES]
@@ -203,10 +223,17 @@ def _sanitize(raw: object, session_id: str) -> dict[str, Any]:
 
 
 class CanvasStore:
-    """按会话持久化 CanvasDocumentV1，写入原子化并保证操作幂等。"""
+    """按会话持久化 CanvasDocumentV1，写入原子化并保证操作幂等。
 
-    def __init__(self, root: Path | str) -> None:
+    ``file_exists`` 用于校验 add_file 的 relativePath 指向真实文件，避免持久化悬空引用；
+    已落盘节点在读取时不再复查（临时文件可能被清理，节点仍应保留）。
+    """
+
+    def __init__(
+        self, root: Path | str, *, file_exists: Callable[[str], bool] | None = None
+    ) -> None:
         self._root = Path(root)
+        self._file_exists = file_exists
         self._lock = asyncio.Lock()
 
     def _path(self, session_id: str) -> Path:
@@ -244,7 +271,7 @@ class CanvasStore:
             return await asyncio.to_thread(self._read, session_id)
 
     async def apply(self, session_id: str, operation: object) -> dict[str, Any]:
-        """幂等应用 CanvasOperationV1；重复 operationId 直接返回当前文档。"""
+        """幂等应用 CanvasOperationV1；重复 operationId 且内容一致时直接返回当前文档。"""
         if not isinstance(operation, dict):
             raise CanvasStoreError("invalid_operation", "operation 必须是对象")
         if operation.get("schemaVersion") != SCHEMA_VERSION:
@@ -262,17 +289,39 @@ class CanvasStore:
 
         async with self._lock:
             doc = await asyncio.to_thread(self._read, session_id)
-            if operation_id in doc["appliedOperations"]:
+            fingerprint = _fingerprint(mutations)
+            receipt = next(
+                (
+                    item
+                    for item in doc["appliedOperations"]
+                    if item["operationId"] == operation_id
+                ),
+                None,
+            )
+            if receipt is not None:
+                if receipt["fingerprint"] != fingerprint:
+                    raise CanvasStoreError(
+                        "operation_id_reused", "operationId 已用于另一组变更，请使用新的 operationId"
+                    )
                 return doc
             updated = await asyncio.to_thread(
-                self._mutate, copy.deepcopy(doc), session_id, operation_id, mutations
+                self._mutate,
+                copy.deepcopy(doc),
+                session_id,
+                operation_id,
+                fingerprint,
+                mutations,
             )
             await asyncio.to_thread(self._write, session_id, updated)
             return updated
 
-    @staticmethod
     def _mutate(
-        doc: dict[str, Any], session_id: str, operation_id: str, mutations: list[object]
+        self,
+        doc: dict[str, Any],
+        session_id: str,
+        operation_id: str,
+        fingerprint: str,
+        mutations: list[object],
     ) -> dict[str, Any]:
         doc["sessionId"] = session_id
         nodes: list[dict[str, Any]] = doc["nodes"]
@@ -283,37 +332,41 @@ class CanvasStore:
             kind = str(mutation.get("kind") or "")
             node_id = _identifier(mutation.get("nodeId"), "nodeId")
             if kind == "add_file":
-                file = _file(
-                    mutation.get("fileMeta"),
-                    _relative_path(mutation.get("relativePath")),
-                )
-                layout = _layout(mutation.get("layout"))
-                existing = by_id.get(node_id)
-                if existing:
-                    existing["file"] = {**existing["file"], **file}
-                    existing["layout"] = layout
-                else:
-                    if len(nodes) >= MAX_NODES:
-                        raise CanvasStoreError(
-                            "too_many_nodes", f"画布节点最多 {MAX_NODES} 个"
-                        )
-                    node = {
-                        "id": node_id,
-                        "type": "file_ref",
-                        "file": file,
-                        "layout": layout,
-                        "annotations": [],
-                    }
-                    nodes.append(node)
-                    by_id[node_id] = node
+                if node_id in by_id:
+                    raise CanvasStoreError(
+                        "node_already_exists", f"节点已存在: {node_id}"
+                    )
+                relative_path = _relative_path(mutation.get("relativePath"))
+                if any(node["file"]["relativePath"] == relative_path for node in nodes):
+                    raise CanvasStoreError("file_already_on_canvas", "此文件已在画布中")
+                if self._file_exists is not None and not self._file_exists(
+                    relative_path
+                ):
+                    raise CanvasStoreError(
+                        "file_not_found", f"relativePath 指向的文件不存在: {relative_path}"
+                    )
+                if len(nodes) >= MAX_NODES:
+                    raise CanvasStoreError(
+                        "too_many_nodes", f"画布节点最多 {MAX_NODES} 个"
+                    )
+                node = {
+                    "id": node_id,
+                    "type": "file_ref",
+                    "file": _file(mutation.get("fileMeta"), relative_path),
+                    "layout": _layout(mutation.get("layout")),
+                    "annotations": [],
+                }
+                nodes.append(node)
+                by_id[node_id] = node
             elif kind == "update_layout":
                 node = by_id.get(node_id)
                 if node is None:
                     raise CanvasStoreError("node_not_found", f"节点不存在: {node_id}")
                 node["layout"] = _layout(mutation.get("layout"))
             elif kind == "remove_node":
-                if by_id.pop(node_id, None) is not None:
-                    nodes[:] = [node for node in nodes if node["id"] != node_id]
+                if by_id.pop(node_id, None) is None:
+                    raise CanvasStoreError("node_not_found", f"节点不存在: {node_id}")
+                nodes[:] = [node for node in nodes if node["id"] != node_id]
             else:
                 annotation_input = mutation.get("annotation")
                 if kind == "remove_annotation":
@@ -330,6 +383,10 @@ class CanvasStore:
                         for item in node["annotations"]
                         if item["id"] != annotation_id
                     ]
+                    if len(remaining) == len(node["annotations"]):
+                        raise CanvasStoreError(
+                            "annotation_not_found", f"批注不存在: {annotation_id}"
+                        )
                     for index, item in enumerate(remaining):
                         item["number"] = index + 1
                     node["annotations"] = remaining
@@ -339,21 +396,38 @@ class CanvasStore:
                         "unknown_mutation", f"不支持的 mutation.kind: {kind}"
                     )
                 node = by_id.get(node_id)
-                if kind == "update_annotation" and node is None:
-                    raise CanvasStoreError("node_not_found", f"节点不存在: {node_id}")
                 if node is None:
                     raise CanvasStoreError("node_not_found", f"节点不存在: {node_id}")
                 annotation = _annotation(annotation_input)
-                exists = any(
-                    item["id"] == annotation["id"] for item in node["annotations"]
+                existing = next(
+                    (
+                        item
+                        for item in node["annotations"]
+                        if item["id"] == annotation["id"]
+                    ),
+                    None,
                 )
-                if kind == "update_annotation" and not exists:
+                if kind == "add_annotation" and not _supports_annotation(node):
+                    raise CanvasStoreError("annotation_unsupported", "仅图片节点支持批注")
+                if kind == "add_annotation" and existing is not None:
+                    raise CanvasStoreError(
+                        "annotation_exists", f"批注已存在: {annotation['id']}"
+                    )
+                if kind == "update_annotation" and existing is None:
                     raise CanvasStoreError(
                         "annotation_not_found", f"批注不存在: {annotation['id']}"
                     )
-                if exists:
+                if any(
+                    item is not existing and item["number"] == annotation["number"]
+                    for item in node["annotations"]
+                ):
+                    raise CanvasStoreError(
+                        "annotation_number_conflict",
+                        f"批注序号已被占用: {annotation['number']}",
+                    )
+                if existing is not None:
                     node["annotations"] = [
-                        annotation if item["id"] == annotation["id"] else item
+                        annotation if item is existing else item
                         for item in node["annotations"]
                     ]
                 else:
@@ -366,6 +440,6 @@ class CanvasStore:
         doc["changeSeq"] = int(doc.get("changeSeq", 0)) + 1
         doc["updatedAtMs"] = _now_ms()
         applied = doc.setdefault("appliedOperations", [])
-        applied.append(operation_id)
+        applied.append({"operationId": operation_id, "fingerprint": fingerprint})
         doc["appliedOperations"] = applied[-MAX_APPLIED_OPERATIONS:]
         return doc

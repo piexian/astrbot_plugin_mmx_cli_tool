@@ -43,17 +43,25 @@ function isDemoOnlyEndpoint(endpoint: string): boolean {
   return DEMO_ONLY_ENDPOINTS.has(path);
 }
 
-/** Bridge-reported errors are already toasted once; callers must not toast again. */
+/** `bridgeReported` is set only when the bridge has already toasted this error. */
 export interface BridgeError extends Error {
   bridgeReported?: boolean;
 }
 
-function bridgeError(err: unknown): BridgeError {
+/**
+ * Shared SDK failure policy: real endpoints of an online backend toast once and
+ * rethrow; otherwise the error is rethrown untoasted unless a fallback exists.
+ */
+function handleSdkFailure(endpoint: string, err: unknown, hasFallback: boolean): void {
   const message =
     err instanceof Error ? err.message : typeof err === 'string' ? err : '未知错误';
   const error: BridgeError = new Error(message);
-  error.bridgeReported = true;
-  return error;
+  if (backendOnline.value && !isDemoOnlyEndpoint(endpoint)) {
+    pushToast(error.message, 'warn');
+    error.bridgeReported = true;
+    throw error;
+  }
+  if (!hasFallback) throw error;
 }
 declare global {
   interface Window {
@@ -83,6 +91,12 @@ export function pushToast(text: string, kind: ToastNotice['kind'] = 'info', dura
   window.setTimeout(() => {
     toasts.value = toasts.value.filter((item) => item.id !== id);
   }, durationMs);
+}
+
+/** Single error sink for bridge callers: toasts unless the bridge already did. */
+export function reportError(err: unknown, fallbackText: string): void {
+  if ((err as BridgeError | undefined)?.bridgeReported) return;
+  pushToast(err instanceof Error && err.message ? err.message : fallbackText, 'warn');
 }
 
 /**
@@ -187,12 +201,7 @@ export async function bridgeGet<T>(
       backendOnline.value = true;
       return res;
     } catch (err) {
-      const error = bridgeError(err);
-      if (backendOnline.value && !isDemoOnlyEndpoint(endpoint)) {
-        pushToast(error.message, 'warn');
-        throw error;
-      }
-      if (!fallback) throw error;
+      handleSdkFailure(endpoint, err, Boolean(fallback));
     }
   }
   if (fallback) {
@@ -213,12 +222,7 @@ export async function bridgePost<T>(
       backendOnline.value = true;
       return res;
     } catch (err) {
-      const error = bridgeError(err);
-      if (backendOnline.value && !isDemoOnlyEndpoint(endpoint)) {
-        pushToast(error.message, 'warn');
-        throw error;
-      }
-      if (!fallback) throw error;
+      handleSdkFailure(endpoint, err, Boolean(fallback));
     }
   }
   if (fallback) {
@@ -239,12 +243,7 @@ export async function bridgeUpload<T>(
       backendOnline.value = true;
       return res;
     } catch (err) {
-      const error = bridgeError(err);
-      if (backendOnline.value && !isDemoOnlyEndpoint(endpoint)) {
-        pushToast(error.message, 'warn');
-        throw error;
-      }
-      if (!fallback) throw error;
+      handleSdkFailure(endpoint, err, Boolean(fallback));
     }
   }
   if (fallback) {
@@ -291,6 +290,7 @@ export function useBridge() {
     backendOnline: readonly(backendOnline),
     toasts: readonly(toasts),
     pushToast,
+    reportError,
     copyToClipboard,
     toggleThemeMode,
     setThemeMode,

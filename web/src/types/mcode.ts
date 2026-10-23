@@ -160,6 +160,22 @@ export interface CanvasOperationV1 {
   mutations: CanvasMutationV1[];
 }
 
+export interface CanvasIterateResultItem {
+  node_id: string;
+  file_name: string;
+  ok: boolean;
+  text?: string;
+  error?: string;
+}
+
+export interface CanvasIterateResponse {
+  ok: boolean;
+  submitted: number;
+  prompt_preview: string;
+  skipped: number;
+  results: CanvasIterateResultItem[];
+}
+
 /* =========================================================================
  * Multimodal Matrix Tools Contracts
  * ========================================================================= */

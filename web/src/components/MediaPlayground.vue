@@ -1,16 +1,77 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref, shallowRef } from 'vue';
 import type { ImageSearchItem, MusicTrackItem, ReverseImageMatchItem } from '../types/mcode';
-import { bridgeDownload, bridgePost, bridgeUpload, copyToClipboard, pushToast } from '../composables/useBridge';
+import {
+  bridgeDownload,
+  bridgePost,
+  bridgeUpload,
+  copyToClipboard,
+  pushToast,
+  reportError,
+  useBridge,
+} from '../composables/useBridge';
 import { useCanvas } from '../composables/useCanvas';
+import { usePersistedRef } from '../composables/usePersistedRef';
 
 const emit = defineEmits<{
   (e: 'switch-tab', tab: 'canvas' | 'playground' | 'plan'): void;
 }>();
 
 const { documentState, addFileNodeToCanvas } = useCanvas();
+const { backendOnline } = useBridge();
 
 const activeSubTab = ref<'search' | 'reverse' | 'music'>('search');
+
+/**
+ * Result list with an offline-preview side (demo seed + offline fallback results) and a
+ * live side (real backend results). Only one side is visible at a time, so demo entries
+ * never show up, or get mixed in, once the backend is online.
+ */
+function useResultList<T>(demoSeed: T[]) {
+  const demo = shallowRef<T[]>(demoSeed);
+  const live = shallowRef<T[]>([]);
+  const items = computed(() => (backendOnline.value ? live : demo).value);
+  // Evaluated after the bridge call: a successful call has already flipped backendOnline.
+  const replace = (next: T[]) => {
+    (backendOnline.value ? live : demo).value = next;
+  };
+  return { items, replace };
+}
+
+const NOT_CACHED_HINT = '演示样本或未缓存到本地的条目无法置入画布';
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  svg: 'image/svg+xml',
+  mp3: 'audio/mpeg',
+};
+
+/**
+ * Only files actually cached by the backend (local_path) can be referenced by the
+ * canvas; demo samples and offline fallbacks carry no local_path on purpose.
+ */
+async function placeOnCanvas(
+  localPath: string | undefined,
+  kind: 'image' | 'audio',
+  previewUrl: string,
+): Promise<void> {
+  if (!localPath) {
+    pushToast(NOT_CACHED_HINT, 'warn');
+    return;
+  }
+  const ext = localPath.split('.').pop()?.toLowerCase() || '';
+  try {
+    await addFileNodeToCanvas({
+      fileName: localPath,
+      relativePath: localPath,
+      mimeType: MIME_BY_EXT[ext] || `${kind}/${ext}`,
+      previewUrl,
+    });
+    emit('switch-tab', 'canvas');
+  } catch (err) {
+    reportError(err, '置入画布失败');
+  }
+}
 
 function makeSampleSvgUrl(label: string, sub: string, hueHex: string): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="520" height="340" viewBox="0 0 520 340">
@@ -79,17 +140,16 @@ function createWarmChordWavDataUrl(durationSec = 2.4): string {
 /* =========================================================================
  * Sub-Tab 1: Image Search & Download
  * ========================================================================= */
-const searchQuery = ref('建筑极简主义 暖光材质');
-const searchCount = ref(3);
+const searchQuery = usePersistedRef('mcode:playground:search-query', '建筑极简主义 暖光材质');
+const searchCount = usePersistedRef('mcode:playground:search-count', 3);
 const isSearchingImages = ref(false);
 const lightboxItem = ref<ImageSearchItem | null>(null);
 
-const searchResults = ref<ImageSearchItem[]>([
+const { items: searchResults, replace: setSearchResults } = useResultList<ImageSearchItem>([
   {
     id: 'img_res_1',
     title: 'Warm Minimalist Concrete & Travertine Courtyard',
     image_url: makeSampleSvgUrl('Travertine Courtyard', 'Architectural Photography · 1600×1060', '#cc5a2b'),
-    local_path: 'search_01.png',
     source_domain: 'archdaily.com',
     width: 1600,
     height: 1060,
@@ -98,7 +158,6 @@ const searchResults = ref<ImageSearchItem[]>([
     id: 'img_res_2',
     title: 'Nordic Warm Oak & Parchment Interior Study',
     image_url: makeSampleSvgUrl('Warm Oak Study', 'Interior Material Palette · 1440×960', '#26734d'),
-    local_path: 'search_02.png',
     source_domain: 'dezeen.com',
     width: 1440,
     height: 960,
@@ -107,7 +166,6 @@ const searchResults = ref<ImageSearchItem[]>([
     id: 'img_res_3',
     title: 'Terracotta Ceramic Vessel Still Life',
     image_url: makeSampleSvgUrl('Terracotta Still Life', 'Editorial Lighting · 1280×960', '#b4690e'),
-    local_path: 'search_03.png',
     source_domain: 'ignant.com',
     width: 1280,
     height: 960,
@@ -134,7 +192,6 @@ async function handleImageSearch(): Promise<void> {
           id: `search_${Date.now()}_${idx}`,
           title: `${q} · 检索样本 #${idx + 1}`,
           image_url: makeSampleSvgUrl(`${q} #${idx + 1}`, 'Matrix MCP Search Result', palettes[idx % palettes.length]),
-          local_path: `search_${idx + 1}.png`,
           source_domain: 'cdn.hailuo.ai',
           width: 1440,
           height: 960,
@@ -142,29 +199,25 @@ async function handleImageSearch(): Promise<void> {
         return { items };
       },
     );
-    searchResults.value = res.items || [];
+    setSearchResults(res.items || []);
     pushToast(`已检索并缓存 ${searchResults.value.length} 张图片`, 'ok');
+  } catch (err) {
+    reportError(err, '图片检索失败');
   } finally {
     isSearchingImages.value = false;
   }
 }
 
 async function sendImageToCanvas(item: ImageSearchItem): Promise<void> {
-  await addFileNodeToCanvas({
-    fileName: `${item.id}.png`,
-    relativePath: item.local_path || `.mavis/canvas/assets/${item.id}.png`,
-    mimeType: 'image/png',
-    previewUrl: item.image_url,
-  });
-  emit('switch-tab', 'canvas');
+  await placeOnCanvas(item.local_path, 'image', item.image_url);
 }
 
 /* =========================================================================
  * Sub-Tab 2: Reverse Image Search (image_reverse_search)
  * ========================================================================= */
-const reverseSourceUrl = ref('.mavis/canvas/assets/brand_key_visual.png');
+const reverseSourceUrl = ref('');
 const isReversing = ref(false);
-const reverseMatches = ref<ReverseImageMatchItem[]>([
+const { items: reverseMatches, replace: setReverseMatches } = useResultList<ReverseImageMatchItem>([
   {
     title: 'Anthropic Editorial Design System & Warm Typography Guidelines',
     link: 'https://www.anthropic.com/design/editorial-surfaces',
@@ -207,8 +260,10 @@ async function handleReverseSearch(): Promise<void> {
         ],
       }),
     );
-    reverseMatches.value = res.matches || [];
+    setReverseMatches(res.matches || []);
     pushToast(`以图搜图完成，找到 ${reverseMatches.value.length} 条来源出处`, 'ok');
+  } catch (err) {
+    reportError(err, '以图搜图失败');
   } finally {
     isReversing.value = false;
   }
@@ -236,8 +291,10 @@ async function handleReverseFileSelect(e: Event): Promise<void> {
         ],
       }),
     );
-    reverseMatches.value = res.matches || [];
+    setReverseMatches(res.matches || []);
     pushToast(`已完成上传图片「${file.name}」的溯源检索`, 'ok');
+  } catch (err) {
+    reportError(err, '上传图片溯源失败');
   } finally {
     isReversing.value = false;
   }
@@ -252,7 +309,7 @@ const musicLyrics = ref('[Verse]\n暖风吹过羊皮纸的页角\n一行行代�
 const musicFormat = ref<'mp3' | 'wav'>('mp3');
 const isGeneratingAudio = ref(false);
 
-const generatedTracks = ref<MusicTrackItem[]>([
+const { items: generatedTracks, replace: setGeneratedTracks } = useResultList<MusicTrackItem>([
   {
     id: 'track_demo_01',
     kind: 'music',
@@ -260,7 +317,6 @@ const generatedTracks = ref<MusicTrackItem[]>([
     lyrics: '[Verse] 暖风吹过羊皮纸的页角...',
     format: 'wav',
     output_url: createWarmChordWavDataUrl(2.6),
-    local_path: 'slot_0.wav',
     created_at_ms: Date.now() - 120000,
     duration_hint: '00:03 (预览和弦)',
   },
@@ -289,26 +345,21 @@ async function handleGenerateAudio(): Promise<void> {
         lyrics: audioKind.value === 'music' ? musicLyrics.value.trim() : undefined,
         format: musicFormat.value,
         output_url: createWarmChordWavDataUrl(2.8),
-        local_path: `audio_${Date.now()}.${musicFormat.value}`,
         created_at_ms: Date.now(),
         duration_hint: audioKind.value === 'music' ? 'AI 编曲合成' : 'AI 拟音音效',
       }),
     );
-    generatedTracks.value = [res, ...generatedTracks.value];
+    setGeneratedTracks([res, ...generatedTracks.value]);
     pushToast(audioKind.value === 'music' ? 'AI 音乐生成完成' : 'AI 音效生成完成', 'ok');
+  } catch (err) {
+    reportError(err, audioKind.value === 'music' ? 'AI 音乐生成失败' : 'AI 音效生成失败');
   } finally {
     isGeneratingAudio.value = false;
   }
 }
 
 async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
-  await addFileNodeToCanvas({
-    fileName: `${track.id}.${track.format}`,
-    relativePath: track.local_path || `.mavis/canvas/assets/${track.id}.${track.format}`,
-    mimeType: `audio/${track.format}`,
-    previewUrl: track.output_url,
-  });
-  emit('switch-tab', 'canvas');
+  await placeOnCanvas(track.local_path, 'audio', track.output_url);
 }
 </script>
 
@@ -398,7 +449,14 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
                 <span>{{ item.width || 1440 }}×{{ item.height || 960 }}</span>
               </div>
               <div class="image-card-actions">
-                <button type="button" class="btn btn-primary" style="flex: 1" @click="sendImageToCanvas(item)">
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  style="flex: 1"
+                  :disabled="!item.local_path"
+                  :title="item.local_path ? undefined : NOT_CACHED_HINT"
+                  @click="sendImageToCanvas(item)"
+                >
                   置入无限画布
                 </button>
                 <button
@@ -419,6 +477,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
             </div>
           </article>
         </div>
+        <div v-if="!searchResults.length" class="pg-empty">暂无检索结果：输入关键词后点击「搜索并缓存至本地」</div>
       </section>
 
       <!-- 2. Reverse Image Search (Sandbox-Safe Source Cards) -->
@@ -431,7 +490,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
                 v-model="reverseSourceUrl"
                 type="text"
                 class="input-control"
-                placeholder="输入图片路径或公网 URL..."
+                placeholder="输入图片路径或公网 URL，或从右侧选择画布节点..."
               />
               <select
                 class="input-control"
@@ -491,6 +550,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
             </div>
           </div>
         </div>
+        <div v-if="!reverseMatches.length" class="pg-empty">暂无溯源结果：选择画布图片或上传本地图片后开始以图搜图</div>
       </section>
 
       <!-- 3. AI Music & Sound Effects Studio -->
@@ -574,7 +634,13 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
 
             <div class="track-player-row">
               <audio :src="track.output_url" controls class="track-audio"></audio>
-              <button type="button" class="btn" @click="sendAudioToCanvas(track)">
+              <button
+                type="button"
+                class="btn"
+                :disabled="!track.local_path"
+                :title="track.local_path ? undefined : NOT_CACHED_HINT"
+                @click="sendAudioToCanvas(track)"
+              >
                 置入画布
               </button>
               <button
@@ -594,6 +660,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
             </div>
           </div>
         </div>
+        <div v-if="!generatedTracks.length" class="pg-empty">暂无生成记录：输入描述词后点击上方按钮生成</div>
       </section>
     </div>
 
@@ -604,10 +671,16 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
         <div class="lightbox-bar">
           <div>
             <div class="lightbox-title">{{ lightboxItem.title }}</div>
-            <div class="lightbox-sub mono-num">{{ lightboxItem.local_path }}</div>
+            <div class="lightbox-sub mono-num">{{ lightboxItem.local_path || '未缓存到本地' }}</div>
           </div>
           <div style="display: flex; gap: 8px">
-            <button type="button" class="btn btn-primary" @click="sendImageToCanvas(lightboxItem); lightboxItem = null">
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="!lightboxItem.local_path"
+              :title="lightboxItem.local_path ? undefined : NOT_CACHED_HINT"
+              @click="sendImageToCanvas(lightboxItem); lightboxItem = null"
+            >
               置入无限画布
             </button>
             <button type="button" class="btn" @click="lightboxItem = null">关闭</button>
@@ -796,6 +869,13 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
   display: flex;
   gap: 8px;
   margin-top: 2px;
+}
+
+.pg-empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
 }
 
 .reverse-notice {

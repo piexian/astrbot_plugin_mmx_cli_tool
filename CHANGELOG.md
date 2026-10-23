@@ -16,9 +16,14 @@
 - 工作台临时产物改回相对文件名：`tools/image-search` 与音乐/音效返回的 `local_path` 为 AstrBot 临时目录内文件名，可直接作为画布 `relativePath` 并被 `tools/download-temp`、`canvas/download`、`canvas/iterate`、`tools/image-reverse` 复用。
 - 画布 `previewUrl` 上限独立为 65536 字符（其余元数据仍为 1024），`remove_annotation` 后剩余批注按顺序重排序号。
 - 前端 bridge 仅在未注册路由（`plans/*`）使用演示回退，后端业务错误直接提示并上抛；「我已完成授权，立即同步」改为立即查询一次 `oauth/poll`，仅 `authorized` 才完成绑定。
-- 试验台预置与离线回退数据的 `local_path` 改为相对文件名（`search_01.png`、`slot_0.wav` 等），在线点击「置入无限画布」不再被画布路径校验拒绝。
-- bridge 上抛的后端错误标记 `bridgeReported`，`oauth/start` 等调用失败时只提示一次，本地二维码渲染失败仍单独提示。
-- 新增 26 项工作台路由与画布测试（Mock HTTP，覆盖契约字段、幂等、白名单、相对路径联动、前端预置路径与降级），总数 179 项；AstrBot 4.29.1 真实 `register_web_api`、Dashboard 路由匹配、`PluginPageService` 视图发现与 `terminate` 注销已端到端验证。
+- 画布 `add_file` 要求 `relativePath` 指向白名单目录（AstrBot 临时目录、插件数据目录）内真实存在的文件，不再持久化悬空引用；试验台预置与离线回退数据不再伪造 `local_path`，仅后端真实缓存的图片/音频可置入画布，文件名与 MIME 按缓存文件扩展名推断。
+- bridge 仅对已提示过的错误标记 `bridgeReported`，调用方统一经 `reportError` 出口处理，后端错误只提示一次、离线无回退的错误不再静默；试验台搜图、以图搜图、音乐/音效与置入画布失败不再产生未处理的 Promise 拒绝。
+- 修复 `canvas/iterate` 将所有选中节点的批注合并成同一条提示词的问题：现按节点单独构造提示词，视觉模型只收到该图片自己的批注（归一化坐标仅对所属图片有效）；无批注节点不再提交并计入 `skipped`，`results` 每项新增 `file_name`，`prompt_preview` 为各节点提示词以空行拼接。
+- 画布工作台展示 `canvas/iterate` 的视觉模型分析结果：侧栏按节点文件名列出分析文本（保留换行），失败节点以错误样式显示；提交按钮改为「提交批注分析」，提示改为实际完成/失败/未提交数量并移除「迭代队列」措辞；离线演示模式不再伪造分析文本，仅提示未调用视觉模型；提交失败统一经 `reportError` 提示，不再产生未处理的 Promise 拒绝。
+- 收紧画布变更语义，对齐参考实现：`appliedOperations` 改存 operationId 与内容指纹（SHA-256），相同内容重放幂等返回、不同内容复用同一 operationId 返回 `operation_id_reused`；`add_file` 拒绝已存在的 nodeId 与已在画布中的文件，`remove_node` / `remove_annotation` 目标不存在时报错，`add_annotation` 拒绝重复 id、重复序号与非图片节点，`update_annotation` 拒绝序号冲突（`remove_annotation` 后剩余批注仍自动重排序号）；前端仅对图片扩展名节点开放框选批注。
+- 工作台演示内容与在线内容分离：终端示例日志、「+ 模拟实时事件」、画布「+ 新建规格便签」以及媒体实验室的示例搜图结果、示例溯源来源与示例音轨仅在离线预览显示，在线时终端与媒体实验室只列出真实结果并给出空状态提示；Team Plan 卡片标注「演示数据」且审批提示带「（演示）」；音频节点按 mimeType 渲染为播放器而非破图；画布批注/移除/便签/层级调整/布局保存失败统一经 `reportError` 提示（失败的批注保留草稿框）；以图搜图输入框不再默认演示路径；README 更正终端事件流仅包含工作台发起的调用。
+- 新增 40 项工作台路由与画布测试（Mock HTTP，覆盖契约字段、幂等、白名单、相对路径联动、画布文件存在性、演示数据不伪造路径与降级），总数 194 项；AstrBot 4.29.1 真实 `register_web_api`、Dashboard 路由匹配、`PluginPageService` 视图发现与 `terminate` 注销已端到端验证。
+- 媒体实验室「检索关键词」与「数量」输入经 `usePersistedRef` 持久化到 localStorage，切换标签页或刷新页面不再被默认值覆盖。
 ## 0.6.0 - 2026-10-15
 
 - 对齐 mmx-cli 1.0.28：上游已公告关闭音乐生成并下线服务端接口，本版本彻底移除音乐生成与翻唱。

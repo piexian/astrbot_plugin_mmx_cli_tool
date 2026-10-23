@@ -14,6 +14,7 @@ import {
   bridgePost,
   copyToClipboard,
   pushToast,
+  reportError,
 } from '../composables/useBridge';
 import { useCanvas } from '../composables/useCanvas';
 
@@ -159,11 +160,8 @@ async function startOAuthStage2(): Promise<void> {
     });
     oauthStage.value = 'authorizing';
     startOAuthTimers();
-  } catch (err: any) {
-    // 后端错误已由 bridge 统一提示，仅本地二维码渲染失败需要另行说明
-    if (!err?.bridgeReported) {
-      pushToast(err?.message || '启动 OAuth 设备授权失败', 'warn');
-    }
+  } catch (err) {
+    reportError(err, '启动 OAuth 设备授权失败');
   } finally {
     isStartingOAuth.value = false;
   }
@@ -234,8 +232,9 @@ async function checkOAuthNow(): Promise<void> {
       return;
     }
     pushToast(pollRes.message || '尚未收到授权结果，请先在浏览器或手机上确认', 'info');
-  } catch {
-    // 错误详情已由 bridge 统一提示，此处保持授权流程可继续轮询
+  } catch (err) {
+    // 授权流程保持可继续轮询
+    reportError(err, '查询授权结果失败');
   } finally {
     isSyncingOAuth.value = false;
   }

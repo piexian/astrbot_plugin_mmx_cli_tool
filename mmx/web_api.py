@@ -303,7 +303,11 @@ class MCodeWebAPI:
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
         self._events = EventHub()
-        self._canvas = CanvasStore(Path(plugin._plugin_data_dir) / "canvas")
+        self._canvas = CanvasStore(
+            Path(plugin._plugin_data_dir) / "canvas",
+            file_exists=lambda path: self._locate_file(path, include_data=True)
+            is not None,
+        )
         self._login_sessions: dict[str, LoginSession] = {}
         self._registered: list[tuple[str, tuple[str, ...]]] = []
         self._closed = False
@@ -402,15 +406,22 @@ class MCodeWebAPI:
             dirs.append(str(self._plugin._plugin_data_dir))
         return dirs
 
+    def _locate_file(self, path: str, *, include_data: bool = False) -> Path | None:
+        """在白名单根目录中定位真实存在的文件，找不到时返回 None。"""
+        for root in self._allowed_dirs(include_data=include_data):
+            candidate = resolve_data_path(root, path)
+            if candidate is not None and candidate.is_file():
+                return candidate
+        return None
+
     def _serve_file(self, raw_path: object, *, include_data: bool = False) -> Any:
         path = _text(raw_path, 1024)
         if not path:
             raise BridgeError("缺少 path 参数", 400)
-        for root in self._allowed_dirs(include_data=include_data):
-            candidate = resolve_data_path(root, path)
-            if candidate is not None and candidate.is_file():
-                return file_response(candidate, filename=candidate.name)
-        raise BridgeError("文件不存在或不在允许的目录内", 404)
+        candidate = self._locate_file(path, include_data=include_data)
+        if candidate is None:
+            raise BridgeError("文件不存在或不在允许的目录内", 404)
+        return file_response(candidate, filename=candidate.name)
 
     # ---------------------------------------------------------------- 状态与额度
 
@@ -825,25 +836,20 @@ class MCodeWebAPI:
         }
 
     @staticmethod
-    def _annotation_lines(nodes: list[dict[str, Any]]) -> list[str]:
+    def _annotation_lines(node: dict[str, Any], file_name: str) -> list[str]:
         lines: list[str] = []
-        for node in nodes:
-            file_name = (
-                _text(node.get("file_name") or node.get("relative_path"), 128)
-                or "asset"
+        annotations = node.get("annotations")
+        for annotation in annotations if isinstance(annotations, list) else []:
+            if not isinstance(annotation, dict):
+                continue
+            rect = annotation.get("normalizedRect")
+            rect = rect if isinstance(rect, dict) else {}
+            comment = _text(annotation.get("comment"), 500)
+            action = _text(annotation.get("action"), 16) or "comment"
+            lines.append(
+                f"[{file_name} #{annotation.get('number')} ({action}) "
+                f"rect=({rect.get('x')},{rect.get('y')},{rect.get('width')},{rect.get('height')})]: {comment}"
             )
-            annotations = node.get("annotations")
-            for annotation in annotations if isinstance(annotations, list) else []:
-                if not isinstance(annotation, dict):
-                    continue
-                rect = annotation.get("normalizedRect")
-                rect = rect if isinstance(rect, dict) else {}
-                comment = _text(annotation.get("comment"), 500)
-                action = _text(annotation.get("action"), 16) or "comment"
-                lines.append(
-                    f"[{file_name} #{annotation.get('number')} ({action}) "
-                    f"rect=({rect.get('x')},{rect.get('y')},{rect.get('width')},{rect.get('height')})]: {comment}"
-                )
         return lines
 
     async def _canvas_iterate_payload(self) -> dict[str, Any]:
@@ -853,14 +859,23 @@ class MCodeWebAPI:
         if not nodes:
             raise BridgeError("没有可提交的画布节点批注")
         instruction = _text(body.get("instruction"), 2000)
-        selected = nodes[:MAX_ITERATE_NODES]
-        lines = self._annotation_lines(selected)
-        if not lines:
+        # 归一化坐标只对其所属图片有意义，因此每个节点单独构造提示词
+        targets: list[tuple[dict[str, Any], str, str]] = []
+        for node in nodes[:MAX_ITERATE_NODES]:
+            file_name = (
+                _text(node.get("file_name") or node.get("relative_path"), 128)
+                or "asset"
+            )
+            lines = self._annotation_lines(node, file_name)
+            if not lines:
+                continue
+            prompt = "以下是画布上的图片批注，请逐条分析被圈选区域的问题并给出可执行的修改建议：\n"
+            prompt += "\n".join(lines)
+            if instruction:
+                prompt = f"{instruction}\n\n{prompt}"
+            targets.append((node, file_name, prompt))
+        if not targets:
             raise BridgeError("所选节点没有批注，请先在画布上圈注")
-        prompt = "以下是画布上的图片批注，请逐条分析被圈选区域的问题并给出可执行的修改建议：\n"
-        prompt += "\n".join(lines)
-        if instruction:
-            prompt = f"{instruction}\n\n{prompt}"
         if not plugin._static_keys:
             raise BridgeError(
                 "画布批注分析需要开放平台 API Key，请在插件配置中填写 api_key", 503
@@ -873,25 +888,37 @@ class MCodeWebAPI:
                     data_dir=str(plugin._plugin_data_dir),
                     extra_allowed_dirs=plugin._extra_dirs,
                 )
-                for node in selected
+                for node, _, prompt in targets
             ),
             return_exceptions=True,
         )
         entries: list[dict[str, Any]] = []
-        for node, result in zip(selected, results):
+        for (node, file_name, _), result in zip(targets, results):
             node_id = _text(node.get("node_id"), 64)
             if isinstance(result, BaseException):
-                entries.append({"node_id": node_id, "ok": False, "error": str(result)})
+                entries.append(
+                    {
+                        "node_id": node_id,
+                        "file_name": file_name,
+                        "ok": False,
+                        "error": str(result),
+                    }
+                )
             else:
                 entries.append(
-                    {"node_id": node_id, "ok": True, "text": _vision_text(result)}
+                    {
+                        "node_id": node_id,
+                        "file_name": file_name,
+                        "ok": True,
+                        "text": _vision_text(result),
+                    }
                 )
         return {
             "ok": True,
             "submitted": sum(1 for entry in entries if entry["ok"]),
-            "prompt_preview": _text(prompt, 2000),
+            "prompt_preview": _text("\n\n".join(prompt for _, _, prompt in targets), 2000),
             "results": entries,
-            "skipped": max(0, len(nodes) - len(selected)),
+            "skipped": len(nodes) - len(targets),
         }
 
     async def _handle_canvas_doc(self) -> Any:
