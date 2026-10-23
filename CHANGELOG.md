@@ -3,33 +3,14 @@
 
 ## 0.7.0 - 2026-10-21
 
-- 新增 MiniMax 账号 OAuth 登录：`/mmx login` 两阶段交互（选择区域 → 设备授权），RFC 8628 Device Authorization Grant + PKCE S256，Token 自动刷新、加锁防并发覆盖，auth.json 原子写入并设置 0600 权限；`/mmx logout` 退出。
-- 接入 MiniMax Agent Matrix MCP 网关（`agent.minimax.cn/io` 的 `/mavis/api/v1/mcp/*`），新增 4 个 LLM 工具及对应指令：
-- `mmx_search_images` / `/mmx search-image`：搜图并下载到本地临时目录。
-- `mmx_image_reverse_search` / `/mmx reverse-image`：以图搜图，本地图片先经 OSS 预签名直传换取链接；返回 Top 3 出处卡片。
-- `mmx_generate_music` / `/mmx music`、`mmx_generate_sound_effect` / `/mmx sfx`：Agent 账号体系下的 AI 音乐与音效生成（区别于 0.6.0 移除的开放平台音乐接口），音频下载后以语音组件发送。
-- Matrix 工具凭据双轨：优先 OAuth Token，未登录时回退静态 API Key；网关拒绝时提示管理员 `/mmx login`。
-- 媒体传输底座：≤600KB 内联 Base64、>600KB OSS 预签名直传（上限 500MB），下载强制限制在 AstrBot 临时目录内。
-- 新增 MCode 工作台视图后端接入：`mmx/web_api.py` 通过 `register_web_api` 暴露 17 条路由（状态、Token Plan 双周期额度与账户余额、OAuth 发起/轮询/解绑、推理强度档位、画布读写与批注提交、搜图/以图搜图/音乐/音效、临时文件下载、SSE 终端事件流），`terminate()` 注销本插件路由并停止后台授权轮询。
-- 新增 `mmx/canvas_store.py`：CanvasDocumentV1 按会话原子落盘（`data/plugin_data/.../canvas/`），CanvasOperationV1 依 operationId 幂等应用 add_file/update_layout/remove_node/批注增删改，限制节点与批注数量、拒绝绝对路径与 `..` 穿越。
-- 新增 `thinking_effort` 配置项与视图 i18n 标题；工作台文件下载限定 AstrBot 临时目录（画布资产另允许插件数据目录），以图搜图上传限定图片扩展名。
-- 工作台临时产物改回相对文件名：`tools/image-search` 与音乐/音效返回的 `local_path` 为 AstrBot 临时目录内文件名，可直接作为画布 `relativePath` 并被 `tools/download-temp`、`canvas/download`、`canvas/iterate`、`tools/image-reverse` 复用。
-- 画布 `previewUrl` 上限独立为 65536 字符（其余元数据仍为 1024），`remove_annotation` 后剩余批注按顺序重排序号。
-- 前端 bridge 仅在未注册路由（`plans/*`）使用演示回退，后端业务错误直接提示并上抛；「我已完成授权，立即同步」改为立即查询一次 `oauth/poll`，仅 `authorized` 才完成绑定。
-- 画布 `add_file` 要求 `relativePath` 指向白名单目录（AstrBot 临时目录、插件数据目录）内真实存在的文件，不再持久化悬空引用；试验台预置与离线回退数据不再伪造 `local_path`，仅后端真实缓存的图片/音频可置入画布，文件名与 MIME 按缓存文件扩展名推断。
-- bridge 仅对已提示过的错误标记 `bridgeReported`，调用方统一经 `reportError` 出口处理，后端错误只提示一次、离线无回退的错误不再静默；试验台搜图、以图搜图、音乐/音效与置入画布失败不再产生未处理的 Promise 拒绝。
-- 修复 `canvas/iterate` 将所有选中节点的批注合并成同一条提示词的问题：现按节点单独构造提示词，视觉模型只收到该图片自己的批注（归一化坐标仅对所属图片有效）；无批注节点不再提交并计入 `skipped`，`results` 每项新增 `file_name`，`prompt_preview` 为各节点提示词以空行拼接。
-- 画布工作台展示 `canvas/iterate` 的视觉模型分析结果：侧栏按节点文件名列出分析文本（保留换行），失败节点以错误样式显示；提交按钮改为「提交批注分析」，提示改为实际完成/失败/未提交数量并移除「迭代队列」措辞；离线演示模式不再伪造分析文本，仅提示未调用视觉模型；提交失败统一经 `reportError` 提示，不再产生未处理的 Promise 拒绝。
-- 收紧画布变更语义，对齐参考实现：`appliedOperations` 改存 operationId 与内容指纹（SHA-256），相同内容重放幂等返回、不同内容复用同一 operationId 返回 `operation_id_reused`；`add_file` 拒绝已存在的 nodeId 与已在画布中的文件，`remove_node` / `remove_annotation` 目标不存在时报错，`add_annotation` 拒绝重复 id、重复序号与非图片节点，`update_annotation` 拒绝序号冲突（`remove_annotation` 后剩余批注仍自动重排序号）；前端仅对图片扩展名节点开放框选批注。
-- 工作台演示内容与在线内容分离：终端示例日志、「+ 模拟实时事件」、画布「+ 新建规格便签」以及媒体实验室的示例搜图结果、示例溯源来源与示例音轨仅在离线预览显示，在线时终端与媒体实验室只列出真实结果并给出空状态提示；Team Plan 卡片标注「演示数据」且审批提示带「（演示）」；音频节点按 mimeType 渲染为播放器而非破图；画布批注/移除/便签/层级调整/布局保存失败统一经 `reportError` 提示（失败的批注保留草稿框）；以图搜图输入框不再默认演示路径；README 更正终端事件流仅包含工作台发起的调用。
-- 新增 40 项工作台路由与画布测试（Mock HTTP，覆盖契约字段、幂等、白名单、相对路径联动、画布文件存在性、演示数据不伪造路径与降级），总数 194 项；AstrBot 4.29.1 真实 `register_web_api`、Dashboard 路由匹配、`PluginPageService` 视图发现与 `terminate` 注销已端到端验证。
-- 媒体实验室「检索关键词」与「数量」输入经 `usePersistedRef` 持久化到 localStorage，切换标签页或刷新页面不再被默认值覆盖。
-- 新增 MiniMax Code 账户能力：`/mmx signin` 手动领取每日签到积分（上游按天幂等），`/mmx usage` 查看积分余额/积分明细/套餐余量/签到进度；账户接口签名（yy/x-signature 公共参数）与信封解析复刻自 new-api minimaxcode 适配的实测实现，401 自动刷新令牌重试一次；新增配置 `auto_signin`（默认关），开启后每 30 分钟巡检自动领取当日签到。
-- `/mmx login` 后自动向 AstrBot 注册 LLM 供应商 `mmx_minimax_code`（Claude Messages 协议直连 `agent.minimax.cn/io` 的 `/mavis/api/v1/llm/v1/messages`，请求头与官方客户端一致），在 WebUI 会话/Agent 设置选择后对话走 MiniMax Code 官方通道、消耗订阅额度与签到积分；令牌轮换每请求生效，鉴权失败自动刷新重试；`/mmx logout` 与插件卸载时同步注销。
-- 工作台界面修缮：左上角标头精简为「Matrix Studio」并改用插件图标；(OAuth 2.0 PKCE) 一类括号补充说明全部移除；多模态试验台删除「直接调度 /mavis/api/v1/mcp/*」宣传文案；侧栏改接真实账户数据——新增 `account/usage` 路由返回积分余额、积分明细、各模型套餐剩余次数与签到进度（OAuth 登录态），API Key 模式保留原额度视图；Team Plan 面板移除插件自身实现计划的演示内容，无方案时显示空态并禁用「批准分发/要求修订」；终端日志来源下拉修复白底白字。
-- 账户用量显示修正：积分余额按「订阅积分 + 赠送积分」双段展示（对齐官方 0 + xxx 形式，明细按 credit_type 拆分），并补充 Coding Plan（OA）5 小时/每周用量窗口，与 API Key 模式共用窗口解析；文本域限制为仅纵向拖拽调整（最小高度 96px），歌词结构默认 6 行；顶栏与侧栏新增移动端（≤768px）自适应布局；`/mmx login` 注册的供应商同时把 `minimax_code` 类型注册进 AstrBot 适配器表——WebUI「模型供应商」页可手动添加该类型（令牌晚绑定到插件登录态），会话/Agent 下拉在登录后即可选。
-- 供应商改走提供商源：插件把 `minimax_code` 适配器类型与提供商源 `mmx_minimax_code`（默认模型 `MiniMax-M3.1-Flash` / `MiniMax-M3`，上下文窗口 512K，可加自定义模型）写入 AstrBot 配置，「获取模型列表」实时拉取云端公开目录 `/mavis/api/v1/models`（无需登录，TTL 300s 对齐服务端），「模型供应商」页可见可管理；源 ID 被占用时跳过写入、工作台弹告警并回退运行时注册；API Base URL 与 API Key 字段为占位提醒，实际令牌由登录态注入。
-- 审查修复：工作台 UI 登录成功后同步执行提供商源初始化（与 `/mmx login` 一致，修复国际站区域错配）；提供商源加载改为仅在 AstrBot 原生初始化完成后按缺失补齐/按区域重载，避免漏加载与重复实例；`terminate` 无条件清理模块级令牌与模型来源；账户 401 重试及 `identity` 后续请求在区域切换后重算域名；logout 增加默认模型切换提示并以前端真实状态刷新；README 补充卸载前删除提供商源说明；签到 `today_claimed` 按实测 `status=3` 判定已领取（原 `==2` 会误显示可签到）。
+- 新增 MiniMax 账号 OAuth 登录（设备授权 + PKCE），令牌自动刷新，`/mmx login` / `/mmx logout` 管理登录态。
+- 接入 Matrix MCP：搜图、以图搜图、AI 音乐与音效生成及对应指令，优先 OAuth、可回退 API Key；媒体支持 Base64 内联与 OSS 直传，下载限定 AstrBot 临时目录。
+- 新增 MiniMax Code 账户能力：`/mmx signin` 领取每日签到积分，`/mmx usage` 查看积分、套餐余量与签到进度，`auto_signin` 可开启自动签到。
+- 新增 MiniMax Code LLM 提供商源 `mmx_minimax_code`：默认 MiniMax-M3.1-Flash / MiniMax-M3，支持自定义模型与云端模型目录，可在 WebUI「模型供应商」管理，对话走官方通道并消耗订阅额度/签到积分。
+- 新增 MCode 工作台：无限画布、多模态试验台、配额与账户面板、OAuth 登录和终端事件流，后端通过 18 条 Web API 提供真实数据，支持推理强度档位。
+- 画布按会话落盘、操作幂等，支持图片批注与按节点视觉分析，文件访问限制在白名单目录。
+- 工作台输入持久化，在线仅展示真实结果，完善空态与移动端布局。
+
 ## 0.6.0 - 2026-10-15
 
 - 对齐 mmx-cli 1.0.28：上游已公告关闭音乐生成并下线服务端接口，本版本彻底移除音乐生成与翻唱。
