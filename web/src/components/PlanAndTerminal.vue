@@ -5,49 +5,7 @@ import { bridgeGet, bridgePost, pushToast, useBridge } from '../composables/useB
 
 const { backendOnline, subscribeSSE, unsubscribeSSE } = useBridge();
 
-const plan = ref<TeamPlanState>({
-  plan_id: 'plan_mcode_314_sync',
-  title: 'MiniMax Code 3.1.4 核心协议与无限画布全栈复刻',
-  model: 'MiniMax-M3.1-Flash',
-  status: 'review_required',
-  updated_at_ms: Date.now() - 60000,
-  overview:
-    '对接 account.minimax.cn OAuth 2.0 PKCE 设备授权、agent.minimax.cn Matrix MCP 多模态端点（搜图、识图溯源、AI 音乐音效）以及 CanvasDocumentV1 无限画布协同批注架构。',
-  tasks: [
-    {
-      id: 'team-plan:mcode314:task:1',
-      title: 'OAuth 2.0 PKCE 设备码客户端与两阶段会话控制',
-      owner: 'agent-backend',
-      status: 'completed',
-      target_files: ['mmx/oauth.py', 'mmx/endpoints.py', 'main.py'],
-      summary: '实现 start_device_authorization 与 poll_device_token，支持 cn/global 双区域及 0o600 落盘。',
-    },
-    {
-      id: 'team-plan:mcode314:task:2',
-      title: 'Matrix MCP 媒体传输与三大新工具落地',
-      owner: 'agent-backend',
-      status: 'completed',
-      target_files: ['mmx/matrix.py', 'mmx/media_transfer.py', 'tools/image_search_tools.py', 'tools/music_tools.py'],
-      summary: '完成 <=600KB Base64 内联与 >600KB get_upload_url 直传，封装搜图、识图与音乐音效工具。',
-    },
-    {
-      id: 'team-plan:mcode314:task:3',
-      title: 'Claude Web UI 风格插件视图与无限画布前端构建',
-      owner: 'agent-webui',
-      status: 'in_progress',
-      target_files: ['web/src/App.vue', 'views/mcode_dashboard/index.html'],
-      summary: '基于 Vite + Vue 3 构建双栏工作台，支持无外链 OAuth 二维码、无限画布框选批注与多模态试验台。',
-    },
-    {
-      id: 'team-plan:mcode314:task:4',
-      title: '插件 Web API 扩展路由挂载与端到端联调',
-      owner: 'agent-integration',
-      status: 'pending',
-      target_files: ['mmx/web_api.py', 'main.py'],
-      summary: '通过 context.register_web_api 挂载 /status、/quota、/oauth/*、/canvas/* 与 /tools/* 路由。',
-    },
-  ],
-});
+const plan = ref<TeamPlanState | null>(null);
 
 // Sample entries for the offline preview only; never mixed into the live SSE list.
 const demoLogs = ref<TerminalLogEntry[]>([
@@ -92,6 +50,7 @@ function formatTime(ms: number): string {
 }
 
 async function handlePlanDecision(decision: 'approve' | 'reject'): Promise<void> {
+  if (!plan.value) return;
   const res = await bridgePost<{ status: TeamPlanState['status'] }>(
     'plans/approve',
     {
@@ -164,7 +123,7 @@ function simulateLiveEvent(): void {
 }
 
 onMounted(async () => {
-  const remotePlan = await bridgeGet<TeamPlanState>('plans/current', undefined, () => plan.value);
+  const remotePlan = await bridgeGet<TeamPlanState>('plans/current', undefined, () => null);
   if (remotePlan && remotePlan.plan_id) {
     plan.value = remotePlan;
   }
@@ -201,11 +160,11 @@ onUnmounted(() => {
     <!-- Top Section: Team Plan Review & Task Swimlanes -->
     <section class="plan-section">
       <div class="plan-review-card">
+        <template v-if="plan">
         <div class="plan-top-bar">
           <div>
             <div class="plan-eyebrow-row">
               <div class="plan-eyebrow mono-num">TEAM PLAN · {{ plan.plan_id }}</div>
-              <span class="pill-badge warn" title="插件暂无 Team Plan 后端，此卡片始终为演示内容">演示数据</span>
             </div>
             <h2 class="serif-heading plan-heading">{{ plan.title }}</h2>
           </div>
@@ -216,21 +175,21 @@ onUnmounted(() => {
             >
               {{
                 plan.status === 'review_required'
-                  ? '待审批 (Plan Review)'
+                  ? '待审批'
                   : plan.status === 'executing'
-                    ? '执行中 (Executing)'
+                    ? '执行中'
                     : '已完成'
               }}
             </span>
             <button
               type="button"
               class="btn btn-primary"
-              :disabled="plan.status === 'executing'"
+              :disabled="plan.status === 'executing' || !plan.tasks.length"
               @click="handlePlanDecision('approve')"
             >
               批准并分发子任务
             </button>
-            <button type="button" class="btn" @click="handlePlanDecision('reject')">
+            <button type="button" class="btn" :disabled="!plan.tasks.length" @click="handlePlanDecision('reject')">
               要求修订
             </button>
           </div>
@@ -269,6 +228,13 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        </template>
+        <div v-else class="plan-empty">
+          <div class="plan-empty-title">暂无团队方案</div>
+          <p class="plan-empty-desc">
+            当前没有待审批的团队方案：批准分发与修订操作需存在带任务清单的方案后才可用。
+          </p>
+        </div>
       </div>
     </section>
 
@@ -281,7 +247,7 @@ onUnmounted(() => {
         </div>
         <div class="term-controls">
           <select v-model="logSourceFilter" class="term-select mono-num">
-            <option value="all">全部来源 (All)</option>
+            <option value="all">全部来源</option>
             <option value="matrix_mcp">Matrix MCP</option>
             <option value="oauth">OAuth 2.0</option>
             <option value="canvas">Canvas</option>
@@ -367,6 +333,27 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.plan-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 26px 8px;
+  text-align: center;
+}
+
+.plan-empty-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.plan-empty-desc {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
 }
 
 .plan-overview {
@@ -488,6 +475,11 @@ onUnmounted(() => {
   font-size: 11.5px;
   cursor: pointer;
 }
+.term-select option {
+  background: #24231f;
+  color: #ecebe6;
+}
+
 
 .terminal-body {
   flex: 1;

@@ -55,6 +55,9 @@ onMounted(async () => {
   const remoteStatus = await bridgeGet<PluginStatusResponse>('status', undefined, () => status.value);
   if (remoteStatus && remoteStatus.model) {
     status.value = remoteStatus;
+    if (remoteStatus.provider_source_warning) {
+      pushToast(remoteStatus.provider_source_warning, 'warn', 6000);
+    }
   }
   await loadCanvasDocument();
 });
@@ -94,7 +97,7 @@ onMounted(async () => {
               :class="{ active: activeTab === 'canvas' }"
               @click="activeTab = 'canvas'"
             >
-              无限画布 (Canvas V1)
+              无限画布
               <span v-if="totalAnnotationsCount" class="nav-count mono-num">{{ totalAnnotationsCount }}</span>
             </button>
             <button
@@ -103,7 +106,7 @@ onMounted(async () => {
               :class="{ active: activeTab === 'playground' }"
               @click="activeTab = 'playground'"
             >
-              多模态试验台 (Matrix MCP)
+              多模态试验台
             </button>
             <button
               type="button"
@@ -212,6 +215,54 @@ onMounted(async () => {
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
   cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .workspace-topbar {
+    height: auto;
+    min-height: 48px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    row-gap: 8px;
+  }
+
+  .topbar-left {
+    flex: 1 1 100%;
+    overflow-x: auto;
+  }
+
+  .primary-nav {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .primary-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-tab {
+    padding: 5px 9px;
+    font-size: 12.5px;
+    white-space: nowrap;
+  }
+
+  .topbar-right {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .effort-control {
+    gap: 4px;
+  }
+
+  .effort-control span {
+    display: none;
+  }
+
+  .pill-badge {
+    font-size: 11px;
+  }
 }
 
 .primary-nav {

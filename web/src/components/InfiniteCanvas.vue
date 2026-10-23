@@ -329,7 +329,7 @@ async function handleTriggerIteration(): Promise<void> {
               <rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="4 2" />
               <circle cx="9" cy="9" r="2" />
             </svg>
-            框选批注 (NormalizedRect)
+            框选批注
           </button>
         </div>
 
@@ -536,7 +536,7 @@ async function handleTriggerIteration(): Promise<void> {
         <!-- Bottom Floating Mode Hint Pill -->
         <div class="canvas-bottom-hint">
           <span v-if="interactionMode === 'annotate'">
-            当前处于<strong>框选批注模式</strong>：在任意图片节点上按住鼠标拖拽即可拉出 NormalizedRect 选区并添加修改指令
+            当前处于<strong>框选批注模式</strong>：在任意图片节点上按住鼠标拖拽即可拉出归一化选区并添加修改指令
           </span>
           <span v-else>
             当前处于<strong>拖拽排版模式</strong>：拖拽节点标题栏移动位置，拖拽右下角缩放大小，滚轮缩放画布视口

@@ -238,6 +238,12 @@ class MCodeWebAPI:
     ROUTES: tuple[tuple[str, str, list[str], str], ...] = (
         ("status", "_handle_status", ["GET"], "MCode 工作台：插件状态与能力"),
         ("quota", "_handle_quota", ["GET"], "MCode 工作台：Token Plan 额度"),
+        (
+            "account/usage",
+            "_handle_account_usage",
+            ["GET"],
+            "MCode 工作台：账户积分与套餐余量",
+        ),
         ("oauth/start", "_handle_oauth_start", ["POST"], "MCode 工作台：发起设备授权"),
         ("oauth/poll", "_handle_oauth_poll", ["GET"], "MCode 工作台：查询授权进度"),
         (
@@ -305,8 +311,9 @@ class MCodeWebAPI:
         self._events = EventHub()
         self._canvas = CanvasStore(
             Path(plugin._plugin_data_dir) / "canvas",
-            file_exists=lambda path: self._locate_file(path, include_data=True)
-            is not None,
+            file_exists=lambda path: (
+                self._locate_file(path, include_data=True) is not None
+            ),
         )
         self._login_sessions: dict[str, LoginSession] = {}
         self._registered: list[tuple[str, tuple[str, ...]]] = []
@@ -457,6 +464,9 @@ class MCodeWebAPI:
             "account_label": account_label,
             "model": "coding-plan/vlm",
             "thinking_effort": plugin._thinking_effort,
+            "provider_source_warning": str(
+                getattr(plugin, "_provider_source_warning", "") or ""
+            ),
             "capabilities": list(plugin._service.capabilities().get("features", [])),
             "views": [VIEW_NAME],
         }
@@ -650,6 +660,109 @@ class MCodeWebAPI:
             ),
         )
 
+    async def _handle_account_usage(self) -> Any:
+        """OAuth 账户的真实积分/套餐余量/签到数据；单项子查询失败仅缺对应块。"""
+        plugin = self._plugin
+        token = plugin._token_store.load()
+        if not token:
+            raise BridgeError("未登录 MiniMax 账号，无法查询积分与套餐余量", 503)
+        account = plugin._account
+        identity = await account.identity()
+        details, remains, signin, pool = await asyncio.gather(
+            account.credit_details(),
+            account.remains(identity.group_id),
+            account.signin_status(),
+            account.credit_pool(),
+            return_exceptions=True,
+        )
+
+        def _ok(result: object) -> dict[str, Any]:
+            return result if isinstance(result, dict) else {}
+
+        detail_items = [
+            item for item in _ok(details).get("details") or [] if isinstance(item, dict)
+        ]
+        credit_base = 0.0
+        credit_bonus = 0.0
+        total_remaining = 0.0
+        for item in detail_items:
+            try:
+                amount = float(item.get("remaining_amount") or 0)
+            except (TypeError, ValueError):
+                continue
+            total_remaining += amount
+            if item.get("credit_type") == 1:
+                credit_base += amount
+            else:
+                credit_bonus += amount
+        days = [d for d in _ok(signin).get("days") or [] if isinstance(d, dict)]
+        today = next((d for d in days if d.get("is_today")), None)
+        fallback = _ok(pool).get("token_plan_credit_fallback_enabled")
+        models = [
+            m for m in _ok(remains).get("model_remains") or [] if isinstance(m, dict)
+        ]
+        payload: dict[str, Any] = {
+            "account": {
+                "name": identity.user_name,
+                "email": identity.email,
+                "region": token.region,
+            },
+            "credit_balance": identity.credit_balance or "",
+            "credit_split": (
+                {"base": f"{credit_base:g}", "bonus": f"{credit_bonus:g}"}
+                if detail_items
+                else None
+            ),
+            "fallback_enabled": None if fallback is None else bool(fallback),
+            "credit_details": [
+                {
+                    "granted_amount": _text(item.get("granted_amount"), 16),
+                    "remaining_amount": _text(item.get("remaining_amount"), 16),
+                    "expire_at_ms": item.get("expire_at_ms"),
+                }
+                for item in detail_items[:5]
+            ],
+            "credit_total_remaining": f"{total_remaining:g}",
+            "model_remains": [
+                {
+                    "model_name": _text(m.get("model_name"), 48),
+                    "usage_count": m.get("usage_count"),
+                }
+                for m in models[:6]
+            ],
+            "signin": {
+                "days_total": len(days),
+                "today_day_no": today.get("day_no") if today else None,
+                "today_points": today.get("points") if today else None,
+                # 实测签到状态：1=未领取（未来/待领取），3=已领取（含今天已签）
+                "today_claimed": None if today is None else today.get("status") == 3,
+            },
+            "updated_at_ms": _now_ms(),
+        }
+        # Token Plan（OA）用量窗口：与 API Key 模式共用窗口解析
+        remains_models = _ok(remains).get("model_remains")
+        if remains_models:
+            merged = merge_quota_models(normalize_quota_models(remains_models))
+            if merged:
+                payload["plan_name"] = "Coding Plan 用量"
+                payload["interval_5h"] = self._bucket(
+                    [
+                        item["current"]
+                        for name, item in merged.items()
+                        if not is_video_quota_model(name)
+                    ],
+                    fallback_label="当前周期额度",
+                )
+                payload["weekly_video"] = self._bucket(
+                    [
+                        item["weekly"]
+                        for name, item in merged.items()
+                        if is_video_quota_model(name)
+                    ],
+                    fallback_label="周额度",
+                )
+        return payload
+
     # ---------------------------------------------------------------- OAuth
 
     def _cancel_login_sessions(self) -> None:
@@ -700,6 +813,14 @@ class MCodeWebAPI:
             )
             return
         plugin._token_store.save(token)
+        # 与 /mmx login 命令路径一致：登录后同步提供商源 region/默认模型，
+        # 避免 UI 登录国际站后 Provider 仍按旧区域请求。
+        try:
+            await plugin._ensure_provider_source()
+            if plugin._provider_source_warning:
+                plugin._register_llm_provider()
+        except Exception as exc:  # noqa: BLE001 - 登录已成功，源初始化失败仅记录
+            logger.warning(f"[mmx-web] 登录后初始化 LLM 提供商源失败: {exc}")
         session.status = "authorized"
         session.token_expires_at = int(token.expires_at)
         session.message = "授权完成，已保存登录凭据"
@@ -916,7 +1037,9 @@ class MCodeWebAPI:
         return {
             "ok": True,
             "submitted": sum(1 for entry in entries if entry["ok"]),
-            "prompt_preview": _text("\n\n".join(prompt for _, _, prompt in targets), 2000),
+            "prompt_preview": _text(
+                "\n\n".join(prompt for _, _, prompt in targets), 2000
+            ),
             "results": entries,
             "skipped": len(nodes) - len(targets),
         }

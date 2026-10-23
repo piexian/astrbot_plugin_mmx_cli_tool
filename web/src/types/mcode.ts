@@ -19,6 +19,7 @@ export interface PluginStatusResponse {
   oauth_connected: boolean;
   oauth_expires_at: number | null;
   account_label?: string;
+  provider_source_warning?: string;
   model: string;
   thinking_effort: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   capabilities: string[];
@@ -49,6 +50,37 @@ export interface MPlanQuotaResponse {
   updated_at_ms: number;
 }
 
+
+export interface AccountCreditDetailItem {
+  granted_amount?: string;
+  remaining_amount?: string;
+  expire_at_ms?: number;
+}
+
+export interface AccountModelRemainItem {
+  model_name?: string;
+  usage_count?: number;
+}
+
+export interface AccountUsageResponse {
+  account: { name: string; email: string; region: ServiceRegion } | null;
+  credit_balance: string;
+  credit_split: { base: string; bonus: string } | null;
+  fallback_enabled: boolean | null;
+  credit_details: AccountCreditDetailItem[];
+  credit_total_remaining: string;
+  model_remains: AccountModelRemainItem[];
+  signin: {
+    days_total: number;
+    today_day_no: number | null;
+    today_points: number | null;
+    today_claimed: boolean | null;
+  } | null;
+  plan_name?: string;
+  interval_5h?: QuotaBucket;
+  weekly_video?: QuotaBucket;
+  updated_at_ms: number;
+}
 export interface OAuthDeviceStartResponse {
   session_id: string;
   region: ServiceRegion;

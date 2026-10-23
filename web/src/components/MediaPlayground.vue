@@ -369,9 +369,6 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
     <header class="playground-header">
       <div>
         <h2 class="serif-heading pg-title">多模态 Matrix 工具试验台</h2>
-        <p class="pg-subtitle">
-          直接调度 <span class="mono-num">/mavis/api/v1/mcp/*</span> 端点，所有生成产物均可一键置入无限画布或下载到本地
-        </p>
       </div>
       <div class="subtab-bar">
         <button
@@ -406,7 +403,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
       <section v-if="activeSubTab === 'search'" class="pg-panel">
         <div class="control-bar-card">
           <div class="field-grow">
-            <label class="field-label">检索关键词 (images_search_and_download)</label>
+            <label class="field-label">检索关键词</label>
             <input
               v-model="searchQuery"
               type="text"
@@ -484,7 +481,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
       <section v-else-if="activeSubTab === 'reverse'" class="pg-panel">
         <div class="control-bar-card">
           <div class="field-grow">
-            <label class="field-label">选择画布已有图片或输入路径 (image_reverse_search)</label>
+            <label class="field-label">选择画布已有图片或输入路径</label>
             <div class="reverse-input-group">
               <input
                 v-model="reverseSourceUrl"
@@ -564,7 +561,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
                 :class="{ active: audioKind === 'music' }"
                 @click="audioKind = 'music'"
               >
-                AI 编曲音乐 (batch_text_to_music)
+                AI 编曲音乐
               </button>
               <button
                 type="button"
@@ -572,7 +569,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
                 :class="{ active: audioKind === 'sfx' }"
                 @click="audioKind = 'sfx'"
               >
-                AI 拟音音效 (batch_text_to_audio)
+                AI 拟音音效
               </button>
             </div>
             <div class="format-select">
@@ -586,7 +583,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
 
           <div>
             <label class="field-label">
-              {{ audioKind === 'music' ? '曲风、配器与情绪描述 (Prompt)' : '音效场景描述 (Prompt)' }}
+              {{ audioKind === 'music' ? '曲风、配器与情绪描述' : '音效场景描述' }}
             </label>
             <input
               v-model="musicPrompt"
@@ -600,7 +597,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
             <label class="field-label">歌词结构 (可选，支持 [Verse] / [Chorus] 标记)</label>
             <textarea
               v-model="musicLyrics"
-              rows="3"
+              rows="6"
               class="input-control mono-num"
               placeholder="[Verse] 输入自定义歌词，留空则生成纯音乐伴奏..."
             ></textarea>
@@ -716,11 +713,6 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
   font-size: 18px;
 }
 
-.pg-subtitle {
-  margin: 3px 0 0;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
 
 .subtab-bar {
   display: inline-flex;

@@ -34,6 +34,12 @@
     "default": true,
     "hint": "开启后 LLM 工具和直接指令可读取 AstrBot 临时目录（聊天图片与生成缓存所在目录，由所有插件共享）内的文件；关闭可收紧信任面，但生成结果将无法再作为输入使用。"
   },
+  "auto_signin": {
+    "description": "MiniMax Code 账号每日自动签到",
+    "type": "bool",
+    "default": false,
+    "hint": "需先 /mmx login 登录。开启后每 30 分钟巡检一次并领取当日签到积分（上游按天幂等，重复领取不叠加）；也可随时用 /mmx signin 手动领取。"
+  },
   "video_poll_interval": {
     "description": "视频生成轮询间隔（秒）",
     "type": "int",

@@ -212,6 +212,12 @@ select {
   border-color: var(--accent-border);
 }
 
+textarea.input-control {
+  resize: vertical;
+  min-height: 96px;
+  line-height: 1.5;
+}
+
 .input-control {
   width: 100%;
   padding: 7px 11px;

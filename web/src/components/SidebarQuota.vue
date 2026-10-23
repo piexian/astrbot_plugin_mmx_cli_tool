@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import QRCode from 'qrcode';
+import logoSvg from '../assets/logo.svg';
 import type {
   MPlanQuotaResponse,
   OAuthDeviceStartResponse,
   OAuthPollResponse,
   PluginStatusResponse,
   ServiceRegion,
+  AccountUsageResponse,
 } from '../types/mcode';
 import {
   backendOnline,
@@ -60,6 +62,8 @@ const quota = ref<MPlanQuotaResponse>({
 });
 
 const isRefreshingQuota = ref(false);
+const accountUsage = ref<AccountUsageResponse | null>(null);
+const usageError = ref('');
 
 // Two-stage OAuth state machine (Stage 1: select region -> Stage 2: QR + user_code + auto poll)
 const oauthStage = ref<'idle' | 'select_region' | 'authorizing'>('idle');
@@ -93,6 +97,20 @@ function formatResetCountdown(targetMs: number): string {
 async function refreshQuota(): Promise<void> {
   isRefreshingQuota.value = true;
   try {
+    const tasks: Promise<void>[] = [];
+    if (props.status.oauth_connected) {
+      tasks.push(refreshAccountUsage());
+    } else {
+      tasks.push(refreshTokenPlanQuota());
+    }
+    await Promise.all(tasks);
+  } finally {
+    isRefreshingQuota.value = false;
+  }
+}
+
+async function refreshTokenPlanQuota(): Promise<void> {
+  try {
     const res = await bridgeGet<MPlanQuotaResponse>('quota', undefined, () => ({
       ...quota.value,
       updated_at_ms: Date.now(),
@@ -100,8 +118,20 @@ async function refreshQuota(): Promise<void> {
     if (res && res.interval_5h) {
       quota.value = res;
     }
-  } finally {
-    isRefreshingQuota.value = false;
+  } catch {
+    // API Key 模式下额度查询失败时保留上次数据
+  }
+}
+
+async function refreshAccountUsage(): Promise<void> {
+  usageError.value = '';
+  try {
+    const res = await bridgeGet<AccountUsageResponse>('account/usage');
+    if (res) {
+      accountUsage.value = res;
+    }
+  } catch (err) {
+    usageError.value = err instanceof Error ? err.message : '积分与套餐数据查询失败';
   }
 }
 
@@ -253,17 +283,30 @@ function completeOAuthBinding(region: ServiceRegion): void {
   });
   pushToast(`已完成 MiniMax (${region.toUpperCase()}) OAuth 账号绑定`, 'ok');
   refreshQuota();
+  // 以服务端真实状态覆盖过期时间与账户标签（不再写死 7 天）
+  bridgeGet<PluginStatusResponse>('status', undefined, () => null).then((fresh) => {
+    if (fresh) emit('status-updated', fresh);
+  });
 }
 
 async function handleLogout(): Promise<void> {
   await bridgePost('oauth/logout', {}, () => ({ ok: true }));
-  emit('status-updated', {
-    auth_mode: 'api_key',
-    oauth_connected: false,
-    oauth_expires_at: null,
-    account_label: '静态 API Key 兜底',
-  });
-  pushToast('已解绑 OAuth 凭据，回退至 API Key 模式', 'info');
+  // 以服务端真实状态为准，避免无 API Key 时误显示“兜底”
+  const fresh = await bridgeGet<PluginStatusResponse>('status', undefined, () => null);
+  if (fresh) {
+    emit('status-updated', fresh);
+  } else {
+    emit('status-updated', {
+      auth_mode: 'none',
+      oauth_connected: false,
+      oauth_expires_at: null,
+      account_label: '未配置凭据',
+    });
+  }
+  pushToast(
+    '已解绑 OAuth 凭据；若默认聊天模型为 mmx_minimax_code，请在 WebUI 切换其他供应商',
+    'info',
+  );
 }
 
 function focusCanvasNode(nodeId: string): void {
@@ -286,20 +329,11 @@ onUnmounted(() => {
     <div class="sidebar-header">
       <div class="brand-row">
         <div class="brand-mark" aria-hidden="true">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2L2 7l10 5 10-5-10-5z" />
-            <path d="M2 17l10 5 10-5" />
-            <path d="M2 12l10 5 10-5" />
-          </svg>
+          <img :src="logoSvg" alt="" class="brand-logo" />
         </div>
         <div>
-          <div class="brand-title serif-heading">MiniMax Code</div>
-          <div class="brand-sub">MCode 3.1.4 · Matrix Studio</div>
+          <div class="brand-title serif-heading">Matrix Studio</div>
         </div>
-      </div>
-      <div class="model-chip-row">
-        <span class="pill-badge accent mono-num">{{ status.model }}</span>
-        <span class="pill-badge mono-num">Effort: {{ status.thinking_effort }}</span>
       </div>
     </div>
 
@@ -307,7 +341,7 @@ onUnmounted(() => {
       <!-- Section 1: Two-Stage OAuth Account Binding -->
       <section class="panel-card">
         <div class="card-title-row">
-          <span class="section-label">账号认证 (OAuth 2.0 PKCE)</span>
+          <span class="section-label">账号认证</span>
           <span class="pill-badge" :class="status.oauth_connected ? 'ok' : 'warn'">
             {{ status.oauth_connected ? '已授权 mmoat' : 'API Key 模式' }}
           </span>
@@ -353,14 +387,14 @@ onUnmounted(() => {
             <label class="region-option" :class="{ active: selectedRegion === 'cn' }">
               <input v-model="selectedRegion" type="radio" value="cn" />
               <div>
-                <div class="region-name">国内站 (CN-Prod)</div>
+                <div class="region-name">国内站</div>
                 <div class="region-host mono-num">account.minimax.cn</div>
               </div>
             </label>
             <label class="region-option" :class="{ active: selectedRegion === 'global' }">
               <input v-model="selectedRegion" type="radio" value="global" />
               <div>
-                <div class="region-name">国际站 (EN-Prod)</div>
+                <div class="region-name">国际站</div>
                 <div class="region-host mono-num">account.minimax.io</div>
               </div>
             </label>
@@ -429,11 +463,13 @@ onUnmounted(() => {
       <!-- Section 2: M-Plan 2.0 Dual-Cycle Quota -->
       <section class="panel-card">
         <div class="card-title-row">
-          <span class="section-label">{{ quota.plan_name }}</span>
+          <span class="section-label">{{
+            status.oauth_connected ? '账户用量' : quota.plan_name
+          }}</span>
           <button
             type="button"
             class="btn-ghost icon-btn"
-            title="刷新 M-Plan 额度"
+            title="刷新账户用量"
             :disabled="isRefreshingQuota"
             @click="refreshQuota"
           >
@@ -446,7 +482,117 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <!-- 5-Hour Interaction Limit Ring -->
+        <!-- OAuth 账户：真实积分 / 套餐余量 / 签到 -->
+        <template v-if="status.oauth_connected">
+          <div v-if="accountUsage">
+            <div class="credit-hero">
+              <div>
+                <div class="credit-bal mono-num">
+                  <template v-if="accountUsage.credit_split">
+                    {{ accountUsage.credit_split.base }} + {{ accountUsage.credit_split.bonus }}
+                  </template>
+                  <template v-else>{{ accountUsage.credit_balance || '—' }}</template>
+                  <span class="pts">PTS</span>
+                </div>
+                <div class="credit-sub">
+                  {{ accountUsage.credit_split ? '订阅积分 + 赠送积分' : '积分余额' }}
+                </div>
+              </div>
+              <div
+                v-if="accountUsage.signin && accountUsage.signin.today_day_no !== null"
+                class="signin-mini"
+              >
+                <div class="mono-num">第 {{ accountUsage.signin.today_day_no }} 天</div>
+                <div class="credit-sub">
+                  {{ accountUsage.signin.today_claimed ? '今日已签到' : '今日可签到' }}
+                </div>
+              </div>
+            </div>
+
+            <template v-if="accountUsage.interval_5h">
+              <div class="divider"></div>
+              <div class="quota-5h-box">
+                <div class="ring-wrap">
+                  <svg width="60" height="60" viewBox="0 0 60 60">
+                    <circle cx="30" cy="30" r="24" fill="none" stroke="var(--border-hairline)" stroke-width="5" />
+                    <circle
+                      cx="30"
+                      cy="30"
+                      r="24"
+                      fill="none"
+                      stroke="var(--accent)"
+                      stroke-width="5"
+                      stroke-linecap="round"
+                      :stroke-dasharray="ringCircumference"
+                      :stroke-dashoffset="ringCircumference * (1 - Math.max(0, Math.min(100, accountUsage.interval_5h.remaining_percent)) / 100)"
+                      transform="rotate(-90 30 30)"
+                    />
+                  </svg>
+                  <span class="ring-text mono-num">{{ Math.round(accountUsage.interval_5h.remaining_percent) }}%</span>
+                </div>
+                <div class="quota-5h-info">
+                  <div class="quota-title">{{ accountUsage.interval_5h.label }}</div>
+                  <div class="quota-numbers mono-num">
+                    剩余 <strong>{{ accountUsage.interval_5h.remaining ?? '—' }}</strong> /
+                    {{ accountUsage.interval_5h.total ?? '∞' }} 次
+                  </div>
+                  <div class="quota-reset">{{ formatResetCountdown(accountUsage.interval_5h.reset_at_ms) }}</div>
+                </div>
+              </div>
+            </template>
+            <template v-if="accountUsage.weekly_video">
+              <div class="divider"></div>
+              <div class="weekly-video-box">
+                <div class="weekly-top">
+                  <span class="weekly-label">{{ accountUsage.weekly_video.label }}</span>
+                  <span class="weekly-val mono-num">
+                    {{ accountUsage.weekly_video.remaining ?? '—' }} /
+                    {{ accountUsage.weekly_video.total ?? '∞' }} 部
+                  </span>
+                </div>
+                <div class="progress-track">
+                  <div
+                    class="progress-fill"
+                    :style="{ width: `${Math.min(100, accountUsage.weekly_video.remaining_percent)}%` }"
+                  ></div>
+                </div>
+                <div class="weekly-sub">
+                  <span>独立周额度池，不消耗 5h 对话额度</span>
+                  <span class="mono-num">{{ formatResetCountdown(accountUsage.weekly_video.reset_at_ms) }}</span>
+                </div>
+              </div>
+            </template>
+
+            <div
+              v-if="accountUsage.credit_details.length"
+              class="usage-line mono-num"
+            >
+              积分明细 {{ accountUsage.credit_details.length }} 条 · 合计剩余
+              {{ accountUsage.credit_total_remaining }}
+            </div>
+
+            <div v-if="accountUsage.model_remains.length" class="usage-models">
+              <div
+                v-for="m in accountUsage.model_remains"
+                :key="m.model_name"
+                class="usage-model-row"
+              >
+                <span class="usage-model-name">{{ m.model_name }}</span>
+                <span class="mono-num">剩余 {{ m.usage_count ?? '?' }} 次</span>
+              </div>
+            </div>
+
+            <div class="usage-updated mono-num">
+              更新于 {{ new Date(accountUsage.updated_at_ms).toTimeString().slice(0, 5) }}
+            </div>
+          </div>
+          <div v-else class="usage-empty">
+            {{ usageError || '积分与套餐数据加载中…' }}
+          </div>
+        </template>
+
+        <!-- API Key 模式：Token Plan 额度 -->
+        <template v-else>
         <div class="quota-5h-box">
           <div class="ring-wrap">
             <svg width="60" height="60" viewBox="0 0 60 60">
@@ -509,7 +655,7 @@ onUnmounted(() => {
         <!-- Credit Fallback Row -->
         <div class="credit-row">
           <div>
-            <div class="credit-title">积分兜底 (Credit Fallback)</div>
+            <div class="credit-title">积分兜底</div>
             <div class="credit-sub">超额后按时间衰减自动抵扣</div>
           </div>
           <div class="credit-right mono-num">
@@ -517,6 +663,7 @@ onUnmounted(() => {
             <div class="credit-status">{{ quota.credit_fallback.active_deducting ? '抵扣中' : '待命' }}</div>
           </div>
         </div>
+        </template>
       </section>
 
       <!-- Section 3: Session Deliverable Assets (<deliver-assets>) -->
@@ -588,17 +735,13 @@ onUnmounted(() => {
   line-height: 1.2;
 }
 
-.brand-sub {
-  font-size: 11.5px;
-  color: var(--text-secondary);
+.brand-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: block;
 }
 
-.model-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
-}
 
 .sidebar-scroll {
   flex: 1;
@@ -842,7 +985,6 @@ onUnmounted(() => {
   background: var(--border-hairline);
   margin: 10px 0;
 }
-
 .weekly-top {
   display: flex;
   justify-content: space-between;
@@ -908,6 +1050,72 @@ onUnmounted(() => {
   color: var(--status-ok);
 }
 
+.credit-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.credit-hero .credit-bal {
+  font-size: 20px;
+}
+
+.credit-hero .pts {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-left: 4px;
+}
+
+.signin-mini {
+  text-align: right;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.usage-line {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+
+.usage-models {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.usage-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-muted);
+}
+
+.usage-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.usage-updated {
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+  margin-top: 8px;
+}
+
+.usage-empty {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 12px 0;
+  line-height: 1.5;
+}
 .asset-list {
   display: flex;
   flex-direction: column;
@@ -954,5 +1162,12 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    min-width: 0;
+  }
 }
 </style>

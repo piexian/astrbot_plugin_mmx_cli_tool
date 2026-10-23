@@ -72,6 +72,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 /mmx quota page <页码>        # 翻页查看 Key 额度
 /mmx login                     # 登录 MiniMax 账号（管理员，两阶段设备授权）
 /mmx logout                    # 退出账号登录（管理员）
+/mmx signin                   # 领取今日签到积分（管理员，需登录）
+/mmx usage                    # 查看积分/套餐余量/签到进度（管理员，需登录）
 /mmx search-image <关键词> [--n 数量]   # 搜图并下载
 /mmx reverse-image [图片URL]    # 以图搜图（可附带或引用图片）
 /mmx music <提示词> [--lyrics 歌词] [--format mp3]  # AI 音乐生成（需登录）
@@ -162,6 +164,18 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 例如对 AI 说「帮我把这段话合成语音：你好」→ 自动调用 `mmx_speech_synthesize`。
 生成的图片/视频会先下载到 AstrBot 临时目录，工具结果返回 `file_paths`/`file_path` 本地路径，发送时优先使用本地路径而非远程链接（远程链接可能过期或无法被接收端下载）。
 
+### MiniMax Code 对话通道与签到
+
+插件会把 `minimax_code` 适配器类型与提供商源 `mmx_minimax_code` 写入 AstrBot：WebUI「模型供应商」页可见该源，默认提供 `MiniMax-M3.1-Flash` 与 `MiniMax-M3` 两个模型条目，可继续添加自定义模型（上下文窗口默认 512K，可按条目调整；「获取模型列表」按钮实时拉取云端公开目录 `/mavis/api/v1/models`，无需登录）；源的 API Base URL 与 API Key 为占位提醒，实际请求由插件按登录区域注入 OAuth 令牌（走 Claude Messages 协议直连 `agent.minimax.cn` / `agent.minimax.io`，消耗订阅额度与签到积分）。源 ID `mmx_minimax_code` 若被其他配置占用，插件跳过写入并在工作台弹出告警，同时回退为运行时注册供会话/Agent 直接选用。令牌到期或 401 时自动刷新并重试。卸载插件前请先在「模型供应商」页删除 `mmx_minimax_code` 源及其模型条目，否则 AstrBot 重启时会提示找不到 `minimax_code` 适配器。
+
+签到与用量：
+
+```
+/mmx signin    # 领取今日签到积分（管理员；按天幂等，重复领取不叠加）
+/mmx usage     # 查看积分余额、积分明细、套餐余量与签到进度（管理员）
+```
+
+配置项 `auto_signin`（默认关闭）开启后，插件每 30 分钟巡检一次并自动领取当日签到积分。
 
 ## 智能错误提示与参数规范
 
@@ -234,6 +248,7 @@ AstrBot 管理面板 → 插件 → 「MiniMax 多模态工具」→ 视图「MC
 | `default_speech_voice` | string | `English_expressive_narrator` | 默认语音合成音色（voice_id） |
 | `default_transcription_model` | string | `asr-1.0` | 默认语音转文字模型 |
 | `thinking_effort` | string | `default` | 工作台显示的推理强度档位（`default/low/medium/high/xhigh/max`），仅作偏好记录，不改变本插件的 MiniMax 请求参数 |
+| `auto_signin` | bool | `false` | MiniMax Code 账号每日自动签到（需登录）：每 30 分钟巡检并领取当日积分，上游按天幂等 |
 
 ## 项目结构
 

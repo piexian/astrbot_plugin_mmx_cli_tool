@@ -238,6 +238,81 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.plugin._oauth.revoke.assert_awaited_once_with("refresh", "cn")
         self.assertIsNone(self.plugin._token_store.load())
 
+    async def test_account_usage_credit_split_and_signin_status(self):
+        """account/usage：按 credit_type 拆分积分，签到 status=3 表示已领取。"""
+        from astrbot_plugin_mmx_cli_tool.mmx.account import AccountIdentity
+
+        self.plugin._token_store.save(
+            OAuthToken(
+                access_token="a",
+                refresh_token="r",
+                expires_at=time.time() + 3600,
+                region="cn",
+            )
+        )
+        self.plugin._account.identity = AsyncMock(
+            return_value=AccountIdentity(
+                real_user_id="rid", group_id="g", credit_balance="0"
+            )
+        )
+        self.plugin._account.credit_details = AsyncMock(
+            return_value={
+                "details": [
+                    {"credit_type": 1, "remaining_amount": "0"},
+                    {"credit_type": 2, "remaining_amount": "8224"},
+                ]
+            }
+        )
+        self.plugin._account.remains = AsyncMock(return_value={"model_remains": []})
+        self.plugin._account.signin_status = AsyncMock(
+            return_value={
+                "days": [
+                    {"day_no": 1, "status": 3, "is_today": False},
+                    {"day_no": 2, "points": 1424, "status": 3, "is_today": True},
+                    {"day_no": 3, "status": 1, "is_today": False},
+                ]
+            }
+        )
+        self.plugin._account.credit_pool = AsyncMock(
+            return_value={"token_plan_credit_fallback_enabled": True}
+        )
+
+        payload = await self.web._handle_account_usage()
+        self.assertEqual(payload["credit_split"], {"base": "0", "bonus": "8224"})
+        self.assertTrue(payload["signin"]["today_claimed"])
+        self.assertEqual(payload["signin"]["today_day_no"], 2)
+        self.assertTrue(payload["fallback_enabled"])
+
+    async def test_oauth_ui_login_initializes_provider_source(self):
+        """工作台 UI 登录成功后必须同步提供商源（与 /mmx login 一致）。"""
+        auth = DeviceAuthInfo(
+            device_code="device-code",
+            user_code="ABCD-1234",
+            code_verifier="verifier",
+            verification_uri="https://account.minimax.io/oauth2/device",
+            verification_uri_complete="https://account.minimax.io/oauth2/device?user_code=ABCD-1234",
+            expires_in=600,
+            interval=4.0,
+        )
+        token = OAuthToken(
+            access_token="access",
+            refresh_token="refresh",
+            expires_at=time.time() + 7200,
+            region="global",
+        )
+        self.plugin._oauth.start_device_authorization = AsyncMock(return_value=auth)
+        self.plugin._oauth.poll_device_token = AsyncMock(return_value=token)
+        self.plugin._ensure_provider_source = AsyncMock()
+        web_request.reset(body={"region": "global"})
+
+        started = await self.call("oauth/start")
+        session = self.web._login_sessions[started["session_id"]]
+        await session.task
+
+        self.plugin._ensure_provider_source.assert_awaited_once()
+        self.assertEqual(session.status, "authorized")
+        self.assertEqual(self.plugin._token_store.load().region, "global")
+
     async def test_oauth_denied_status_and_unknown_session(self):
         auth = DeviceAuthInfo(
             device_code="d",
@@ -499,7 +574,9 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         }
 
     async def test_canvas_iterate_builds_prompt_per_node(self):
-        described = AsyncMock(side_effect=[{"content": "结果 A"}, {"content": "结果 B"}])
+        described = AsyncMock(
+            side_effect=[{"content": "结果 A"}, {"content": "结果 B"}]
+        )
         self.plugin._vision.describe = described
         web_request.reset(
             body={
@@ -529,7 +606,8 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
             [("node_a", "a.png"), ("node_b", "b.png")],
         )
         self.assertEqual(
-            result["prompt_preview"], "\n\n".join(by_image[name] for name in ("a.png", "b.png"))
+            result["prompt_preview"],
+            "\n\n".join(by_image[name] for name in ("a.png", "b.png")),
         )
 
     async def test_canvas_iterate_skips_nodes_without_annotations(self):
@@ -566,7 +644,9 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["skipped"], len(nodes) - (limit - 1))
 
     async def test_canvas_iterate_reports_failed_node_with_file_name(self):
-        described = AsyncMock(side_effect=[{"content": "结果 A"}, RuntimeError("vlm 失败")])
+        described = AsyncMock(
+            side_effect=[{"content": "结果 A"}, RuntimeError("vlm 失败")]
+        )
         self.plugin._vision.describe = described
         web_request.reset(
             body={
@@ -599,7 +679,13 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
                             "kind": "add_file",
                             "nodeId": "node_preview",
                             "relativePath": "a.png",
-                            "layout": {"x": 0, "y": 0, "width": 100, "height": 100, "zIndex": 1},
+                            "layout": {
+                                "x": 0,
+                                "y": 0,
+                                "width": 100,
+                                "height": 100,
+                                "zIndex": 1,
+                            },
                             "fileMeta": {"previewUrl": preview_url},
                         }
                     ],
@@ -624,14 +710,20 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
                         {
                             "kind": "add_annotation",
                             "nodeId": "node_preview",
-                            "annotation": {"id": "ann_p", "normalizedRect": {}, "comment": "c"},
+                            "annotation": {
+                                "id": "ann_p",
+                                "normalizedRect": {},
+                                "comment": "c",
+                            },
                         }
                     ],
                 },
             }
         )
         annotated = await self.call("canvas/mutate")
-        self.assertEqual(annotated["document"]["nodes"][0]["file"]["previewUrl"], preview_url)
+        self.assertEqual(
+            annotated["document"]["nodes"][0]["file"]["previewUrl"], preview_url
+        )
         self.assertEqual(len(annotated["document"]["nodes"][0]["annotations"]), 1)
         web_request.reset(
             body={
@@ -645,7 +737,10 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
                             "nodeId": "node_over",
                             "relativePath": "b.png",
                             "layout": {},
-                            "fileMeta": {"previewUrl": oversized, "fileName": "x" * 5000},
+                            "fileMeta": {
+                                "previewUrl": oversized,
+                                "fileName": "x" * 5000,
+                            },
                         }
                     ],
                 },
@@ -658,6 +753,7 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_canvas_remove_annotation_renumbers_remaining(self):
         self.touch_cache("a.png")
+
         async def add_annotation(operation_id, annotation_id, number):
             web_request.reset(
                 body={
@@ -672,7 +768,12 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
                                 "annotation": {
                                     "id": annotation_id,
                                     "number": number,
-                                    "normalizedRect": {"x": 0, "y": 0, "width": 0.2, "height": 0.2},
+                                    "normalizedRect": {
+                                        "x": 0,
+                                        "y": 0,
+                                        "width": 0.2,
+                                        "height": 0.2,
+                                    },
                                     "comment": f"批注 {annotation_id}",
                                     "action": "comment",
                                 },
@@ -694,7 +795,13 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
                             "kind": "add_file",
                             "nodeId": "node_a",
                             "relativePath": "a.png",
-                            "layout": {"x": 0, "y": 0, "width": 100, "height": 100, "zIndex": 1},
+                            "layout": {
+                                "x": 0,
+                                "y": 0,
+                                "width": 100,
+                                "height": 100,
+                                "zIndex": 1,
+                            },
                         }
                     ],
                 },
@@ -711,15 +818,23 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
                     "schemaVersion": 1,
                     "operationId": "op_remove",
                     "mutations": [
-                        {"kind": "remove_annotation", "nodeId": "node_a", "annotationId": "ann_2"}
+                        {
+                            "kind": "remove_annotation",
+                            "nodeId": "node_a",
+                            "annotationId": "ann_2",
+                        }
                     ],
                 },
             }
         )
-        remaining = (await self.call("canvas/mutate"))["document"]["nodes"][0]["annotations"]
+        remaining = (await self.call("canvas/mutate"))["document"]["nodes"][0][
+            "annotations"
+        ]
         self.assertEqual([item["id"] for item in remaining], ["ann_1", "ann_3"])
         self.assertEqual([item["number"] for item in remaining], [1, 2])
-        self.assertEqual([item["comment"] for item in remaining], ["批注 ann_1", "批注 ann_3"])
+        self.assertEqual(
+            [item["comment"] for item in remaining], ["批注 ann_1", "批注 ann_3"]
+        )
 
     @staticmethod
     def _add_file(node_id, path, file_name=None):
@@ -732,7 +847,9 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         }
 
     @staticmethod
-    def _annotation_mutation(node_id, annotation_id, number, kind="add_annotation", comment=None):
+    def _annotation_mutation(
+        node_id, annotation_id, number, kind="add_annotation", comment=None
+    ):
         return {
             "kind": kind,
             "nodeId": node_id,
@@ -750,7 +867,9 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
             {"schemaVersion": 1, "operationId": operation_id, "mutations": mutations},
         )
 
-    async def assert_canvas_rejected(self, code, operation_id, mutations, session_id="sess_rules"):
+    async def assert_canvas_rejected(
+        self, code, operation_id, mutations, session_id="sess_rules"
+    ):
         """变更被拒绝，且文档（含 changeSeq 与回执）保持原样。"""
         before = await self.web._canvas.load(session_id)
         with self.assertRaises(CanvasStoreError) as raised:
@@ -813,7 +932,8 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         )
         loaded = await self.web._canvas.load("sess_legacy")
         self.assertEqual(
-            loaded["appliedOperations"], [{"operationId": "op_ok", "fingerprint": "f" * 64}]
+            loaded["appliedOperations"],
+            [{"operationId": "op_ok", "fingerprint": "f" * 64}],
         )
 
     async def test_canvas_add_file_rejects_existing_node_id(self):
@@ -873,12 +993,21 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.touch_cache("a.png")
         await self.canvas_apply(
             "op_1",
-            [self._add_file("node_a", "a.png"), self._annotation_mutation("node_a", "ann_1", 1)],
+            [
+                self._add_file("node_a", "a.png"),
+                self._annotation_mutation("node_a", "ann_1", 1),
+            ],
         )
         await self.assert_canvas_rejected(
             "annotation_not_found",
             "op_2",
-            [{"kind": "remove_annotation", "nodeId": "node_a", "annotationId": "ann_missing"}],
+            [
+                {
+                    "kind": "remove_annotation",
+                    "nodeId": "node_a",
+                    "annotationId": "ann_missing",
+                }
+            ],
         )
 
     async def test_canvas_add_annotation_rejects_duplicates_and_non_images(self):
@@ -899,7 +1028,9 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         await self.assert_canvas_rejected(
-            "annotation_exists", "op_2", [self._annotation_mutation("node_a", "ann_1", 2)]
+            "annotation_exists",
+            "op_2",
+            [self._annotation_mutation("node_a", "ann_1", 2)],
         )
         await self.assert_canvas_rejected(
             "annotation_number_conflict",
@@ -939,10 +1070,17 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         # 保持自身序号的更新不算冲突
         document = await self.canvas_apply(
             "op_3",
-            [self._annotation_mutation("node_a", "ann_2", 2, "update_annotation", "新批注")],
+            [
+                self._annotation_mutation(
+                    "node_a", "ann_2", 2, "update_annotation", "新批注"
+                )
+            ],
         )
         self.assertEqual(
-            [(item["id"], item["number"], item["comment"]) for item in document["nodes"][0]["annotations"]],
+            [
+                (item["id"], item["number"], item["comment"])
+                for item in document["nodes"][0]["annotations"]
+            ],
             [("ann_1", 1, "ann_1"), ("ann_2", 2, "新批注")],
         )
 
@@ -960,9 +1098,13 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(path.read_text(encoding="utf-8"), stored)
 
         # 失败的操作不留回执：同一 operationId 可用修正后的内容重新提交
-        document = await self.canvas_apply("op_fail", [self._add_file("node_b", "b.png")])
+        document = await self.canvas_apply(
+            "op_fail", [self._add_file("node_b", "b.png")]
+        )
         self.assertEqual(document["changeSeq"], 2)
-        self.assertEqual([node["id"] for node in document["nodes"]], ["node_a", "node_b"])
+        self.assertEqual(
+            [node["id"] for node in document["nodes"]], ["node_a", "node_b"]
+        )
 
     async def test_canvas_rule_violations_map_to_http_400(self):
         self.touch_cache("a.png")
@@ -1241,7 +1383,9 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(accepted=name):
                 add_file(name, index)
                 result = await self.call("canvas/mutate")
-                self.assertEqual(result["document"]["nodes"][-1]["file"]["relativePath"], name)
+                self.assertEqual(
+                    result["document"]["nodes"][-1]["file"]["relativePath"], name
+                )
 
         for index, name in enumerate(rejected, start=len(accepted)):
             with self.subTest(rejected=name):
@@ -1256,10 +1400,15 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_playground_demo_items_carry_no_local_path(self):
         """试验台预置与离线回退数据不得伪造 local_path，只有后端真实缓存的文件可置入画布。"""
-        source = Path(__file__).resolve().parents[1] / "web/src/components/MediaPlayground.vue"
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "web/src/components/MediaPlayground.vue"
+        )
         if not source.is_file():
             self.skipTest(f"缺少前端源码: {source}")
-        assignments = re.findall(r"\blocal_path\s*:[^\n]*", source.read_text(encoding="utf-8"))
+        assignments = re.findall(
+            r"\blocal_path\s*:[^\n]*", source.read_text(encoding="utf-8")
+        )
         self.assertEqual(assignments, [])
 
     async def test_download_endpoints_only_serve_whitelisted_files(self):
