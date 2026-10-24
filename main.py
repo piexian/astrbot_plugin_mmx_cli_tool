@@ -290,6 +290,8 @@ class Main(star.Star):
             self._client, self._matrix_credentials, self._refresh_matrix_token
         )
         self._llm_provider = None
+        self._llm_provider_login_epoch = ""
+        self._llm_provider_region = ""
         self._auto_signin_task: asyncio.Task | None = None
         self._auto_signin_enabled = bool(config.get("auto_signin", False))
         self._signin_claimed_day = ""
@@ -410,7 +412,7 @@ class Main(star.Star):
         await self._ensure_provider_source()
         if self._provider_source_warning:
             # 提供商源 ID 被外部配置占用：退回运行时直注册，保证会话下拉可用
-            self._register_llm_provider()
+            await self._register_llm_provider()
         if self._auto_signin_enabled:
             self._auto_signin_task = asyncio.create_task(self._auto_signin_loop())
 
@@ -418,7 +420,7 @@ class Main(star.Star):
         if self._auto_signin_task is not None:
             self._auto_signin_task.cancel()
             self._auto_signin_task = None
-        self._unregister_llm_provider()  # 仅回退路径的运行时实例需要注销
+        await self._unregister_llm_provider()  # 仅回退路径的运行时实例需要注销
         try:
             from .mmx import llm_provider as _llm_module
 
@@ -526,16 +528,21 @@ class Main(star.Star):
         if not token:
             raise MiniMaxError(ErrorCategory.AUTH, "登录凭据已失效，请重新 /mmx login")
 
-    def _register_llm_provider(self) -> bool:
-        """OAuth 登录态存在时注册 MiniMax Code LLM 供应商（幂等，可重复调用）。"""
-        if self._llm_provider is not None:
-            return True
+    async def _register_llm_provider(self) -> bool:
+        """按登录账号注册或切换运行时 MiniMax Code 供应商。"""
         token = self._token_store.load()
         if not token:
             return False
         try:
             if token.ensure_login_epoch():
                 self._token_store.save(token)
+            if self._llm_provider is not None:
+                if (
+                    self._llm_provider_login_epoch == token.login_epoch
+                    and self._llm_provider_region == token.region
+                ):
+                    return True
+                await self._unregister_llm_provider()
             from .mmx.llm_provider import (
                 PROVIDER_ID,
                 MiniMaxCodeProvider,
@@ -559,6 +566,8 @@ class Main(star.Star):
             credentials_getter=self._provider_credentials,
         )
         self._llm_provider = provider
+        self._llm_provider_login_epoch = token.login_epoch
+        self._llm_provider_region = token.region
         try:
             manager = self.context.provider_manager
             # 卸载旧实例（插件重载场景），避免同 id 重复注册
@@ -571,7 +580,7 @@ class Main(star.Star):
             manager.inst_map[PROVIDER_ID] = provider
         except Exception as e:
             logger.warning(f"[mmx] LLM Provider 注册失败: {e}")
-            self._llm_provider = None
+            await self._unregister_llm_provider()
             return False
         logger.info(
             f"[mmx] MiniMax Code LLM Provider 已注册（{PROVIDER_ID}），"
@@ -579,15 +588,18 @@ class Main(star.Star):
         )
         return True
 
-    def _unregister_llm_provider(self) -> None:
-        if self._llm_provider is None:
+    async def _unregister_llm_provider(self) -> None:
+        provider = self._llm_provider
+        if provider is None:
+            self._llm_provider_login_epoch = ""
+            self._llm_provider_region = ""
             return
         try:
             from .mmx.llm_provider import PROVIDER_ID, clear_token_source
 
             manager = self.context.provider_manager
             manager.provider_insts[:] = [
-                p for p in manager.provider_insts if p is not self._llm_provider
+                p for p in manager.provider_insts if p is not provider
             ]
             manager.inst_map.pop(PROVIDER_ID, None)
             clear_token_source()
@@ -595,6 +607,12 @@ class Main(star.Star):
             pass
 
         self._llm_provider = None
+        self._llm_provider_login_epoch = ""
+        self._llm_provider_region = ""
+        try:
+            await provider.terminate()
+        except Exception as e:
+            logger.warning(f"[mmx] 关闭旧 LLM Provider 失败: {e}")
 
     async def _ensure_provider_source(self) -> None:
         """把 mmx_minimax_code 提供商源与默认模型条目写入 AstrBot 配置。
@@ -852,7 +870,7 @@ class Main(star.Star):
 
         await self._ensure_provider_source()
         if self._provider_source_warning:
-            self._register_llm_provider()
+            await self._register_llm_provider()
         extra = (
             "\n已在「模型供应商」页注册提供商源 mmx_minimax_code"
             f"（默认模型 {' / '.join(DEFAULT_MODELS)}，可继续添加自定义模型），"
@@ -876,7 +894,7 @@ class Main(star.Star):
             return
         await self._oauth.revoke(token.refresh_token, token.region)
         self._token_store.clear()
-        self._unregister_llm_provider()
+        await self._unregister_llm_provider()
         yield event.plain_result(
             "已退出 MiniMax 账号登录。\n"
             "若默认聊天模型为 mmx_minimax_code，请在 WebUI 切换其他供应商，"

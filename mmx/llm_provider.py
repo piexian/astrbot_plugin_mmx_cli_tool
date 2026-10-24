@@ -38,25 +38,38 @@ _AGENT_ID = "main"
 MODELS = ["MiniMax-M3.1-Flash", "MiniMax-M3"]
 
 LLM_PATH_PREFIX = "/mavis/api/v1/llm"
-_AUXILIARY_SESSION = "auxiliary"
 _TRANSPORT_HEADER_NAMES = frozenset(
     {"accept-encoding", "connection", "content-length", "host"}
 )
 _REQUEST_LOGIN_EPOCH: ContextVar[str] = ContextVar(
     "mmx_request_login_epoch", default=""
 )
-_REQUEST_CONVERSATION_ID: ContextVar[str] = ContextVar(
-    "mmx_request_conversation_id", default=""
+_REQUEST_SESSION_KEY: ContextVar[str] = ContextVar(
+    "mmx_request_session_key", default=""
 )
 
 
 def stable_session_id(login_epoch: str, conversation_id: str) -> str:
-    """把登录命名空间内的 AstrBot 对话映射为官方 mvs_ 会话 ID。"""
+    """把登录命名空间内的会话键映射为官方 mvs_ 会话 ID。"""
     seed = f"astrbot-mmx\0{login_epoch}\0{conversation_id}"
     b = bytearray(hashlib.sha256(seed.encode("utf-8")).digest()[:16])
     b[6] = (b[6] & 0x0F) | 0x40
     b[8] = (b[8] & 0x3F) | 0x80
     return "mvs_" + b.hex()
+
+
+def _new_session_key() -> str:
+    return f"request:{secrets.token_hex(16)}"
+
+
+def _session_key_from_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+    session_key = (
+        kwargs.get("conversation_id") or kwargs.get("umo") or kwargs.get("session_id")
+    )
+    # ProviderAnthropic 的第二个位置参数是 session_id。
+    if not session_key and len(args) > 1:
+        session_key = args[1]
+    return str(session_key or _new_session_key())
 
 
 def _timezone_offset_seconds() -> int:
@@ -352,11 +365,13 @@ class MiniMaxCodeProvider(ProviderAnthropic):
 
     def _dynamic_headers(
         self,
-        conversation_id: str = "",
+        session_key: str = "",
         credentials: tuple[str, str] | None = None,
     ) -> dict[str, str]:
         token, login_epoch = credentials or self._credentials()
-        session_key = conversation_id.strip() or _AUXILIARY_SESSION
+        session_key = (
+            session_key.strip() or _REQUEST_SESSION_KEY.get() or _new_session_key()
+        )
         headers = {
             "User-Agent": "MiniMaxAgent",
             "X-Mavis-Session-Id": stable_session_id(login_epoch, session_key),
@@ -371,13 +386,8 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         return headers
 
     def resolve_request_headers(self, **kwargs: Any) -> dict[str, str]:
-        conversation_id = str(
-            kwargs.get("conversation_id")
-            or kwargs.get("umo")
-            or kwargs.get("session_id")
-            or ""
-        )
-        return self._dynamic_headers(conversation_id)
+        session_key = _REQUEST_SESSION_KEY.get() or _session_key_from_call((), kwargs)
+        return self._dynamic_headers(session_key)
 
     async def _rewrite_outgoing_headers(self, request: Any) -> None:
         """在实际发送前提取会话并重建应用层请求头。"""
@@ -385,11 +395,16 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         bound_epoch = _REQUEST_LOGIN_EPOCH.get()
         if bound_epoch and bound_epoch != login_epoch:
             raise MiniMaxError(ErrorCategory.AUTH, "MiniMax 账号已切换，请重试")
-        conversation_id = _REQUEST_CONVERSATION_ID.get()
-        if not conversation_id:
-            conversation_id = request.headers.get("x-astrbot-conversation-id", "").strip()
+        session_key = _REQUEST_SESSION_KEY.get() or request.extensions.get(
+            "mmx_session_key", ""
+        )
+        if not session_key:
+            session_key = request.headers.get("x-astrbot-conversation-id", "").strip()
+        if not session_key:
+            session_key = _new_session_key()
+        request.extensions["mmx_session_key"] = session_key
         headers = self._dynamic_headers(
-            conversation_id, credentials=(token, login_epoch)
+            session_key, credentials=(token, login_epoch)
         )
         try:
             payload = json.loads(request.content)
@@ -421,14 +436,7 @@ class MiniMaxCodeProvider(ProviderAnthropic):
 
     async def text_chat(self, *args: Any, **kwargs: Any):
         epoch_token = _REQUEST_LOGIN_EPOCH.set(self._credentials()[1])
-        conversation_token = _REQUEST_CONVERSATION_ID.set(
-            str(
-                kwargs.get("conversation_id")
-                or kwargs.get("umo")
-                or kwargs.get("session_id")
-                or ""
-            )
-        )
+        session_token = _REQUEST_SESSION_KEY.set(_session_key_from_call(args, kwargs))
         try:
             try:
                 return await super().text_chat(*args, **kwargs)
@@ -437,19 +445,12 @@ class MiniMaxCodeProvider(ProviderAnthropic):
                     raise
                 return await super().text_chat(*args, **kwargs)
         finally:
-            _REQUEST_CONVERSATION_ID.reset(conversation_token)
+            _REQUEST_SESSION_KEY.reset(session_token)
             _REQUEST_LOGIN_EPOCH.reset(epoch_token)
 
     async def text_chat_stream(self, *args: Any, **kwargs: Any):
         epoch_token = _REQUEST_LOGIN_EPOCH.set(self._credentials()[1])
-        conversation_token = _REQUEST_CONVERSATION_ID.set(
-            str(
-                kwargs.get("conversation_id")
-                or kwargs.get("umo")
-                or kwargs.get("session_id")
-                or ""
-            )
-        )
+        session_token = _REQUEST_SESSION_KEY.set(_session_key_from_call(args, kwargs))
         try:
             # 首个事件前鉴权失败可安全重试（请求尚未对用户产出内容）
             for _attempt in range(2):
@@ -468,7 +469,7 @@ class MiniMaxCodeProvider(ProviderAnthropic):
                     yield chunk
                 return
         finally:
-            _REQUEST_CONVERSATION_ID.reset(conversation_token)
+            _REQUEST_SESSION_KEY.reset(session_token)
             _REQUEST_LOGIN_EPOCH.reset(epoch_token)
 
 

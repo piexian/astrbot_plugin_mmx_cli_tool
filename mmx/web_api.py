@@ -818,7 +818,7 @@ class MCodeWebAPI:
         try:
             await plugin._ensure_provider_source()
             if plugin._provider_source_warning:
-                plugin._register_llm_provider()
+                await plugin._register_llm_provider()
         except Exception as exc:  # noqa: BLE001 - 登录已成功，源初始化失败仅记录
             logger.warning(f"[mmx-web] 登录后初始化 LLM 提供商源失败: {exc}")
         session.status = "authorized"
