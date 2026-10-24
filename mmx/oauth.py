@@ -56,16 +56,24 @@ class DeviceAuthInfo:
 
 @dataclass
 class OAuthToken:
-    """OAuth 访问令牌。"""
+    """OAuth 访问令牌及本次登录的会话命名空间。"""
 
     access_token: str
     refresh_token: str
     expires_at: float
     region: str = "cn"
     scopes: list[str] = field(default_factory=list)
+    login_epoch: str = ""
 
     def is_expired(self, margin: float = 60.0) -> bool:
         return time.time() >= self.expires_at - margin
+
+    def ensure_login_epoch(self) -> bool:
+        """旧登录态仅迁移一次；返回是否生成了新 epoch。"""
+        if self.login_epoch.strip():
+            return False
+        self.login_epoch = secrets.token_hex(16)
+        return True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -74,6 +82,7 @@ class OAuthToken:
             "expires_at": self.expires_at,
             "region": self.region,
             "scopes": self.scopes,
+            "login_epoch": self.login_epoch,
         }
 
     @classmethod
@@ -90,6 +99,7 @@ class OAuthToken:
             expires_at=float(expires_at),
             region=str(data.get("region") or "cn"),
             scopes=[str(s) for s in scopes] if isinstance(scopes, list) else [],
+            login_epoch=str(data.get("login_epoch") or "").strip(),
         )
 
 
@@ -282,7 +292,11 @@ class OAuthClient:
         raise OAuthError("expired_token", "OAuth 设备授权已超时")
 
     def _parse_token_grant(
-        self, body: dict[str, Any], region: str, previous_refresh_token: str | None = None
+        self,
+        body: dict[str, Any],
+        region: str,
+        previous_refresh_token: str | None = None,
+        previous_login_epoch: str = "",
     ) -> OAuthToken:
         access_token = _read_str(body, "access_token")
         refresh_token = _read_str(body, "refresh_token") or previous_refresh_token
@@ -302,10 +316,13 @@ class OAuthClient:
             expires_at=time.time() + expires_in,
             region=region,
             scopes=scopes,
+            login_epoch=previous_login_epoch or secrets.token_hex(16),
         )
 
-    async def refresh(self, refresh_token: str, region: str = "cn") -> OAuthToken:
-        """刷新访问令牌；服务端未轮换 refresh_token 时沿用旧的。"""
+    async def refresh(
+        self, refresh_token: str, region: str = "cn", *, login_epoch: str = ""
+    ) -> OAuthToken:
+        """刷新访问令牌并继承登录 epoch。"""
         ok, _, body = await self._post_form(
             oauth_token_endpoint(region),
             {
@@ -318,7 +335,13 @@ class OAuthClient:
         )
         if not ok:
             raise OAuthError(_read_str(body, "error") or "refresh_failed")
-        return self._parse_token_grant(body, region, previous_refresh_token=refresh_token)
+        return self._parse_token_grant(
+            body,
+            region,
+            previous_refresh_token=refresh_token,
+            previous_login_epoch=login_epoch,
+        )
+
 
     async def revoke(self, refresh_token: str, region: str = "cn") -> None:
         """撤销 refresh_token；服务端不支持或失败时不抛错（本地仍会清除）。"""

@@ -1,22 +1,23 @@
 """MiniMax Code LLM Provider — 把 OAuth 账号接入 AstrBot 供应商体系。
-
-复刻 new-api minimaxcode 适配的转发协议：Claude Messages 协议直连
-{agent.minimax.cn|io}/mavis/api/v1/llm/v1/messages，请求头与官方客户端一致
-（Authorization Bearer + User-Agent MiniMaxAgent + X-Mavis-* 三件套）。
-会话 ID 从 access_token 稳定派生（对齐 new-api stableUUID，v4 风格位）。
+复刻 MiniMax Code 的 Claude Messages 转发协议，按 AstrBot 对话稳定转写
+Mavis 会话，并在最终出站边界按白名单重建请求头。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
+import secrets
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import Any
 
 from astrbot.core.provider.entities import ProviderMeta, ProviderType
 from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
 
 from .endpoints import MATRIX_BASES
+from .errors import ErrorCategory, MiniMaxError
 
 #: 供应商实例 ID（WebUI 会话/Agent 设置中按此选择）
 PROVIDER_ID = "mmx_minimax_code"
@@ -37,19 +38,25 @@ _AGENT_ID = "main"
 MODELS = ["MiniMax-M3.1-Flash", "MiniMax-M3"]
 
 LLM_PATH_PREFIX = "/mavis/api/v1/llm"
+_AUXILIARY_SESSION = "auxiliary"
+_TRANSPORT_HEADER_NAMES = frozenset(
+    {"accept-encoding", "connection", "content-length", "host"}
+)
+_REQUEST_LOGIN_EPOCH: ContextVar[str] = ContextVar(
+    "mmx_request_login_epoch", default=""
+)
+_REQUEST_CONVERSATION_ID: ContextVar[str] = ContextVar(
+    "mmx_request_conversation_id", default=""
+)
 
 
-def stable_session_id(access_token: str) -> str:
-    """从 access_token 派生 8-4-4-4-12 稳定 UUID（v4 风格位，对齐 new-api）。"""
-    b = bytearray(
-        hashlib.sha256(("mavis-session|" + access_token).encode("utf-8")).digest()[:16]
-    )
+def stable_session_id(login_epoch: str, conversation_id: str) -> str:
+    """把登录命名空间内的 AstrBot 对话映射为官方 mvs_ 会话 ID。"""
+    seed = f"astrbot-mmx\0{login_epoch}\0{conversation_id}"
+    b = bytearray(hashlib.sha256(seed.encode("utf-8")).digest()[:16])
     b[6] = (b[6] & 0x0F) | 0x40
     b[8] = (b[8] & 0x3F) | 0x80
-    hex_str = b.hex()
-    return "-".join(
-        (hex_str[0:8], hex_str[8:12], hex_str[12:16], hex_str[16:20], hex_str[20:32])
-    )
+    return "mvs_" + b.hex()
 
 
 def _timezone_offset_seconds() -> int:
@@ -62,8 +69,13 @@ def _empty_token_getter() -> str:
 
 
 def _module_token() -> str:
-    """配置模式取令牌：每次调用读取当前模块级源，set/clear 即时生效。"""
     return _module_token_getter()
+
+
+def _module_credentials() -> tuple[str, str]:
+    if _module_credentials_getter is not None:
+        return _module_credentials_getter()
+    return _module_token(), ""
 
 
 async def _module_refresh() -> None:
@@ -74,6 +86,7 @@ async def _module_refresh() -> None:
 _module_token_getter: Callable[[], str] = _empty_token_getter
 _module_token_refresher: Callable[[], Awaitable[None]] | None = None
 _module_models_fetcher: Callable[[], Awaitable[list[str]]] | None = None
+_module_credentials_getter: Callable[[], tuple[str, str]] | None = None
 
 #: 云端模型列表的模块级缓存（WebUI 每次点击都会新建临时实例，缓存必须模块级）
 _MODELS_CACHE_TTL = 300.0
@@ -86,20 +99,25 @@ def set_token_source(
     getter: Callable[[], str],
     refresher: Callable[[], Awaitable[None]] | None = None,
     models_fetcher: Callable[[], Awaitable[list[str]]] | None = None,
+    credentials_getter: Callable[[], tuple[str, str]] | None = None,
 ) -> None:
-    """把插件当前的令牌读取/刷新/模型列表函数绑定为配置模式实例的默认来源。"""
+    """绑定配置模式实例的令牌、刷新、模型与登录会话来源。"""
     global _module_token_getter, _module_token_refresher, _module_models_fetcher
+    global _module_credentials_getter
     _module_token_getter = getter
     _module_token_refresher = refresher
     _module_models_fetcher = models_fetcher
+    _module_credentials_getter = credentials_getter
 
 
 def clear_token_source() -> None:
     global _module_token_getter, _module_token_refresher
     global _module_models_fetcher, _models_cache, _models_cache_at, _models_cache_region
+    global _module_credentials_getter
     _module_token_getter = _empty_token_getter
     _module_token_refresher = None
     _module_models_fetcher = None
+    _module_credentials_getter = None
     _models_cache = []
     _models_cache_at = 0.0
     _models_cache_region = ""
@@ -212,11 +230,7 @@ def unregister_provider_adapter_type() -> None:
 
 
 class MiniMaxCodeProvider(ProviderAnthropic):
-    """以 OAuth 访问令牌调用 MiniMax Code 的 Anthropic 协议供应商。
-
-    token_getter 同步返回当前 access_token（每请求经 resolve_request_headers 注入，
-    令牌轮换无需重建客户端）；auth_refresher 在 401 时异步刷新后重试一次。
-    """
+    """以 OAuth 登录态调用 MiniMax Code，并按对话与登录隔离 Mavis 会话。"""
 
     def __init__(
         self,
@@ -227,9 +241,9 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         region: str | None = None,
         token_getter: Callable[[], str] | None = None,
         auth_refresher: Callable[[], Awaitable[None]] | None = None,
+        credentials_getter: Callable[[], tuple[str, str]] | None = None,
     ) -> None:
-        """双构造：插件直连模式传 region/token_getter；配置模式由 AstrBot 按
-        provider_config 实例化（令牌经 set_token_source 晚绑定到插件登录态）。"""
+        """支持插件直连与 AstrBot 配置模式构造。"""
         provider_config = dict(provider_config or {})
         region = region or str(provider_config.get("region") or "cn")
         origin = MATRIX_BASES.get(region, MATRIX_BASES["cn"]).rstrip("/")
@@ -244,20 +258,35 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         )
         if token_getter is None:
             token_getter = _module_token
+            if credentials_getter is None:
+                credentials_getter = _module_credentials
         if auth_refresher is None:
             auth_refresher = _module_refresh
         self._token_getter = token_getter
+        self._credentials_getter = credentials_getter
+        self._fallback_login_epoch = secrets.token_hex(16)
         self._region = region
         self._auth_refresher = auth_refresher
-        # 绕过 _init_api_key 的 x-api-key 方案：auth_token 走 Authorization Bearer，
-        # 实际令牌由 resolve_request_headers 每请求覆盖
+
         from anthropic import AsyncAnthropic
 
+        http_client = self._create_http_client(provider_config)
+        if http_client is None:
+            from anthropic import _base_client as anthropic_base_client
+
+            httpx_module = getattr(anthropic_base_client, "httpx", None) or getattr(
+                anthropic_base_client, "httpx2"
+            )
+            http_client = httpx_module.AsyncClient(timeout=self.timeout)
+        http_client.event_hooks.setdefault("request", []).append(
+            self._rewrite_outgoing_headers
+        )
         self.client = AsyncAnthropic(
             auth_token=self._token_getter() or "unset",
             timeout=self.timeout,
             base_url=self.base_url,
-            default_headers=self.custom_headers,
+            default_headers={},
+            http_client=http_client,
         )
 
     # ---- 元数据与密钥 ----
@@ -312,58 +341,135 @@ class MiniMaxCodeProvider(ProviderAnthropic):
 
     # ---- 请求头与 401 重试 ----
 
-    def _dynamic_headers(self) -> dict[str, str]:
-        token = self._token_getter()
+    def _credentials(self) -> tuple[str, str]:
+        if self._credentials_getter is not None:
+            token, login_epoch = self._credentials_getter()
+        else:
+            token, login_epoch = self._token_getter(), ""
+        return str(token or "").strip(), (
+            str(login_epoch or "").strip() or self._fallback_login_epoch
+        )
+
+    def _dynamic_headers(
+        self,
+        conversation_id: str = "",
+        credentials: tuple[str, str] | None = None,
+    ) -> dict[str, str]:
+        token, login_epoch = credentials or self._credentials()
+        session_key = conversation_id.strip() or _AUXILIARY_SESSION
         headers = {
             "User-Agent": "MiniMaxAgent",
+            "X-Mavis-Session-Id": stable_session_id(login_epoch, session_key),
             "X-Mavis-Agent-Id": _AGENT_ID,
             "X-Mavis-Timezone-Offset": str(_timezone_offset_seconds()),
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
         }
         if token:
             headers["Authorization"] = f"Bearer {token}"
-            headers["X-Mavis-Session-Id"] = stable_session_id(token)
         return headers
 
     def resolve_request_headers(self, **kwargs: Any) -> dict[str, str]:
-        headers = super().resolve_request_headers(**kwargs)
-        headers.update(self._dynamic_headers())
-        return headers
+        conversation_id = str(
+            kwargs.get("conversation_id")
+            or kwargs.get("umo")
+            or kwargs.get("session_id")
+            or ""
+        )
+        return self._dynamic_headers(conversation_id)
+
+    async def _rewrite_outgoing_headers(self, request: Any) -> None:
+        """在实际发送前提取会话并重建应用层请求头。"""
+        token, login_epoch = self._credentials()
+        bound_epoch = _REQUEST_LOGIN_EPOCH.get()
+        if bound_epoch and bound_epoch != login_epoch:
+            raise MiniMaxError(ErrorCategory.AUTH, "MiniMax 账号已切换，请重试")
+        conversation_id = _REQUEST_CONVERSATION_ID.get()
+        if not conversation_id:
+            conversation_id = request.headers.get("x-astrbot-conversation-id", "").strip()
+        headers = self._dynamic_headers(
+            conversation_id, credentials=(token, login_epoch)
+        )
+        try:
+            payload = json.loads(request.content)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict) and payload.get("stream") is True:
+            headers["Accept"] = "text/event-stream"
+        for name in list(request.headers.keys()):
+            if name.casefold() not in _TRANSPORT_HEADER_NAMES:
+                del request.headers[name]
+        for name, value in headers.items():
+            request.headers[name] = value
 
     async def _retry_on_auth_error(self) -> bool:
-        """401 时刷新登录态；无可用的 refresher 或刷新失败返回 False。"""
+        """仅在同一次登录内刷新并重试一次。"""
         if self._auth_refresher is None:
+            return False
+        expected_epoch = _REQUEST_LOGIN_EPOCH.get()
+        if expected_epoch and self._credentials()[1] != expected_epoch:
             return False
         try:
             await self._auth_refresher()
         except Exception:  # noqa: BLE001 - 刷新失败按不可重试处理
             return False
-        return bool(self._token_getter())
+        token, login_epoch = self._credentials()
+        return bool(token) and (
+            not expected_epoch or login_epoch == expected_epoch
+        )
 
     async def text_chat(self, *args: Any, **kwargs: Any):
+        epoch_token = _REQUEST_LOGIN_EPOCH.set(self._credentials()[1])
+        conversation_token = _REQUEST_CONVERSATION_ID.set(
+            str(
+                kwargs.get("conversation_id")
+                or kwargs.get("umo")
+                or kwargs.get("session_id")
+                or ""
+            )
+        )
         try:
-            return await super().text_chat(*args, **kwargs)
-        except Exception as exc:
-            if not _is_auth_error(exc) or not await self._retry_on_auth_error():
-                raise
-            return await super().text_chat(*args, **kwargs)
+            try:
+                return await super().text_chat(*args, **kwargs)
+            except Exception as exc:
+                if not _is_auth_error(exc) or not await self._retry_on_auth_error():
+                    raise
+                return await super().text_chat(*args, **kwargs)
+        finally:
+            _REQUEST_CONVERSATION_ID.reset(conversation_token)
+            _REQUEST_LOGIN_EPOCH.reset(epoch_token)
 
     async def text_chat_stream(self, *args: Any, **kwargs: Any):
-        # 首个事件前鉴权失败可安全重试（请求尚未对用户产出内容）
-        for _attempt in range(2):
-            agen = super().text_chat_stream(*args, **kwargs)
-            try:
-                first = await agen.__anext__()
-            except StopAsyncIteration:
+        epoch_token = _REQUEST_LOGIN_EPOCH.set(self._credentials()[1])
+        conversation_token = _REQUEST_CONVERSATION_ID.set(
+            str(
+                kwargs.get("conversation_id")
+                or kwargs.get("umo")
+                or kwargs.get("session_id")
+                or ""
+            )
+        )
+        try:
+            # 首个事件前鉴权失败可安全重试（请求尚未对用户产出内容）
+            for _attempt in range(2):
+                agen = super().text_chat_stream(*args, **kwargs)
+                try:
+                    first = await agen.__anext__()
+                except StopAsyncIteration:
+                    return
+                except Exception as exc:
+                    await agen.aclose()
+                    if _is_auth_error(exc) and await self._retry_on_auth_error():
+                        continue
+                    raise
+                yield first
+                async for chunk in agen:
+                    yield chunk
                 return
-            except Exception as exc:
-                await agen.aclose()
-                if _is_auth_error(exc) and await self._retry_on_auth_error():
-                    continue
-                raise
-            yield first
-            async for chunk in agen:
-                yield chunk
-            return
+        finally:
+            _REQUEST_CONVERSATION_ID.reset(conversation_token)
+            _REQUEST_LOGIN_EPOCH.reset(epoch_token)
 
 
 def _is_auth_error(exc: BaseException) -> bool:

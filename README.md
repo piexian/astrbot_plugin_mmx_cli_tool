@@ -168,6 +168,8 @@ https://github.com/piexian/astrbot_plugin_mmx_cli_tool
 
 插件会把 `minimax_code` 适配器类型与提供商源 `mmx_minimax_code` 写入 AstrBot：WebUI「模型供应商」页可见该源，默认提供 `MiniMax-M3.1-Flash` 与 `MiniMax-M3` 两个模型条目，可继续添加自定义模型（上下文窗口默认 512K，可按条目调整；「获取模型列表」按钮实时拉取云端公开目录 `/mavis/api/v1/models`，无需登录）；源的 API Base URL 与 API Key 为占位提醒，实际请求由插件按登录区域注入 OAuth 令牌（走 Claude Messages 协议直连 `agent.minimax.cn` / `agent.minimax.io`，消耗订阅额度与签到积分）。源 ID `mmx_minimax_code` 若被其他配置占用，插件跳过写入并在工作台弹出告警，同时回退为运行时注册供会话/Agent 直接选用。令牌到期或 401 时自动刷新并重试。卸载插件前请先在「模型供应商」页删除 `mmx_minimax_code` 源及其模型条目，否则 AstrBot 重启时会提示找不到 `minimax_code` 适配器。
 
+MiniMax Code 对话会将 AstrBot `conversation_id` 稳定转写为 Mavis 会话 ID，token 刷新后保持不变；换账号登录后不复用旧会话。出站请求仅发送白名单头，AstrBot 头、SDK 遥测头与 `custom_headers` 不透传。
+
 签到与用量：
 
 ```
