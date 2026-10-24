@@ -397,9 +397,14 @@ class Main(star.Star):
         except Exception as e:
             logger.warning(f"[mmx] MiniMax Code 供应商类型注册失败: {e}")
         try:
+            self._ensure_token_login_epoch()
             from .mmx.llm_provider import set_token_source
 
-            set_token_source(self._provider_token, self._provider_refresh)
+            set_token_source(
+                self._provider_token,
+                self._provider_refresh,
+                credentials_getter=self._provider_credentials,
+            )
         except Exception as e:
             logger.warning(f"[mmx] LLM 运行时来源绑定失败: {e}")
         await self._ensure_provider_source()
@@ -455,7 +460,9 @@ class Main(star.Star):
                 if token and token.is_expired():
                     try:
                         refreshed = await self._oauth.refresh(
-                            token.refresh_token, token.region
+                            token.refresh_token,
+                            token.region,
+                            login_epoch=token.login_epoch,
                         )
                     except OAuthError as e:
                         if e.code in _REFRESH_FATAL_CODES:
@@ -484,7 +491,9 @@ class Main(star.Star):
             if not token:
                 return self._region, ""
             try:
-                refreshed = await self._oauth.refresh(token.refresh_token, token.region)
+                refreshed = await self._oauth.refresh(
+                    token.refresh_token, token.region, login_epoch=token.login_epoch
+                )
             except OAuthError as e:
                 if e.code in _REFRESH_FATAL_CODES:
                     self._token_store.clear()
@@ -492,6 +501,19 @@ class Main(star.Star):
                 return self._region, ""
             self._token_store.save(refreshed)
             return refreshed.region, refreshed.access_token
+
+    def _ensure_token_login_epoch(self) -> None:
+        """为旧登录态持久化一次登录 epoch。"""
+        token = self._token_store.load()
+        if token and token.ensure_login_epoch():
+            self._token_store.save(token)
+
+    def _provider_credentials(self) -> tuple[str, str]:
+        """从同一份登录态读取 access token 与登录 epoch。"""
+        token = self._token_store.load()
+        if not token:
+            return "", ""
+        return token.access_token, token.login_epoch
 
     def _provider_token(self) -> str:
         """LLM Provider 当前访问令牌（每次请求读取，令牌轮换即时生效）。"""
@@ -512,13 +534,19 @@ class Main(star.Star):
         if not token:
             return False
         try:
+            if token.ensure_login_epoch():
+                self._token_store.save(token)
             from .mmx.llm_provider import (
                 PROVIDER_ID,
                 MiniMaxCodeProvider,
                 set_token_source,
             )
 
-            set_token_source(self._provider_token, self._provider_refresh)
+            set_token_source(
+                self._provider_token,
+                self._provider_refresh,
+                credentials_getter=self._provider_credentials,
+            )
         except Exception as e:
             logger.warning(
                 f"[mmx] AstrBot 供应商 API 不可用，跳过 LLM Provider 注册: {e}"
@@ -528,6 +556,7 @@ class Main(star.Star):
             region=token.region,
             token_getter=self._provider_token,
             auth_refresher=self._provider_refresh,
+            credentials_getter=self._provider_credentials,
         )
         self._llm_provider = provider
         try:

@@ -279,7 +279,7 @@ class PollDeviceTokenTests(unittest.TestCase):
 
 
 class RefreshTests(unittest.TestCase):
-    def test_refresh_keeps_old_token_when_not_rotated(self):
+    def test_refresh_keeps_refresh_token_and_login_epoch(self):
         seen = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -294,11 +294,26 @@ class RefreshTests(unittest.TestCase):
             )
 
         client = _make_client(handler)
-        token = asyncio.run(client.refresh("mmort_old", "cn"))
+        token = asyncio.run(client.refresh("mmort_old", "cn", login_epoch="login-1"))
         self.assertEqual("refresh_token", seen["grant_type"])
         self.assertEqual("mmort_old", seen["refresh_token"])
         self.assertEqual("mmoat_new", token.access_token)
         self.assertEqual("mmort_old", token.refresh_token)
+        self.assertEqual("login-1", token.login_epoch)
+
+    def test_new_grants_have_independent_login_epochs(self):
+        client = _make_client(lambda request: httpx.Response(500))
+        body = {
+            "access_token": "a",
+            "refresh_token": "r",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        }
+        first = client._parse_token_grant(body, "cn")
+        second = client._parse_token_grant(body, "cn")
+        self.assertRegex(first.login_epoch, r"^[0-9a-f]{32}$")
+        self.assertRegex(second.login_epoch, r"^[0-9a-f]{32}$")
+        self.assertNotEqual(first.login_epoch, second.login_epoch)
 
 
 class TokenStoreTests(unittest.TestCase):
@@ -309,7 +324,7 @@ class TokenStoreTests(unittest.TestCase):
             self.assertIsNone(store.load())
             token = OAuthToken(
                 access_token="a", refresh_token="r", expires_at=9999999999.0,
-                region="global", scopes=["agent.default"],
+                region="global", scopes=["agent.default"], login_epoch="login-1",
             )
             store.save(token)
             if os.name != "nt":
@@ -319,9 +334,22 @@ class TokenStoreTests(unittest.TestCase):
             self.assertEqual("a", loaded.access_token)
             self.assertEqual("global", loaded.region)
             self.assertEqual(["agent.default"], loaded.scopes)
+            self.assertEqual("login-1", loaded.login_epoch)
             store.clear()
             self.assertIsNone(store.load())
             store.clear()  # 幂等
+
+    def test_legacy_login_epoch_migration_is_persistent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TokenStore(Path(tmp) / "auth.json")
+            token = OAuthToken("a", "r", expires_at=9999999999.0)
+            self.assertTrue(token.ensure_login_epoch())
+            store.save(token)
+            epoch = store.load().login_epoch
+            self.assertRegex(epoch, r"^[0-9a-f]{32}$")
+            loaded = store.load()
+            self.assertFalse(loaded.ensure_login_epoch())
+            self.assertEqual(epoch, loaded.login_epoch)
 
     def test_load_invalid_json_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:

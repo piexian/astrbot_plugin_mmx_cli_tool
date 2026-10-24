@@ -12,6 +12,8 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from support import plugin_modules
@@ -64,6 +66,9 @@ def make_provider_anthropic_stub():
 
         def get_model(self):
             return self.model_name
+
+        def _create_http_client(self, provider_config):
+            return None
 
         def resolve_request_headers(self, **kwargs):
             return {}
@@ -125,7 +130,9 @@ def provider_stubs():
     anthropic_mod = ModuleType("anthropic")
     anthropic_mod.AsyncAnthropic = AsyncAnthropicStub
     anthropic_mod.AuthenticationError = AuthenticationErrorStub
-
+    anthropic_base_client = ModuleType("anthropic._base_client")
+    anthropic_base_client.httpx = httpx
+    anthropic_mod._base_client = anthropic_base_client
     names = (
         "astrbot",
         "astrbot.core",
@@ -139,6 +146,7 @@ def provider_stubs():
             "astrbot.core.provider.sources.anthropic_source": anthropic_source,
             "astrbot.core.provider.register": register_mod,
             "anthropic": anthropic_mod,
+            "anthropic._base_client": anthropic_base_client,
         }
     )
     saved_behavior = dict(PROVIDER_ANTHROPIC_BEHAVIOR)
@@ -157,23 +165,23 @@ def provider_stubs():
 class StableSessionIdTests(unittest.TestCase):
     def test_matches_independent_construction(self):
         with provider_stubs() as (llm_provider, _):
-            token = "token-abc"
-            raw = bytearray(
-                hashlib.sha256(("mavis-session|" + token).encode()).digest()[:16]
-            )
+            seed = "astrbot-mmx\0login-1\0conv-1"
+            raw = bytearray(hashlib.sha256(seed.encode()).digest()[:16])
             raw[6] = (raw[6] & 0x0F) | 0x40
             raw[8] = (raw[8] & 0x3F) | 0x80
-            expected = str(raw.hex())
-            expected = "-".join(
-                (
-                    expected[0:8],
-                    expected[8:12],
-                    expected[12:16],
-                    expected[16:20],
-                    expected[20:32],
-                )
+            expected = "mvs_" + raw.hex()
+            actual = llm_provider.stable_session_id("login-1", "conv-1")
+            self.assertEqual(actual, expected)
+            self.assertEqual(
+                actual, llm_provider.stable_session_id("login-1", "conv-1")
             )
-            self.assertEqual(llm_provider.stable_session_id(token), expected)
+            self.assertNotEqual(
+                actual, llm_provider.stable_session_id("login-1", "conv-2")
+            )
+            self.assertNotEqual(
+                actual, llm_provider.stable_session_id("login-2", "conv-1")
+            )
+            self.assertRegex(actual, r"^mvs_[0-9a-f]{32}$")
 
 
 class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
@@ -181,7 +189,9 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
         stubs = provider_stubs()
         self.llm_provider, self.base_cls = self.enterContext(stubs)
         self.provider = self.llm_provider.MiniMaxCodeProvider(
-            region="cn", token_getter=lambda: "tok-1"
+            region="cn",
+            token_getter=lambda: "tok-1",
+            credentials_getter=lambda: ("tok-1", "login-1"),
         )
 
     async def test_provider_construction_headers_and_meta(self):
@@ -194,6 +204,9 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.provider.client.kwargs["base_url"], self.provider.base_url
         )
+        self.assertEqual(self.provider.client.kwargs["default_headers"], {})
+        hooks = self.provider.client.kwargs["http_client"].event_hooks["request"]
+        self.assertEqual(len(hooks), 1)
         self.assertEqual(self.provider.get_model(), "MiniMax-M3.1-Flash")
         global_provider = self.llm_provider.MiniMaxCodeProvider(
             region="global", token_getter=lambda: "t"
@@ -215,7 +228,8 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(headers["X-Mavis-Agent-Id"], "main")
         self.assertTrue(re.fullmatch(r"-?\d+", headers["X-Mavis-Timezone-Offset"]))
         self.assertEqual(
-            headers["X-Mavis-Session-Id"], self.llm_provider.stable_session_id("tok-1")
+            headers["X-Mavis-Session-Id"],
+            self.llm_provider.stable_session_id("login-1", "auxiliary"),
         )
 
         # meta/密钥与默认模型列表
@@ -227,6 +241,152 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.provider.get_current_key(), "tok-1")
         self.assertEqual(
             await self.provider.get_models(), self.llm_provider.DEFAULT_MODELS
+        )
+
+    @staticmethod
+    def _outgoing_request(conversation_id="conv-1", *, stream=False):
+        headers = {
+            "User-Agent": "astrbot/4.29.0",
+            "Authorization": "Bearer stale",
+            "X-Api-Key": "stale-key",
+            "X-Stainless-Lang": "python",
+            "X-Custom-Unknown": "drop",
+            "anthropic-beta": "unsupported",
+            "Cookie": "drop",
+        }
+        if conversation_id is not None:
+            headers["x-astrbot-conversation-id"] = conversation_id
+            headers["x-astrbot-request-id"] = "drop"
+        return httpx.Request(
+            "POST",
+            "https://agent.minimax.cn/mavis/api/v1/llm/v1/messages",
+            headers=headers,
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": stream},
+        )
+
+    async def test_outgoing_headers_are_whitelisted_per_conversation(self):
+        request = self._outgoing_request()
+        await self.provider._rewrite_outgoing_headers(request)
+        expected_session = self.llm_provider.stable_session_id("login-1", "conv-1")
+        self.assertEqual(request.headers["X-Mavis-Session-Id"], expected_session)
+        self.assertEqual(request.headers["Authorization"], "Bearer tok-1")
+        self.assertEqual(request.headers["User-Agent"], "MiniMaxAgent")
+        self.assertEqual(request.headers["Accept"], "application/json")
+        self.assertEqual(request.headers["anthropic-version"], "2023-06-01")
+        allowed = {
+            "accept-encoding",
+            "connection",
+            "content-length",
+            "host",
+            "authorization",
+            "user-agent",
+            "x-mavis-session-id",
+            "x-mavis-agent-id",
+            "x-mavis-timezone-offset",
+            "anthropic-version",
+            "content-type",
+            "accept",
+        }
+        self.assertLessEqual(set(request.headers.keys()), allowed)
+        self.assertNotIn("x-astrbot-conversation-id", request.headers)
+        self.assertNotIn("x-stainless-lang", request.headers)
+        self.assertNotIn("x-custom-unknown", request.headers)
+
+        same = self._outgoing_request()
+        await self.provider._rewrite_outgoing_headers(same)
+        other = self._outgoing_request("conv-2")
+        await self.provider._rewrite_outgoing_headers(other)
+        self.assertEqual(same.headers["X-Mavis-Session-Id"], expected_session)
+        self.assertNotEqual(other.headers["X-Mavis-Session-Id"], expected_session)
+
+    async def test_outgoing_stream_and_auxiliary_session(self):
+        request = self._outgoing_request(None, stream=True)
+        await self.provider._rewrite_outgoing_headers(request)
+        self.assertEqual(request.headers["Accept"], "text/event-stream")
+        self.assertEqual(
+            request.headers["X-Mavis-Session-Id"],
+            self.llm_provider.stable_session_id("login-1", "auxiliary"),
+        )
+
+    async def test_token_refresh_preserves_conversation_session(self):
+        state = {"token": "tok-1"}
+        provider = self.llm_provider.MiniMaxCodeProvider(
+            region="cn",
+            token_getter=lambda: state["token"],
+            credentials_getter=lambda: (state["token"], "login-1"),
+        )
+        first = self._outgoing_request()
+        await provider._rewrite_outgoing_headers(first)
+        state["token"] = "tok-2"
+        second = self._outgoing_request()
+        await provider._rewrite_outgoing_headers(second)
+        self.assertEqual(second.headers["Authorization"], "Bearer tok-2")
+        self.assertEqual(
+            second.headers["X-Mavis-Session-Id"],
+            first.headers["X-Mavis-Session-Id"],
+        )
+        await provider.client.kwargs["http_client"].aclose()
+
+    async def test_account_change_blocks_outgoing_request(self):
+        from astrbot_plugin_mmx_cli_tool.mmx.errors import MiniMaxError
+
+        state = {"token": "tok-1", "epoch": "login-1"}
+        provider = self.llm_provider.MiniMaxCodeProvider(
+            region="cn",
+            token_getter=lambda: state["token"],
+            credentials_getter=lambda: (state["token"], state["epoch"]),
+        )
+
+        async def behavior(*args, **kwargs):
+            state["epoch"] = "login-2"
+            await provider._rewrite_outgoing_headers(self._outgoing_request())
+            return "unexpected"
+
+        PROVIDER_ANTHROPIC_BEHAVIOR["text_chat"] = behavior
+        with self.assertRaises(MiniMaxError):
+            await provider.text_chat(prompt="hi")
+        await provider.client.kwargs["http_client"].aclose()
+
+    async def test_auth_retry_does_not_cross_login(self):
+        state = {"calls": 0, "refreshes": 0, "epoch": "login-1"}
+        provider = self.llm_provider.MiniMaxCodeProvider(
+            region="cn",
+            token_getter=lambda: "tok-1",
+            credentials_getter=lambda: ("tok-1", state["epoch"]),
+        )
+
+        async def behavior(*args, **kwargs):
+            state["calls"] += 1
+            raise AuthenticationErrorStub("401")
+
+        async def refresher():
+            state["refreshes"] += 1
+            state["epoch"] = "login-2"
+
+        PROVIDER_ANTHROPIC_BEHAVIOR["text_chat"] = behavior
+        provider._auth_refresher = refresher
+        with self.assertRaises(AuthenticationErrorStub):
+            await provider.text_chat(prompt="hi")
+        self.assertEqual(state["calls"], 1)
+        self.assertEqual(state["refreshes"], 1)
+        await provider.client.kwargs["http_client"].aclose()
+
+    async def test_outgoing_uses_conversation_kwargs_when_header_absent(self):
+        captured = []
+
+        async def behavior(*args, **kwargs):
+            request = self._outgoing_request()
+            del request.headers["x-astrbot-conversation-id"]
+            await self.provider._rewrite_outgoing_headers(request)
+            captured.append(request)
+            return "ok"
+
+        PROVIDER_ANTHROPIC_BEHAVIOR["text_chat"] = behavior
+        result = await self.provider.text_chat(prompt="hi", conversation_id="conv-kwargs")
+        self.assertEqual(result, "ok")
+        self.assertEqual(
+            captured[0].headers["X-Mavis-Session-Id"],
+            self.llm_provider.stable_session_id("login-1", "conv-kwargs"),
         )
 
     async def test_fetch_available_models_parses_catalog(self):
@@ -335,7 +495,10 @@ class AdapterRegistrationTests(unittest.TestCase):
 
     def test_config_mode_construction(self):
         with provider_stubs() as (llm_provider, _):
-            llm_provider.set_token_source(lambda: "cfg-tok")
+            llm_provider.set_token_source(
+                lambda: "cfg-tok",
+                credentials_getter=lambda: ("cfg-tok", "cfg-login"),
+            )
             provider = llm_provider.MiniMaxCodeProvider(
                 {
                     "id": "my_mmcode",
@@ -419,6 +582,10 @@ class PluginRegistrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertTrue(plugin._register_llm_provider())
                     self.assertEqual(len(manager.provider_insts), 1)
+                    epoch = plugin._token_store.load().login_epoch
+                    self.assertRegex(epoch, r"^[0-9a-f]{32}$")
+                    self.assertEqual(plugin._provider_credentials(), ("a", epoch))
+                    self.assertEqual(plugin._llm_provider._credentials(), ("a", epoch))
                     self.assertIs(
                         manager.inst_map["mmx_minimax_code"], plugin._llm_provider
                     )
@@ -431,6 +598,23 @@ class PluginRegistrationTests(unittest.IsolatedAsyncioTestCase):
                     plugin._unregister_llm_provider()
                     self.assertEqual(manager.provider_insts, [])
                     self.assertNotIn("mmx_minimax_code", manager.inst_map)
+
+    async def test_initialize_migrates_legacy_login_epoch(self):
+        with provider_stubs():
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, _, _ = make_fake_context()
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    from astrbot_plugin_mmx_cli_tool.mmx.oauth import OAuthToken
+
+                    plugin._token_store.save(OAuthToken("a", "r", expires_at=9e9))
+                    await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+                    token, epoch = plugin._provider_credentials()
+                    self.assertEqual(token, "a")
+                    self.assertRegex(epoch, r"^[0-9a-f]{32}$")
+                    self.assertEqual(plugin._provider_credentials()[1], epoch)
+                    self.assertEqual(plugin._token_store.load().login_epoch, epoch)
 
     async def test_auto_signin_claims_once_per_day(self):
         from unittest.mock import AsyncMock
@@ -609,6 +793,7 @@ class ProviderSourceTests(unittest.IsolatedAsyncioTestCase):
                     llm_provider.set_token_source(lambda: "tok")
                     await plugin.terminate()
                     self.assertEqual(llm_provider._module_token_getter(), "")
+                    self.assertIsNone(llm_provider._module_credentials_getter)
 
     async def test_occupied_foreign_source_skips_with_warning(self):
         with provider_stubs():
