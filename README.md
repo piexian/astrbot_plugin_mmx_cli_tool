@@ -2,7 +2,7 @@
 
 为 AstrBot 提供 MiniMax 图片、视频、语音合成与转写、联网搜索、搜图与以图搜图、AI 音乐音效、视觉理解和额度查询能力。
 
-> [!WARNING]
+> [!TIP]
 > **音乐与音效已切换至 MiniMax Agent 接口。** 当前 `mmx_generate_music`、`mmx_generate_sound_effect` 及 `/mmx music`、`/mmx sfx` 使用 Agent Matrix 网关，优先使用 `/mmx login` 授权的账号 Token，未登录时回退静态 API Key，与已关闭的开放平台音乐服务无关。翻唱及旧后台任务工具不再提供。
 
 ## 环境要求
