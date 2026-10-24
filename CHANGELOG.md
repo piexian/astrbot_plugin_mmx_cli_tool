@@ -1,6 +1,14 @@
 # 更新日志
 
 
+## 0.7.1 - 2026-10-24
+
+- 修复 MiniMax Code 对话 401：出站请求按白名单重建，过滤 AstrBot 与 SDK 遥测头，仅发送 Authorization、MiniMaxAgent 与 X-Mavis 头。
+- MiniMax Code 会话按 AstrBot `conversation_id` 稳定转写为 Mavis 会话 ID，token 刷新不变；无对话请求请求级隔离，同一 401 重试内保持稳定。
+- 登录态新增持久化 login epoch：token 刷新继承，换账号或换区域后由插件后端替换并关闭旧运行时供应商实例。
+- 支持普通与流式调用的位置 `session_id` 参数。
+- README 音乐/音效接口说明改为提示样式。
+
 ## 0.7.0 - 2026-10-21
 
 - 新增 MiniMax 账号 OAuth 登录（设备授权 + PKCE），令牌自动刷新，`/mmx login` / `/mmx logout` 管理登录态。
