@@ -3,7 +3,7 @@
 为 AstrBot 提供 MiniMax 图片、视频、语音合成与转写、联网搜索、搜图与以图搜图、AI 音乐音效、视觉理解和额度查询能力。
 
 > [!WARNING]
-> **开放平台音乐生成与翻唱已彻底移除。** MiniMax 已公告关闭开放平台音乐生成服务，mmx-cli 自 1.0.25 起移除全部音乐命令；本插件自 0.6.0 起同步移除 `mmx_generate_music`、`mmx_music_cover`、`mmx_background_task_get` 工具及旧 `/mmx music` 指令。0.7.0 起提供的 `/mmx music`、`/mmx sfx` 是 MiniMax Agent 账号体系下的新接口，需先 `/mmx login` 授权，与已移除的开放平台接口无关。
+> **音乐与音效已切换至 MiniMax Agent 接口。** 当前 `mmx_generate_music`、`mmx_generate_sound_effect` 及 `/mmx music`、`/mmx sfx` 使用 Agent Matrix 网关，优先使用 `/mmx login` 授权的账号 Token，未登录时回退静态 API Key，与已关闭的开放平台音乐服务无关。翻唱及旧后台任务工具不再提供。
 
 ## 环境要求
 
