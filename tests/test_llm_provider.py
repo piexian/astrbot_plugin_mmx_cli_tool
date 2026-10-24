@@ -73,6 +73,9 @@ def make_provider_anthropic_stub():
         def resolve_request_headers(self, **kwargs):
             return {}
 
+        async def terminate(self):
+            await self.client.kwargs["http_client"].aclose()
+
         async def text_chat(self, *args, **kwargs):
             behavior = PROVIDER_ANTHROPIC_BEHAVIOR["text_chat"]
             if behavior is None:
@@ -217,7 +220,7 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         # 每请求注入 Mavis 头与当前 Bearer
         headers = self.provider.resolve_request_headers(
-            conversation_id=None,
+            conversation_id="conv-meta",
             umo=None,
             request_id="req-1",
             model="MiniMax-M3",
@@ -229,7 +232,7 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(re.fullmatch(r"-?\d+", headers["X-Mavis-Timezone-Offset"]))
         self.assertEqual(
             headers["X-Mavis-Session-Id"],
-            self.llm_provider.stable_session_id("login-1", "auxiliary"),
+            self.llm_provider.stable_session_id("login-1", "conv-meta"),
         )
 
         # meta/密钥与默认模型列表
@@ -265,8 +268,33 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_outgoing_headers_are_whitelisted_per_conversation(self):
-        request = self._outgoing_request()
-        await self.provider._rewrite_outgoing_headers(request)
+        captured = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(200, json={"ok": True}, request=request)
+
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(http_client.aclose)
+        with patch.object(
+            self.base_cls, "_create_http_client", return_value=http_client
+        ):
+            provider = self.llm_provider.MiniMaxCodeProvider(
+                region="cn",
+                token_getter=lambda: "tok-1",
+                credentials_getter=lambda: ("tok-1", "login-1"),
+            )
+        configured_client = provider.client.kwargs["http_client"]
+        self.assertIs(configured_client, http_client)
+        for outgoing in (
+            self._outgoing_request(),
+            self._outgoing_request(),
+            self._outgoing_request("conv-2"),
+        ):
+            await configured_client.send(outgoing)
+
+        self.assertEqual(len(captured), 3)
+        request, same, other = captured
         expected_session = self.llm_provider.stable_session_id("login-1", "conv-1")
         self.assertEqual(request.headers["X-Mavis-Session-Id"], expected_session)
         self.assertEqual(request.headers["Authorization"], "Bearer tok-1")
@@ -291,21 +319,75 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("x-astrbot-conversation-id", request.headers)
         self.assertNotIn("x-stainless-lang", request.headers)
         self.assertNotIn("x-custom-unknown", request.headers)
-
-        same = self._outgoing_request()
-        await self.provider._rewrite_outgoing_headers(same)
-        other = self._outgoing_request("conv-2")
-        await self.provider._rewrite_outgoing_headers(other)
         self.assertEqual(same.headers["X-Mavis-Session-Id"], expected_session)
         self.assertNotEqual(other.headers["X-Mavis-Session-Id"], expected_session)
 
-    async def test_outgoing_stream_and_auxiliary_session(self):
+    async def test_outgoing_stream_without_conversation(self):
         request = self._outgoing_request(None, stream=True)
         await self.provider._rewrite_outgoing_headers(request)
         self.assertEqual(request.headers["Accept"], "text/event-stream")
+        self.assertRegex(request.headers["X-Mavis-Session-Id"], r"^mvs_[0-9a-f]{32}$")
+
+    async def test_positional_session_id_is_mapped_for_text_and_stream(self):
+        sessions = []
+
+        async def capture(outgoing):
+            del outgoing.headers["x-astrbot-conversation-id"]
+            await self.provider._rewrite_outgoing_headers(outgoing)
+            sessions.append(outgoing.headers["X-Mavis-Session-Id"])
+
+        async def text_behavior(*args, **kwargs):
+            await capture(self._outgoing_request())
+            return "ok"
+
+        async def stream_behavior(*args, **kwargs):
+            await capture(self._outgoing_request())
+            yield "chunk"
+
+        PROVIDER_ANTHROPIC_BEHAVIOR["text_chat"] = text_behavior
+        PROVIDER_ANTHROPIC_BEHAVIOR["text_chat_stream"] = stream_behavior
+        self.assertEqual(await self.provider.text_chat("hi", "conv-positional"), "ok")
+        chunks = [
+            chunk
+            async for chunk in self.provider.text_chat_stream(
+                "hi", "conv-stream-positional"
+            )
+        ]
+        self.assertEqual(chunks, ["chunk"])
         self.assertEqual(
-            request.headers["X-Mavis-Session-Id"],
-            self.llm_provider.stable_session_id("login-1", "auxiliary"),
+            sessions,
+            [
+                self.llm_provider.stable_session_id("login-1", "conv-positional"),
+                self.llm_provider.stable_session_id(
+                    "login-1", "conv-stream-positional"
+                ),
+            ],
+        )
+
+    async def test_no_conversation_requests_are_isolated_and_retry_stable(self):
+        captured = []
+
+        async def behavior(*args, **kwargs):
+            request = self._outgoing_request(None)
+            await self.provider._rewrite_outgoing_headers(request)
+            captured.append(request)
+            if len(captured) == 1:
+                raise AuthenticationErrorStub("401")
+            return "ok"
+
+        PROVIDER_ANTHROPIC_BEHAVIOR["text_chat"] = behavior
+        self.provider._auth_refresher = AsyncMock()
+        self.assertEqual(await self.provider.text_chat(prompt="hi"), "ok")
+        self.assertEqual(await self.provider.text_chat(prompt="hi"), "ok")
+        self.assertEqual(len(captured), 3)
+        first, retry, independent = captured
+        self.assertEqual(
+            retry.headers["X-Mavis-Session-Id"],
+            first.headers["X-Mavis-Session-Id"],
+        )
+        self.assertNotEqual(
+            independent.headers["X-Mavis-Session-Id"],
+            first.headers["X-Mavis-Session-Id"],
         )
 
     async def test_token_refresh_preserves_conversation_session(self):
@@ -566,7 +648,7 @@ class PluginRegistrationTests(unittest.IsolatedAsyncioTestCase):
                     self.addAsyncCleanup(plugin.terminate)
 
                     # 未登录时不注册
-                    self.assertFalse(plugin._register_llm_provider())
+                    self.assertFalse(await plugin._register_llm_provider())
                     self.assertEqual(manager.provider_insts, [])
 
                     # 登录后注册进 insts 与 inst_map
@@ -580,7 +662,7 @@ class PluginRegistrationTests(unittest.IsolatedAsyncioTestCase):
                             region="cn",
                         )
                     )
-                    self.assertTrue(plugin._register_llm_provider())
+                    self.assertTrue(await plugin._register_llm_provider())
                     self.assertEqual(len(manager.provider_insts), 1)
                     epoch = plugin._token_store.load().login_epoch
                     self.assertRegex(epoch, r"^[0-9a-f]{32}$")
@@ -591,13 +673,60 @@ class PluginRegistrationTests(unittest.IsolatedAsyncioTestCase):
                     )
 
                     # 幂等：重复注册不叠加
-                    self.assertTrue(plugin._register_llm_provider())
+                    self.assertTrue(await plugin._register_llm_provider())
                     self.assertEqual(len(manager.provider_insts), 1)
 
                     # 注销（terminate 也会走同一路径）
-                    plugin._unregister_llm_provider()
+                    await plugin._unregister_llm_provider()
                     self.assertEqual(manager.provider_insts, [])
                     self.assertNotIn("mmx_minimax_code", manager.inst_map)
+
+    async def test_runtime_provider_switches_account_and_region(self):
+        with provider_stubs():
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context()
+                    config["provider_sources"].append(
+                        {
+                            "id": "mmx_minimax_code",
+                            "api_base": "http://foreign",
+                            "type": "openai_chat_completion",
+                        }
+                    )
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    from astrbot_plugin_mmx_cli_tool.mmx.oauth import OAuthToken
+
+                    plugin._token_store.save(
+                        OAuthToken("a", "r", 9e9, region="cn", login_epoch="login-cn")
+                    )
+                    await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+                    first = plugin._llm_provider
+                    first.terminate = AsyncMock()
+
+                    plugin._token_store.save(
+                        OAuthToken(
+                            "a2", "r2", 9e9, region="cn", login_epoch="login-cn"
+                        )
+                    )
+                    self.assertTrue(await plugin._register_llm_provider())
+                    self.assertIs(plugin._llm_provider, first)
+
+                    plugin._token_store.save(
+                        OAuthToken(
+                            "b", "r3", 9e9, region="global", login_epoch="login-global"
+                        )
+                    )
+                    self.assertTrue(await plugin._register_llm_provider())
+                    second = plugin._llm_provider
+                    self.assertIsNot(second, first)
+                    self.assertEqual(second._region, "global")
+                    self.assertEqual(
+                        second.base_url, "https://agent.minimax.io/mavis/api/v1/llm"
+                    )
+                    self.assertEqual(manager.provider_insts, [second])
+                    self.assertIs(manager.inst_map["mmx_minimax_code"], second)
+                    first.terminate.assert_awaited_once()
 
     async def test_initialize_migrates_legacy_login_epoch(self):
         with provider_stubs():
