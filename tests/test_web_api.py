@@ -302,14 +302,14 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.plugin._oauth.start_device_authorization = AsyncMock(return_value=auth)
         self.plugin._oauth.poll_device_token = AsyncMock(return_value=token)
-        self.plugin._ensure_provider_source = AsyncMock()
+        self.plugin._sync_provider_source = AsyncMock()
         web_request.reset(body={"region": "global"})
 
         started = await self.call("oauth/start")
         session = self.web._login_sessions[started["session_id"]]
         await session.task
 
-        self.plugin._ensure_provider_source.assert_awaited_once()
+        self.plugin._sync_provider_source.assert_awaited_once()
         self.assertEqual(session.status, "authorized")
         self.assertEqual(self.plugin._token_store.load().region, "global")
 

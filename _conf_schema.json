@@ -40,6 +40,12 @@
     "default": false,
     "hint": "需先 /mmx login 登录。开启后每 30 分钟巡检一次并领取当日签到积分（上游按天幂等，重复领取不叠加）；也可随时用 /mmx signin 手动领取。"
   },
+  "auto_create_provider_source": {
+    "description": "启动时自动创建 MiniMax Code 提供商源和默认模型",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后 WebUI「新增供应商」仍可选 minimax_code，需手动添加提供商源和模型；请求区域始终跟随 /mmx login 的登录区域。"
+  },
   "video_poll_interval": {
     "description": "视频生成轮询间隔（秒）",
     "type": "int",

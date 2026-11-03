@@ -467,6 +467,9 @@ class MCodeWebAPI:
             "provider_source_warning": str(
                 getattr(plugin, "_provider_source_warning", "") or ""
             ),
+            "provider_source_state": str(
+                getattr(plugin, "_provider_source_state", "") or ""
+            ),
             "capabilities": list(plugin._service.capabilities().get("features", [])),
             "views": [VIEW_NAME],
         }
@@ -813,12 +816,10 @@ class MCodeWebAPI:
             )
             return
         plugin._token_store.save(token)
-        # 与 /mmx login 命令路径一致：登录后同步提供商源 region/默认模型，
-        # 避免 UI 登录国际站后 Provider 仍按旧区域请求。
+        # 与 /mmx login 命令路径一致：登录后按开关同步提供商源与默认模型
+        # （请求区域由 Provider 实例跟随登录态，无需写入源配置）。
         try:
-            await plugin._ensure_provider_source()
-            if plugin._provider_source_warning:
-                await plugin._register_llm_provider()
+            await plugin._sync_provider_source()
         except Exception as exc:  # noqa: BLE001 - 登录已成功，源初始化失败仅记录
             logger.warning(f"[mmx-web] 登录后初始化 LLM 提供商源失败: {exc}")
         session.status = "authorized"

@@ -296,6 +296,11 @@ class Main(star.Star):
         self._auto_signin_enabled = bool(config.get("auto_signin", False))
         self._signin_claimed_day = ""
         self._provider_source_warning = ""
+        # 提供商源状态：managed / user_managed / conflict / disabled（未判定为空）
+        self._provider_source_state = ""
+        self._auto_create_provider_source = bool(
+            config.get("auto_create_provider_source", True)
+        )
         # 以图搜图工具实例（LLM 与直接指令共用）
         self._reverse_image_tool = ImageReverseSearchTool(
             self._matrix,
@@ -406,13 +411,11 @@ class Main(star.Star):
                 self._provider_token,
                 self._provider_refresh,
                 credentials_getter=self._provider_credentials,
+                region_getter=self._provider_region,
             )
         except Exception as e:
             logger.warning(f"[mmx] LLM 运行时来源绑定失败: {e}")
-        await self._ensure_provider_source()
-        if self._provider_source_warning:
-            # 提供商源 ID 被外部配置占用：退回运行时直注册，保证会话下拉可用
-            await self._register_llm_provider()
+        await self._sync_provider_source()
         if self._auto_signin_enabled:
             self._auto_signin_task = asyncio.create_task(self._auto_signin_loop())
 
@@ -522,6 +525,11 @@ class Main(star.Star):
         token = self._token_store.load()
         return token.access_token if token else ""
 
+    def _provider_region(self) -> str:
+        """LLM Provider 当前请求区域（跟随登录态，未登录返回空串由兜底区域接管）。"""
+        token = self._token_store.load()
+        return token.region if token else ""
+
     async def _provider_refresh(self) -> None:
         """Provider 401 时的强制刷新钩子；失败抛 MiniMaxError 由调用方中止重试。"""
         _, token = await self._refresh_matrix_token()
@@ -553,6 +561,7 @@ class Main(star.Star):
                 self._provider_token,
                 self._provider_refresh,
                 credentials_getter=self._provider_credentials,
+                region_getter=self._provider_region,
             )
         except Exception as e:
             logger.warning(
@@ -564,6 +573,7 @@ class Main(star.Star):
             token_getter=self._provider_token,
             auth_refresher=self._provider_refresh,
             credentials_getter=self._provider_credentials,
+            region_getter=self._provider_region,
         )
         self._llm_provider = provider
         self._llm_provider_login_epoch = token.login_epoch
@@ -595,14 +605,13 @@ class Main(star.Star):
             self._llm_provider_region = ""
             return
         try:
-            from .mmx.llm_provider import PROVIDER_ID, clear_token_source
+            from .mmx.llm_provider import PROVIDER_ID
 
             manager = self.context.provider_manager
             manager.provider_insts[:] = [
                 p for p in manager.provider_insts if p is not provider
             ]
             manager.inst_map.pop(PROVIDER_ID, None)
-            clear_token_source()
         except Exception:
             pass
 
@@ -614,12 +623,25 @@ class Main(star.Star):
         except Exception as e:
             logger.warning(f"[mmx] 关闭旧 LLM Provider 失败: {e}")
 
+    async def _sync_provider_source(self) -> None:
+        """按开关同步提供商源；关闭时不触碰配置，占用冲突时退回运行时直注册。"""
+        if not self._auto_create_provider_source:
+            self._provider_source_state = "disabled"
+            self._provider_source_warning = ""
+            return
+        await self._ensure_provider_source()
+        if self._provider_source_warning:
+            await self._register_llm_provider()
+
     async def _ensure_provider_source(self) -> None:
         """把 mmx_minimax_code 提供商源与默认模型条目写入 AstrBot 配置。
 
-        源 ID 被外部配置占用时不改写并记录告警（工作台弹提示）；
+        同 ID 且类型为 minimax_code 的非托管源视为用户自建，不接管不告警；
+        其余占用（类型不同）不改写并记录告警（工作台弹提示）；
         模型条目只补缺，用户自定义或修改过的条目保持原样。
         """
+        self._provider_source_warning = ""
+        self._provider_source_state = ""
         try:
             from .mmx.llm_provider import (
                 API_BASE_PLACEHOLDER,
@@ -634,7 +656,6 @@ class Main(star.Star):
             # AstrBot 供应商 API 不可用的环境（离线测试桩）直接跳过
             return
 
-        self._provider_source_warning = ""
         try:
             config = self.context.get_config()
             manager = self.context.provider_manager
@@ -646,8 +667,6 @@ class Main(star.Star):
         if manager.provider_sources_config is not sources:
             manager.provider_sources_config = sources
 
-        token = self._token_store.load()
-        region = token.region if token else "cn"
         existing = next(
             (
                 s
@@ -657,6 +676,14 @@ class Main(star.Star):
             None,
         )
         if existing is not None and existing.get("managed_by") != MANAGED_BY:
+            if existing.get("type") == PROVIDER_TYPE:
+                self._provider_source_state = "user_managed"
+                logger.info(
+                    f"[mmx] 检测到用户手动创建的 MiniMax Code 提供商源 {PROVIDER_SOURCE_ID}，"
+                    "插件不接管"
+                )
+                return
+            self._provider_source_state = "conflict"
             self._provider_source_warning = (
                 f"提供商源 ID {PROVIDER_SOURCE_ID} 已被其他配置占用，"
                 "插件未写入 MiniMax Code 源；请处理重名后重载插件。"
@@ -664,8 +691,8 @@ class Main(star.Star):
             logger.warning(f"[mmx] {self._provider_source_warning}")
             return
 
+        self._provider_source_state = "managed"
         dirty = False
-        region_changed = False
         if existing is None:
             sources.append(
                 {
@@ -679,7 +706,6 @@ class Main(star.Star):
                     "timeout": 120,
                     "proxy": "",
                     "custom_headers": {},
-                    "region": region,
                     "managed_by": MANAGED_BY,
                 }
             )
@@ -687,10 +713,6 @@ class Main(star.Star):
             logger.info(
                 "[mmx] 已写入提供商源 mmx_minimax_code（模型供应商页可见，可添加自定义模型）"
             )
-        elif existing.get("region") != region:
-            existing["region"] = region
-            dirty = True
-            region_changed = True
 
         providers = config.setdefault("provider", [])
         for model in DEFAULT_MODELS:
@@ -735,16 +757,10 @@ class Main(star.Star):
             )
             if entry is None or not entry.get("enable", True):
                 continue
-            if entry_id in manager.inst_map and not region_changed:
-                # 已加载且区域未变：无需重复实例化
+            if entry_id in manager.inst_map:
+                # 已加载：区域由实例按登录态动态跟随，无需重载
                 continue
             try:
-                manager.provider_insts[:] = [
-                    p
-                    for p in manager.provider_insts
-                    if getattr(p, "provider_config", {}).get("id") != entry_id
-                ]
-                manager.inst_map.pop(entry_id, None)
                 await manager.load_provider(dict(entry))
             except Exception as e:
                 logger.warning(f"[mmx] 模型 {model} 即时加载失败（重启后生效）: {e}")
@@ -868,17 +884,31 @@ class Main(star.Star):
         self._token_store.save(token)
         from .mmx.llm_provider import DEFAULT_MODELS
 
-        await self._ensure_provider_source()
-        if self._provider_source_warning:
-            await self._register_llm_provider()
-        extra = (
-            "\n已在「模型供应商」页注册提供商源 mmx_minimax_code"
-            f"（默认模型 {' / '.join(DEFAULT_MODELS)}，可继续添加自定义模型），"
-            "会话或 Agent 设置选择后对话走 MiniMax Code 官方通道（可用签到积分）。"
-            if not self._provider_source_warning
-            else "\n提供商源 ID mmx_minimax_code 已被其他配置占用，已回退为运行时注册，"
-            "会话/Agent 设置中仍可直接选择 mmx_minimax_code。"
-        )
+        await self._sync_provider_source()
+        state = self._provider_source_state
+        if state == "user_managed":
+            extra = (
+                "\n检测到已手动创建的 MiniMax Code 提供商源 mmx_minimax_code，"
+                "插件不会接管，请在会话或 Agent 设置中选择它。"
+            )
+        elif state == "conflict":
+            extra = (
+                "\n提供商源 ID mmx_minimax_code 已被其他配置占用，已回退为运行时注册，"
+                "会话/Agent 设置中仍可直接选择 mmx_minimax_code。"
+            )
+        elif state == "disabled":
+            extra = (
+                "\n已关闭自动创建提供商源：请管理员前往 WebUI「模型供应商 → 新增供应商」，"
+                "选择 MiniMax Code 并添加提供商源与模型；请求区域会自动跟随本次登录。"
+            )
+        elif state == "managed":
+            extra = (
+                "\n已在「模型供应商」页注册提供商源 mmx_minimax_code"
+                f"（默认模型 {' / '.join(DEFAULT_MODELS)}，可继续添加自定义模型），"
+                "会话或 Agent 设置选择后对话走 MiniMax Code 官方通道（可用签到积分）。"
+            )
+        else:
+            extra = "\n提供商源同步未完成，详见日志。"
         yield event.plain_result(
             f"✅ MiniMax 账号登录成功（{'国内站' if region == 'cn' else '国际站'}）！\n"
             "已解锁搜图、以图搜图、AI 音乐与音效生成能力。" + extra
