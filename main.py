@@ -178,22 +178,10 @@ def _format_account_balance(result: dict) -> list[str]:
     return lines
 
 
-def _normalize_quota_command_args(raw: str) -> str:
-    text = raw.strip()
-    if not text:
-        return ""
-
-    parts = text.split(maxsplit=2)
-    first = parts[0].lstrip("/").lower()
-    if first == "mmx":
-        if len(parts) >= 2 and parts[1].lower() == "quota":
-            return parts[2].strip() if len(parts) > 2 else ""
-        rest = text.split(maxsplit=1)
-        return rest[1].strip() if len(rest) > 1 else ""
-    if first == "quota":
-        rest = text.split(maxsplit=1)
-        return rest[1].strip() if len(rest) > 1 else ""
-    return text
+def _command_tail(event: AstrMessageEvent, fallback: str = "") -> str:
+    """取 /mmx <子指令> 之后的完整文本：普通 str 参数只能拿到首个词。"""
+    parts = event.message_str.strip().split(maxsplit=2)
+    return (parts[2] if len(parts) > 2 else "").strip() or fallback.strip()
 
 
 @filter.command_group("mmx")
@@ -1118,9 +1106,7 @@ class Main(star.Star):
     @mmx_group.command("search-image")
     async def mmx_search_image(self, event: AstrMessageEvent, *, query: str = ""):
         """搜图并下载。用法: /mmx search-image <关键词> [--n 数量]"""
-        # AstrBot 按空格切分参数，query 只有第一个词；优先取消息原文尾部
-        parts = event.message_str.strip().split(maxsplit=2)
-        raw_args = (parts[2] if len(parts) > 2 else "").strip() or (query or "").strip()
+        raw_args = _command_tail(event, query)
         if not raw_args:
             yield event.plain_result("用法: /mmx search-image <关键词> [--n 数量]")
             return
@@ -1158,11 +1144,7 @@ class Main(star.Star):
     @mmx_group.command("reverse-image")
     async def mmx_reverse_image(self, event: AstrMessageEvent, *, image: str = ""):
         """以图搜图。用法: /mmx reverse-image [图片URL]（可附带或引用图片）"""
-        # AstrBot 按空格切分参数，image 只有第一个词；优先取消息原文尾部
-        parts = event.message_str.strip().split(maxsplit=2)
-        image_input = (parts[2] if len(parts) > 2 else "").strip() or (
-            image or ""
-        ).strip()
+        image_input = _command_tail(event, image)
         trusted_local = False
         if not image_input:
             extracted, saw_image = await extract_image_input(
@@ -1206,11 +1188,7 @@ class Main(star.Star):
     @mmx_group.command("music")
     async def mmx_music(self, event: AstrMessageEvent, *, prompt: str = ""):
         """AI 音乐生成。用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]"""
-        # AstrBot 按空格切分参数，prompt 只有第一个词；优先取消息原文尾部
-        parts = event.message_str.strip().split(maxsplit=2)
-        raw_args = (parts[2] if len(parts) > 2 else "").strip() or (
-            prompt or ""
-        ).strip()
+        raw_args = _command_tail(event, prompt)
         if not raw_args:
             yield event.plain_result(
                 "用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]"
@@ -1241,9 +1219,7 @@ class Main(star.Star):
     @mmx_group.command("sfx")
     async def mmx_sfx(self, event: AstrMessageEvent, *, prompt: str = ""):
         """AI 音效生成。用法: /mmx sfx <音效描述>"""
-        # AstrBot 按空格切分参数，prompt 只有第一个词；优先取消息原文尾部
-        parts = event.message_str.strip().split(maxsplit=2)
-        text = (parts[2] if len(parts) > 2 else "").strip() or (prompt or "").strip()
+        text = _command_tail(event, prompt)
         if not text.strip():
             yield event.plain_result("用法: /mmx sfx <音效描述>")
             return
@@ -1326,15 +1302,7 @@ class Main(star.Star):
     @mmx_group.command("speech")
     async def mmx_speech(self, event: AstrMessageEvent, *, text: str = ""):
         """语音合成，或用 transcribe/recognize 子命令转写音频。"""
-        raw_args = text
-        if not raw_args:
-            parts = event.message_str.strip().split(maxsplit=2)
-            if (
-                len(parts) >= 2
-                and parts[0].lstrip("/") == "mmx"
-                and parts[1] == "speech"
-            ):
-                raw_args = parts[2] if len(parts) > 2 else ""
+        raw_args = _command_tail(event, text)
         parts = raw_args.strip().split(maxsplit=1)
         action = parts[0] if parts else ""
         rest = parts[1] if len(parts) > 1 else ""
@@ -1402,7 +1370,7 @@ class Main(star.Star):
     @mmx_group.command("file")
     async def mmx_file(self, event: AstrMessageEvent, *, args: str = ""):
         """文件管理。用法: /mmx file upload|list|delete"""
-        raw_args = args or event.message_str
+        raw_args = _command_tail(event, args)
         try:
             parsed = parse_file_command(raw_args)
         except DirectCommandError as e:
@@ -1474,9 +1442,7 @@ class Main(star.Star):
     @mmx_group.command("image")
     async def mmx_image(self, event: AstrMessageEvent, *, prompt: str = ""):
         """生成图片。用法: /mmx image <描述> [--aspect-ratio 16:9] [--seed 42]"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        raw_args = prompt or (parts[1] if len(parts) > 1 else "")
+        raw_args = _command_tail(event, prompt)
         try:
             args = parse_image_command(raw_args)
         except DirectCommandError as e:
@@ -1563,9 +1529,7 @@ class Main(star.Star):
     @mmx_group.command("video")
     async def mmx_video(self, event: AstrMessageEvent, *, prompt: str = ""):
         """生成视频。用法: /mmx video <描述> [--first-frame <图片>] [--no-wait]"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        raw_args = prompt or (parts[1] if len(parts) > 1 else "")
+        raw_args = _command_tail(event, prompt)
         try:
             args = parse_video_command(raw_args)
         except DirectCommandError as e:
@@ -1771,9 +1735,7 @@ class Main(star.Star):
     @mmx_group.command("search")
     async def mmx_search(self, event: AstrMessageEvent, *, query: str = ""):
         """联网搜索。用法: /mmx search <查询>"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        query = query or (parts[1] if len(parts) > 1 else "")
+        query = _command_tail(event, query)
         if not query:
             yield event.plain_result(
                 "用法: /mmx search <查询>。例如: /mmx search 今天天气"
@@ -1816,9 +1778,7 @@ class Main(star.Star):
     @mmx_group.command("vision")
     async def mmx_vision(self, event: AstrMessageEvent, *, prompt: str = ""):
         """图片理解。用法: /mmx vision（支持当前消息带图或引用图片）"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        prompt = prompt or (parts[1] if len(parts) > 1 else "Describe the image.")
+        prompt = _command_tail(event, prompt) or "Describe the image."
 
         image_input, saw_image = await extract_image_input(
             event.get_messages(),
@@ -1868,7 +1828,7 @@ class Main(star.Star):
             all_keys.append((0, self._client.api_key or ""))
 
         page_size = 3
-        raw_args = _normalize_quota_command_args(index or event.message_str)
+        raw_args = _command_tail(event, index)
         page = 1
         selected_index: int | None = None
 

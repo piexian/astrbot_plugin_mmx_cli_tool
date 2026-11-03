@@ -251,13 +251,15 @@ LLM 工具的 JSON 形态：
 
 流程：`main.py::Main` 里 `@mmx_group.command("name")` 装饰的异步生成器先调 `mmx/direct_command_args.py` 的 `parse_*_command`（返回 frozen dataclass；参数错误抛 `DirectCommandError`，处理器回复用法文本），再解析图片等输入、调用封装层，最后 `yield event.plain_result` / `image_result` / `chain_result([Record、Video、File])`。生成的媒体先落到 `self._cache_dir`（AstrBot 临时目录）再发送。
 
+参数取自消息原文尾部：AstrBot 只把首个词交给普通 `str` 参数，处理器统一用 `main.py::_command_tail(event, fallback)` 取 `/mmx <子指令>` 之后的完整文本（`/mmx image 一只猫 --aspect-ratio 16:9` 才能拿到整段），新增指令必须照此取参。
+
 | 指令 | 处理器 | 解析器 | 权限 |
 |------|--------|--------|------|
 | `/mmx image` | `mmx_image` | `parse_image_command` | 所有人 |
 | `/mmx video` | `mmx_video` | `parse_video_command` | 所有人 |
 | `/mmx speech`（含 `transcribe`、`recognize`） | `mmx_speech`、`_handle_speech_transcribe` | `parse_speech_command`、`parse_transcription_command` | 所有人 |
 | `/mmx search`、`/mmx vision` | `mmx_search`、`mmx_vision` | 无（`vision` 的图片取自消息） | 所有人 |
-| `/mmx quota` | `mmx_quota` | 内联解析（`_normalize_quota_command_args`），每页 3 个 Key | 所有人 |
+| `/mmx quota` | `mmx_quota` | 内联解析（页码 `page <n>` 或 Key 序号），每页 3 个 Key | 所有人 |
 | `/mmx search-image`、`/mmx music` | `mmx_search_image`、`mmx_music` | `parse_image_search_command`、`parse_music_command` | 所有人 |
 | `/mmx reverse-image`、`/mmx sfx` | `mmx_reverse_image`、`mmx_sfx` | 无 | 所有人 |
 | `/mmx file upload`、`list`、`delete` | `mmx_file` | `parse_file_command` | 仅管理员 |
