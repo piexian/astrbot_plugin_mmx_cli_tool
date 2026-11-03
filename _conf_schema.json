@@ -3,14 +3,14 @@
     "description": "MiniMax API Key",
     "type": "list",
     "default": [],
-    "hint": "在 MiniMax 开放平台获取，以 sk- 开头。可添加多个 Key，插件会按额度自动轮换使用。"
+    "hint": "在 MiniMax 开放平台获取，以 sk- 开头。可添加多个 Key，插件会按额度自动轮换使用。留空时，用 /mmx login 登录后插件会自动获取一个，无需手动填写。"
   },
   "region": {
     "description": "API 区域",
     "type": "string",
     "options": ["cn", "global"],
     "default": "cn",
-    "hint": "要和 API Key 所属的网站一致：cn 是国内站，global 是国际站。/mmx login 登录时的区域是登录时另选的，和这里无关。"
+    "hint": "要和 API Key 所属的网站一致：cn 是国内站，global 是国际站。/mmx login 登录时的区域是登录时另选的，和这里无关；登录后自动获取的 API Key 始终使用登录时选的区域，不受这里影响。"
   },
   "base_url": {
     "description": "自定义 API 地址",

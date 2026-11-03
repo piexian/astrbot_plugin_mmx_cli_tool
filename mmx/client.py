@@ -46,6 +46,11 @@ class MiniMaxClient:
         """客户端固定 API Key（key_getter 模式下为 None）。"""
         return self._api_key
 
+    def set_credentials(self, api_key: str | None, base_url: str) -> None:
+        """运行时替换固定 Key 与基础地址（登录获取的 Key 随登录区域变化）。"""
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+
     async def _resolve(self, model: str = "") -> str:
         """获取本次请求的 API Key。"""
         if self._key_getter is not None:

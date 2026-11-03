@@ -14,6 +14,8 @@ import time as _time
 import uuid
 from pathlib import Path
 
+import httpx
+
 from astrbot.api import AstrBotConfig, logger, star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.core.message import components as Comp
@@ -36,7 +38,7 @@ from .mmx.files import FileAPI
 from .mmx.matrix import MatrixAPI
 from .mmx.account import MiniMaxCodeAccount
 from .mmx.media_transfer import MatrixMediaClient, MediaTransferError
-from .mmx.oauth import OAuthClient, OAuthError, TokenStore
+from .mmx.oauth import ApiKeyStore, OAuthClient, OAuthError, TokenStore
 from .mmx.web_api import EFFORT_LEVELS, MCodeWebAPI
 from .mmx.vision_input import extract_image_input, extract_image_inputs
 from .mmx.direct_command_args import (
@@ -49,6 +51,7 @@ from .mmx.direct_command_args import (
     parse_transcription_command,
     parse_video_command,
 )
+from .mmx.endpoints import REGIONS
 from .mmx.errors import ErrorCategory, MiniMaxError, friendly_message
 from .mmx.keypool import KeyPool
 from .mmx.quota_usage import (
@@ -245,7 +248,10 @@ class Main(star.Star):
 
         # 创建客户端 — 支持单 Key 和多 Key 池两种模式
         if not keys:
-            logger.warning("[mmx] api_key 未配置，插件将无法调用 API")
+            logger.warning(
+                "[mmx] api_key 未配置：/mmx login 登录账号后会自动获取 API Key，"
+                "在此之前插件无法调用开放平台 API"
+            )
             self._key_pool = None
             client_kwargs: dict = {
                 "api_key": "",
@@ -272,12 +278,16 @@ class Main(star.Star):
             }
 
         self._client = MiniMaxClient(**client_kwargs)
+        # 登录获取 Key 后按登录区域切换地址；登出或获取失败时回到这里记录的默认地址
+        self._base_url_override = base_url_override
+        self._default_base_url = self._client.base_url
 
         # OAuth 账号登录与 Matrix MCP 底座（搜图/以图搜图/音乐音效）
         self._region = region
         self._static_keys = keys
         self._oauth = OAuthClient()
         self._token_store = TokenStore(self._plugin_data_dir / "auth.json")
+        self._api_key_store = ApiKeyStore(self._plugin_data_dir / "open_api_key.json")
         self._matrix = MatrixAPI(
             self._client, self._matrix_credentials, self._refresh_matrix_token
         )
@@ -386,6 +396,8 @@ class Main(star.Star):
         return self._service
 
     async def initialize(self) -> None:
+        # 先按登录账号补全 API Key，就绪状态才能反映真实可用性
+        await self._sync_login_key()
         self._service._initialize()
         self._web_api = MCodeWebAPI(self)
         self._web_api.register()
@@ -512,6 +524,51 @@ class Main(star.Star):
         token = self._token_store.load()
         if token and token.ensure_login_epoch():
             self._token_store.save(token)
+
+    def _has_open_key(self) -> bool:
+        """是否有可用于开放平台的 Key（配置的 Key 池/固定 Key，或登录获取的 Key）。"""
+        return self._key_pool is not None or bool(self._client.api_key)
+
+    async def _sync_login_key(self, *, refetch: bool = False) -> bool:
+        """未配置 api_key 时，改用登录账号绑定的开放平台 API Key。
+
+        Key 按登录 epoch 持久化一次；重新登录（epoch 变化）或 refetch 时重新获取，
+        区域跟随登录。返回当前是否有可用的开放平台 Key。
+        """
+        if self._static_keys:
+            return True
+        self._ensure_token_login_epoch()
+        token = self._token_store.load()
+        key = ""
+        if token is not None:
+            key = "" if refetch else self._api_key_store.load(token.login_epoch)
+            if not key:
+                try:
+                    key = await self._account.fetch_api_key()
+                except (MiniMaxError, httpx.HTTPError) as e:
+                    # 网络故障同样只记录：启动期不能因账户接口不可达而中断插件初始化
+                    logger.warning(f"[mmx] 获取登录账号的开放平台 API Key 失败: {e}")
+                else:
+                    self._api_key_store.save(token.login_epoch, key)
+        if token is None or not key:
+            # 未登录或获取失败：清掉内存里上一个账号的 Key，回到配置默认地址
+            self._client.set_credentials("", self._default_base_url)
+            self._service._set_configured(False)
+            return False
+        base_url = self._base_url_override or REGIONS.get(token.region, REGIONS["cn"])
+        self._client.set_credentials(key, base_url)
+        self._service._set_configured(True)
+        return True
+
+    def _login_key_notice(self, has_key: bool) -> str:
+        """登录成功回复里追加的 API Key 获取结果；已配置 api_key 时无需提示。"""
+        if self._static_keys:
+            return ""
+        if has_key:
+            return "\n已自动获取 API Key，图片、视频、语音等功能无需再填写 api_key。"
+        return (
+            "\n未能自动获取 API Key，图片、视频、语音等功能请在插件配置中填写 api_key。"
+        )
 
     def _provider_credentials(self) -> tuple[str, str]:
         """从同一份登录态读取 access token 与登录 epoch。"""
@@ -882,6 +939,7 @@ class Main(star.Star):
                 yield event.plain_result(f"登录失败: {e}")
             return
         self._token_store.save(token)
+        has_key = await self._sync_login_key(refetch=True)
         from .mmx.llm_provider import DEFAULT_MODELS
 
         await self._sync_provider_source()
@@ -899,7 +957,7 @@ class Main(star.Star):
         elif state == "disabled":
             extra = (
                 "\n已关闭自动创建提供商源：请管理员前往 WebUI「模型供应商 → 新增供应商」，"
-                "选择 MiniMax Code 并添加提供商源与模型；请求区域会自动跟随本次登录。"
+                "选择 minimax_code 并添加提供商源与模型；请求区域会自动跟随本次登录。"
             )
         elif state == "managed":
             extra = (
@@ -911,7 +969,9 @@ class Main(star.Star):
             extra = "\n提供商源同步未完成，详见日志。"
         yield event.plain_result(
             f"✅ MiniMax 账号登录成功（{'国内站' if region == 'cn' else '国际站'}）！\n"
-            "已解锁搜图、以图搜图、AI 音乐与音效生成能力。" + extra
+            "已解锁搜图、以图搜图、AI 音乐与音效生成能力。"
+            + extra
+            + self._login_key_notice(has_key)
         )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -924,6 +984,8 @@ class Main(star.Star):
             return
         await self._oauth.revoke(token.refresh_token, token.region)
         self._token_store.clear()
+        self._api_key_store.clear()
+        await self._sync_login_key()
         await self._unregister_llm_provider()
         yield event.plain_result(
             "已退出 MiniMax 账号登录。\n"

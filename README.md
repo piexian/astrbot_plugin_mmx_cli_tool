@@ -13,21 +13,31 @@
      ```
      https://github.com/piexian/astrbot_plugin_mmx_cli_tool
      ```
-2. **填写 API Key**：到 [MiniMax Token Plan（国内站）](https://platform.minimaxi.com/user-center/payment/token-plan) 获取 Key，填进插件配置的 `api_key`。同时把 `region` 选成 Key 所属的网站：`cn` 是国内站，`global` 是国际站。
-3. **（可选）登录账号**：想用搜图、音乐、MiniMax Code 对话、签到这些功能，管理员发送 `/mmx login`，按提示选择区域并打开链接授权即可。
-4. **试一试**：发送 `/mmx image 一只戴帽子的猫`，稍等片刻就能收到图片。
+2. **准备凭据**（两种方式，选一种就行）：
+   - **（推荐）登录账号**：管理员发送 `/mmx login`，按提示选择区域并打开链接授权。登录成功后，插件会自动获取 API Key，图片、视频、语音等功能直接可用，不用再手动填写；搜图、音乐、MiniMax Code 对话、签到也一并解锁。如果登录后提示「未能自动获取 API Key」，改用下面的方式自己填。
+   - **自己填写 API Key**：到 [MiniMax Token Plan（国内站）](https://platform.minimaxi.com/user-center/payment/token-plan) 获取 Key，填进插件配置的 `api_key`。同时把 `region` 选成 Key 所属的网站：`cn` 是国内站，`global` 是国际站。
+3. **试一试**：发送 `/mmx image 一只戴帽子的猫`，稍等片刻就能收到图片。
 
 运行要求：AstrBot 4.26.0 及以上（「MCode 工作台」需要；更低版本只能用聊天指令和 AI 工具），Python 依赖 httpx 0.27.0 及以上。
 
 ## 需要准备什么
 
-| 功能 | API Key | 账号登录（`/mmx login`） |
+| 功能 | 只填了 API Key | 只登录了账号（`/mmx login`） |
 |------|:------:|:------:|
-| 图片、视频、语音合成、语音转文字、联网搜索、看图、文件管理、额度查询 | 需要 | 不需要 |
+| 图片、视频、语音合成、语音转文字、联网搜索、看图、文件管理、额度查询 | 可以用 | 可以用（登录后自动获取 API Key） |
 | 搜图、以图搜图、AI 音乐、AI 音效 | 没登录时用它顶替，但服务器可能不认，会提示你去登录 | 建议登录，最稳 |
 | MiniMax Code 对话、签到、积分查询 | 用不了 | 必须登录 |
 
-没有 API Key 时，第一行的功能都用不了。没登录时，最后一行的功能会提示你先 `/mmx login`。
+既没填 API Key 也没登录时，第一行的功能都用不了；没登录时，最后一行的功能会提示你先 `/mmx login`。
+
+两种都有时，以配置里填的 `api_key` 为准，登录不会覆盖它。
+
+登录后自动获取的 API Key：
+
+- 保存在插件数据目录里的 `open_api_key.json`（Linux/macOS 上只有运行 AstrBot 的用户能读写），相当于密码，不要发给别人。
+- 请求区域跟随你登录时选的区域，不看配置里的 `region`。
+- 重新登录（`/mmx login`）会重新获取一次；退出登录（`/mmx logout`）会把它一并删除。
+- 如果它哪天失效了（比如图片、视频一直提示 Key 无效），再发送一次 `/mmx login` 即可。
 
 ## 功能一览
 
@@ -57,7 +67,7 @@ AI 在对话中可以自动调用下面 17 个工具。
 
 ## 指令用法
 
-在聊天里发送 `/mmx` 开头的指令，不用经过 AI。标注「管理员」的只有管理员能用，标注「需登录」的要先 `/mmx login`。
+在聊天里发送 `/mmx` 开头的指令，不用经过 AI。标注「管理员」的只有管理员能用，标注「需登录」的要先 `/mmx login`。每条指令的全部参数、取值范围和示例见 [完整指令与参数说明](docs/commands.md)。
 
 ### 图片
 
@@ -113,7 +123,7 @@ AI 在对话中可以自动调用下面 17 个工具。
 ### 账号与签到
 
 ```
-/mmx login     # 登录 MiniMax 账号（管理员）
+/mmx login     # 登录 MiniMax 账号，并自动获取 API Key（管理员）
 /mmx logout    # 退出登录（管理员）
 /mmx signin    # 领取今天的签到积分（管理员，需登录）
 /mmx usage     # 查看积分、套餐余量和签到进度（管理员，需登录）
@@ -132,74 +142,7 @@ AI 在对话中可以自动调用下面 17 个工具。
 
 上传文件时，路径只能指向插件数据目录或 AstrBot 临时目录里的文件。
 
-### 进阶参数
-
-下面是各指令能加的更多参数。参数名用小写加短横线，例如 `--aspect-ratio`、`--sample-rate`。
-
-**图片 `/mmx image`**
-
-| 参数 | 说明 |
-|------|------|
-| `--model <模型>` | 指定图片模型，一般不用写 |
-| `--aspect-ratio <比例>` | 图片比例，如 `1:1`、`16:9` |
-| `--n <数量>` | 一次生成几张，1-9 |
-| `--seed <数字>` | 随机种子，相同种子更容易得到相似的图 |
-| `--width` / `--height` | 自定义尺寸，两个要一起写，范围 512-2048，且必须是 8 的倍数 |
-| `--prompt-optimizer` | 让系统帮你优化描述。默认已开启，想关闭写 `--prompt-optimizer=false` |
-| `--aigc-watermark` | 给图片加「AI 生成」水印 |
-| `--subject-ref <参数>` | 角色参考，写法如 `type=character,image=路径或链接`；不写值则使用当前消息或引用消息里的图片 |
-| `--response-format <url\|base64>` | 服务器返回图片的方式，默认 `url`，一般不用改 |
-
-**视频 `/mmx video`**
-
-| 参数 | 说明 |
-|------|------|
-| `--model <模型>` | 指定视频模型，一般不用写，插件会按用法自动选 |
-| `--first-frame <图片>` | 起始帧图片，可写链接、插件数据目录里的路径，或不写值而使用消息里的图片 |
-| `--last-frame <图片>` | 结束帧图片，必须同时写 `--first-frame`；不写值时可取消息里的第二张图 |
-| `--subject-image <图片>` | 角色参考图，让人物保持一致；不写值则使用消息里的图片。不能和首尾帧一起用 |
-| `--duration <秒>` | 视频时长，4-15 的整数；仅 `MiniMax-H3` 模型有效，默认 5 秒 |
-| `--ratio <比例>` | 画面比例，可选 `adaptive`、`21:9`、`16:9`、`4:3`、`1:1`、`3:4`、`9:16`；仅 `MiniMax-H3` 模型有效 |
-| `--callback-url <URL>` | 视频完成后的回调地址 |
-| `--no-wait` / `--async` | 提交后马上返回任务编号 `task_id`，不等待完成 |
-| `--poll-interval <秒>` | 等待期间每隔几秒查一次进度 |
-
-**语音合成 `/mmx speech`**
-
-| 参数 | 说明 |
-|------|------|
-| `--text <文本>` | 要朗读的文字（也可以直接写在指令后面） |
-| `--model <模型>` | 语音模型，如 `speech-2.8-hd` |
-| `--voice <音色>` | 音色 ID，不写则用配置里的 `default_speech_voice` |
-| `--speed` / `--volume` / `--pitch` | 语速、音量、音高 |
-| `--emotion <情绪>` | 情绪，如 `happy`、`sad`、`angry`、`fearful`、`disgusted`、`surprised`、`calm`、`fluent`、`whisper` |
-| `--text-normalization` | 让数字、符号读得更自然 |
-| `--latex-read` | 朗读文字里的 LaTeX 公式 |
-| `--format <格式>` | 音频格式：`mp3`、`pcm`、`flac`、`wav`、`pcmu_raw`、`pcmu_wav`、`opus` |
-| `--sample-rate <数字>` / `--bitrate <数字>` / `--channels <数字>` | 采样率、码率、声道数 |
-| `--language <语言>` | 指定语种，读得更准 |
-| `--subtitles` | 同时请求字幕时间信息 |
-| `--pronunciation <文本/(读音)>` | 自定义读音，如 `处理/(chu li)`，可以写多次 |
-
-**语音转文字 `/mmx speech transcribe`**（也可以写成 `recognize`）
-
-| 参数 | 说明 |
-|------|------|
-| `--file <路径>` | 音频文件，只能在插件数据目录或 AstrBot 临时目录里，不接受网址；不写则取当前消息或引用消息里的语音 |
-| `--model <模型>` | 转写模型，不写则用配置里的 `default_transcription_model` |
-| `--language <语言>` | 如 `zh`、`en`，不写则自动识别 |
-| `--response-format <格式>` | 结果格式：`json`（默认，纯文字）、`verbose_json`（详细）、`srt`、`vtt`（字幕） |
-| `--timestamp-level <粒度>` | 时间戳粒度：`sentence`（按句）或 `word`（按词）；只在详细结果和字幕里有用 |
-| `--stream` | 边转边接收，最后一次性回复；只支持 `json` 格式，不能和 `--out` 一起用 |
-| `--out <相对路径>` | 把结果存到插件数据目录里；不写的话，字幕、详细结果和很长的文字会存成文件发给你 |
-
-可用的音频格式：MP3、WAV、M4A、FLAC、AAC、Opus、Ogg、AIFF。文件最大 50 MB、时长最长 500 秒；大小由插件检查，时长和编码由服务器检查。AMR、Silk、裸 PCM 等格式要先转换。普通转写直接回复文字，其他结果以文件发送。如果保存文件失败，文字结果会保留。转写是计费请求，出错后插件不会自动重试。想合成以 `transcribe` 或 `recognize` 开头的文字，请写成 `/mmx speech --text "transcribe ..."`。
-
-**搜图 `/mmx search-image`**：`--n <数量>`，1-5，默认 3。
-
-**音乐 `/mmx music`**：`--lyrics <歌词>` 加歌词；`--format <mp3|wav>` 选格式，默认 mp3。
-
-**上传文件 `/mmx file upload`**：`--file <路径>` 指定文件；`--purpose <用途>` 指定用途，默认 `retrieval`。
+更多参数（如图片的比例与尺寸、语音的音色与格式、视频的首尾帧与时长、转写的字幕格式等）的写法、取值范围和默认值，见 [完整指令与参数说明](docs/commands.md)。
 
 ## 在对话中使用
 
@@ -214,7 +157,9 @@ AI 在对话中可以自动调用下面 17 个工具。
 提供商源二选一（提供商源就是 AstrBot「模型供应商」页里的一个供应商配置）：
 
 - **自动（默认）**：`auto_create_provider_source` 开启时，插件创建 `mmx_minimax_code`，附带 `MiniMax-M3.1-Flash`、`MiniMax-M3` 两个模型。
-- **手动**：关闭该开关，在 WebUI「模型供应商 → 新增供应商」选择 MiniMax Code 自行添加。
+- **手动**：关闭该开关，自己在 WebUI 里添加：进入「模型供应商」页，点右上角「新增供应商」，在弹出的「新建模型提供商」窗口里选择 `minimax_code`（列表的最后一项），再添加模型。
+
+![在「新建模型提供商」窗口里选择 minimax_code](docs/images/add-provider-minimax-code.png)
 
 源里的 API Base URL 和 API Key 是占位符，无需填写。「获取模型列表」可拉取云端模型目录，上下文窗口默认 512K。若 `mmx_minimax_code` 已被其他类型的源占用，插件不会覆盖，会在工作台提示并改为运行时注册。
 
@@ -253,12 +198,12 @@ AI 在对话中可以自动调用下面 17 个工具。
 
 ## 配置说明
 
-在 AstrBot 管理面板的插件配置里修改。大多数项保持默认即可，一般只需要填 `api_key`。
+在 AstrBot 管理面板的插件配置里修改。大多数项保持默认即可，一般只需要填 `api_key`，或者用 `/mmx login` 登录后让插件自动获取。
 
 | 配置项 | 类型 | 默认值 | 什么时候需要改 |
 |--------|------|--------|----------------|
-| `api_key` | 列表 | 空 | 图片、视频、语音等功能需要（见「需要准备什么」），只用 MiniMax Code 对话则可不填。填 MiniMax 的 API Key，可填多个，会按额度轮换使用 |
-| `region` | 字符串 | `cn` | 要和 API Key 所属网站一致：`cn` 国内站，`global` 国际站 |
+| `api_key` | 列表 | 空 | 可以不填：留空时，`/mmx login` 登录后会自动获取（见「需要准备什么」）。想自己管理 Key 时才填 MiniMax 的 API Key，可填多个，会按额度轮换使用；填了就优先用它 |
+| `region` | 字符串 | `cn` | 要和 API Key 所属网站一致：`cn` 国内站，`global` 国际站；登录后自动获取的 Key 跟随登录区域，不受它影响 |
 | `base_url` | 字符串 | 空 | 一般留空；想用自定义的 API 地址时才填 |
 | `timeout` | 整数 | `300` | 请求超时（秒），经常超时可以调大 |
 | `auto_create_provider_source` | 布尔 | `true` | 是否自动创建 MiniMax Code 提供商源；想手动添加就关掉 |
@@ -294,7 +239,9 @@ astrbot_plugin_mmx_cli_tool/
 ├── README.md                   # 使用说明
 ├── CHANGELOG.md                # 更新日志
 ├── docs/
+│   ├── commands.md             # 完整指令与参数说明
 │   ├── development.md          # 技术细节
+│   ├── images/                 # 文档截图
 │   └── plugin-api.md           # 插件协作 SDK 文档
 ├── .astrbot-plugin/i18n/
 │   └── zh-CN.json              # 中文翻译

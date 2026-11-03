@@ -822,6 +822,10 @@ class MCodeWebAPI:
             await plugin._sync_provider_source()
         except Exception as exc:  # noqa: BLE001 - 登录已成功，源初始化失败仅记录
             logger.warning(f"[mmx-web] 登录后初始化 LLM 提供商源失败: {exc}")
+        try:
+            await plugin._sync_login_key(refetch=True)
+        except Exception as exc:  # noqa: BLE001 - 登录已成功，获取 Key 失败仅记录
+            logger.warning(f"[mmx-web] 登录后获取开放平台 API Key 失败: {exc}")
         session.status = "authorized"
         session.token_expires_at = int(token.expires_at)
         session.message = "授权完成，已保存登录凭据"
@@ -877,6 +881,8 @@ class MCodeWebAPI:
         if token:
             await plugin._oauth.revoke(token.refresh_token, token.region)
             plugin._token_store.clear()
+        plugin._api_key_store.clear()
+        await plugin._sync_login_key()
         self._cancel_login_sessions()
         return {"ok": True}
 
@@ -998,9 +1004,11 @@ class MCodeWebAPI:
             targets.append((node, file_name, prompt))
         if not targets:
             raise BridgeError("所选节点没有批注，请先在画布上圈注")
-        if not plugin._static_keys:
+        if not plugin._has_open_key():
             raise BridgeError(
-                "画布批注分析需要开放平台 API Key，请在插件配置中填写 api_key", 503
+                "画布批注分析需要开放平台 API Key，"
+                "请在插件配置中填写 api_key，或先登录账号",
+                503,
             )
         results = await asyncio.gather(
             *(

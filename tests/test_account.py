@@ -310,5 +310,104 @@ class IdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[2].url.host, "agent.minimax.io")
 
 
+class FetchApiKeyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_returns_stripped_key_from_credit_pool(self):
+        captured = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return json_response(
+                {
+                    "api_key": "  sk-cp-fake-key  ",
+                    "token_plan_credit_fallback_enabled": True,
+                    "base_resp": OK,
+                }
+            )
+
+        account, close = make_account(handler, region="global")
+        self.addAsyncCleanup(close)
+
+        self.assertEqual("sk-cp-fake-key", await account.fetch_api_key())
+        (request,) = captured
+        self.assertEqual(
+            "https://platform.minimax.io/backend/account/token_plan_credit",
+            str(request.url),
+        )
+        self.assertEqual("Bearer tok-1", request.headers["authorization"])
+
+    async def test_missing_blank_or_non_string_key_raises_without_leaking(self):
+        marker = "RESPONSE-FIELD-MARKER"
+        cases = {
+            "missing": {},
+            "blank": {"api_key": "   "},
+            "empty": {"api_key": ""},
+            "null": {"api_key": None},
+            "number": {"api_key": 123456},
+            "object": {"api_key": {"value": marker}},
+        }
+        for name, extra in cases.items():
+            with self.subTest(case=name):
+
+                def handler(request: httpx.Request, extra=extra) -> httpx.Response:
+                    return json_response({"marker": marker, **extra, "base_resp": OK})
+
+                account, close = make_account(handler)
+                with self.assertRaises(MiniMaxError) as ctx:
+                    await account.fetch_api_key()
+                await close()
+
+                self.assertIs(ctx.exception.category, ErrorCategory.GENERAL)
+                self.assertEqual("账户接口未返回开放平台 API Key", str(ctx.exception))
+                self.assertNotIn(marker, str(ctx.exception))
+
+    async def test_account_error_envelope_propagates(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return json_response(
+                {"statusInfo": {"code": 2013, "msg": "invalid params"}, "base_resp": OK}
+            )
+
+        account, close = make_account(handler)
+        self.addAsyncCleanup(close)
+        with self.assertRaises(MiniMaxError) as ctx:
+            await account.fetch_api_key()
+        self.assertIn("invalid params", str(ctx.exception))
+
+
+class ClientCredentialsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_set_credentials_switches_key_and_base_url(self):
+        captured = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(200, json={"base_resp": OK})
+
+        client = MiniMaxClient(api_key="old-key", base_url="https://api.minimaxi.com")
+        original = client._client
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(client._client.aclose)
+        self.addAsyncCleanup(original.aclose)
+
+        await client.request("GET", "/v1/files/list")
+        client.set_credentials("new-key", "https://api.minimax.io/")
+        await client.request("GET", "/v1/files/list")
+
+        before, after = captured
+        self.assertEqual("api.minimaxi.com", before.url.host)
+        self.assertEqual("Bearer old-key", before.headers["authorization"])
+        self.assertEqual("api.minimax.io", after.url.host)
+        self.assertEqual("Bearer new-key", after.headers["authorization"])
+        self.assertEqual("https://api.minimax.io", client.base_url)
+        self.assertEqual("new-key", client.api_key)
+
+    async def test_set_credentials_can_clear_key(self):
+        client = MiniMaxClient(api_key="old-key")
+        self.addAsyncCleanup(client._client.aclose)
+
+        client.set_credentials("", "https://api.minimaxi.com")
+
+        self.assertEqual("", client.api_key)
+        self.assertEqual("https://api.minimaxi.com", client.base_url)
+
+
 if __name__ == "__main__":
     unittest.main()
