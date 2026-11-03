@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from support import Event, File, Record, Reply, plugin_modules
 
@@ -197,3 +197,113 @@ class PluginWiringTests(unittest.IsolatedAsyncioTestCase):
             "https://example.com/v2.mp4",
             self.plugin._video.download.call_args.kwargs["video_url"],
         )
+
+    async def test_image_command_reads_prompt_and_flags_from_message_tail(self):
+        # AstrBot 只把首个词交给 str 参数，唤醒前缀已在指令处理前剥掉
+        self.plugin._image.generate = AsyncMock(
+            return_value={"data": {"image_urls": ["https://example.com/i.png"]}}
+        )
+        self.plugin._image.save = AsyncMock(return_value=[])
+        replies = [
+            r
+            async for r in self.plugin.mmx_image(
+                Event("mmx image 一只猫 --aspect-ratio 16:9"), prompt="一只猫"
+            )
+        ]
+        self.assertEqual("一只猫", self.plugin._image.generate.call_args.kwargs["prompt"])
+        self.assertEqual(
+            "16:9", self.plugin._image.generate.call_args.kwargs["aspect_ratio"]
+        )
+        self.assertEqual(["https://example.com/i.png"], replies)
+
+        self.plugin._image.generate.reset_mock()
+        prefixed = [
+            r
+            async for r in self.plugin.mmx_image(
+                Event("/mmx image 一只猫 --aspect-ratio 16:9"), prompt="一只猫"
+            )
+        ]
+        self.assertEqual(["https://example.com/i.png"], prefixed)
+        self.assertEqual("16:9", self.plugin._image.generate.call_args.kwargs["aspect_ratio"])
+
+        empty = [r async for r in self.plugin.mmx_image(Event("mmx image"), prompt="")]
+        self.assertIn("用法", empty[0])
+        # 裸指令不能把子指令名 "image" 当描述去生成
+        self.assertEqual(1, self.plugin._image.generate.await_count)
+
+    async def test_video_command_reads_prompt_from_message_tail(self):
+        self.plugin._video.generate = AsyncMock(return_value={"task_id": "t1"})
+        self.plugin._video.wait_for_completion = AsyncMock()
+        replies = [
+            r
+            async for r in self.plugin.mmx_video(
+                Event("mmx video 一只猫在跳舞 --no-wait"), prompt="一只猫在跳舞"
+            )
+        ]
+        self.assertEqual(
+            "一只猫在跳舞", self.plugin._video.generate.call_args.kwargs["prompt"]
+        )
+        self.assertIn("task_id=t1", replies[0])
+        self.plugin._video.wait_for_completion.assert_not_awaited()
+
+    async def test_search_command_reads_full_query_from_message_tail(self):
+        self.plugin._search.query = AsyncMock(return_value={"organic": []})
+        replies = [
+            r
+            async for r in self.plugin.mmx_search(
+                Event("mmx search 今天 天气 怎么样"), query="今天"
+            )
+        ]
+        self.assertEqual("今天 天气 怎么样", self.plugin._search.query.call_args.args[0])
+        self.assertEqual(["🔍 未找到相关结果。"], replies)
+
+    async def test_vision_command_reads_prompt_from_message_tail(self):
+        self.plugin._vision.describe = AsyncMock(return_value={"content": "猫"})
+        with patch.object(
+            self.main,
+            "extract_image_input",
+            AsyncMock(return_value=("https://example.com/i.png", False)),
+        ):
+            replies = [
+                r
+                async for r in self.plugin.mmx_vision(
+                    Event("mmx vision 详细 描述 这张图"), prompt="详细"
+                )
+            ]
+        self.assertEqual(
+            "详细 描述 这张图", self.plugin._vision.describe.call_args.kwargs["prompt"]
+        )
+        self.assertIn("猫", replies[0])
+
+    async def test_file_command_reads_subcommand_args_from_message_tail(self):
+        self.plugin._files.upload = AsyncMock(
+            return_value={"file": {"file_id": "f1", "filename": "audio.mp3"}}
+        )
+        replies = [
+            r
+            async for r in self.plugin.mmx_file(
+                Event("mmx file upload --file audio.mp3"), args="upload"
+            )
+        ]
+        uploaded = self.plugin._files.upload.call_args.args[0]
+        self.assertTrue(uploaded.endswith("audio.mp3"))
+        self.assertEqual("retrieval", self.plugin._files.upload.call_args.kwargs["purpose"])
+        self.assertIn("文件上传完成", replies[0])
+
+    async def test_speech_command_reads_full_text_from_message_tail(self):
+        replies = [
+            r
+            async for r in self.plugin.mmx_speech(
+                Event("mmx speech 你好 世界 --voice explicit-voice"), text="你好"
+            )
+        ]
+        self.assertTrue(replies)
+        self.assertEqual("你好 世界", self.plugin._speech.synthesize.call_args.kwargs["text"])
+        self.assertEqual("explicit-voice", self.plugin._speech.synthesize.call_args.kwargs["voice"])
+
+    async def test_quota_command_reads_page_from_message_tail(self):
+        self.plugin._quota.info = AsyncMock(return_value={"model_remains": []})
+        replies = [
+            r async for r in self.plugin.mmx_quota(Event("mmx quota page 2"), index="page")
+        ]
+        self.assertIn("页码 2 不存在", replies[0])

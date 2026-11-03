@@ -1,6 +1,17 @@
 # 更新日志
 
 
+## 0.7.2 - 2026-11-03
+
+- MiniMax Code 请求区域改为实时跟随 `/mmx login` 的登录区域：手动新增的提供商源不再固定走国内站，切换区域无需重载；提供商源不再写入 `region`，旧配置中的该字段被忽略；未登录时兜底国内站。
+- 同 ID 且类型为 `minimax_code` 的手动创建提供商源视为用户自管，不再误报冲突、不被接管。
+- 新增配置项 `auto_create_provider_source`（默认开启）：关闭后不自动创建提供商源与默认模型，需在 WebUI「新增供应商」手动添加；`/mmx login` 提示随状态变化。
+- 修复运行时回退 Provider 注销时清空模块级令牌来源，导致配置模式实例失去令牌的问题。
+- 未配置 `api_key` 时，`/mmx login`（及工作台扫码登录）成功后自动从账号接口获取开放平台 API Key 并保存到插件数据目录的 `open_api_key.json`：图片、视频、语音、转写、搜索、看图、文件、额度无需再手动填写；请求区域跟随登录区域，重新登录会刷新，`/mmx logout` 会删除；已配置的 `api_key` 仍然优先。
+- 文档：README 面向新手重写（新增快速开始、准备事项与安全说明），部分技术细节（安全规则、内部机制）移至 `docs/development.md`，补全项目结构，`_conf_schema.json` 的说明文字改为通俗表述并按功能分组；修正配置表中 `region` 默认值（实为 `cn`）、`api_key` 类型（列表）及缺失的 `auto_create_provider_source`，补充 `/mmx video` 的 `--duration`、`--ratio` 参数。
+- 修复 `image`/`video`/`search`/`vision`/`file`/`speech`/`quota` 子指令只收到首个词、丢弃后续参数的问题（如 `--aspect-ratio`、`--file`、`page 2`、多词查询与提示词），改为从消息原文取子指令后的完整文本；裸指令不再把子指令名当作参数。
+- 多 Key 的额度感知真正接线：后台每 5 分钟刷新各 Key 的模型额度，按目标模型剩余额度优先选 Key，额度未知时轮流；请求遇额度不足或鉴权失败会回写 Key 池并停用对应 Key。配置的 Key 与登录获取的 Key 去重后合并进同一个池，`/mmx quota` 额外显示停用原因。
+
 ## 0.7.1 - 2026-10-24
 
 - 修复 MiniMax Code 对话 401：出站请求按白名单重建，过滤 AstrBot 与 SDK 遥测头，仅发送 Authorization、MiniMaxAgent 与 X-Mavis 头。

@@ -1,54 +1,65 @@
 {
   "api_key": {
-    "description": "MiniMax API Key 列表",
+    "description": "MiniMax API Key",
     "type": "list",
     "default": [],
-    "hint": "以 sk- 开头。添加多个 Key 可实现额度池化，插件自动按模型额度轮询。"
+    "hint": "在 MiniMax 开放平台获取，以 sk- 开头。可添加多个 Key，用 /mmx login 登录后插件会自动获取一个，无需手动填写。"
   },
   "region": {
     "description": "API 区域",
     "type": "string",
     "options": ["cn", "global"],
-    "default": "cn"
+    "default": "cn",
+    "hint": "要和 API Key 所属的网站一致：cn 是国内站，global 是国际站。/mmx login 登录时的区域是登录时另选的，和这里无关；登录后自动获取的 API Key 始终使用登录时选的区域，不受这里影响。"
   },
   "base_url": {
-    "description": "自定义 API 地址（留空则使用区域默认地址）",
+    "description": "自定义 API 地址",
     "type": "string",
-    "default": ""
-  },
-  "thinking_effort": {
-    "description": "MCode 工作台推理强度档位",
-    "type": "string",
-    "options": ["default", "low", "medium", "high", "xhigh", "max"],
-    "default": "default",
-    "hint": "供工作台与协作插件读取的偏好档位；本插件不会据此改写 MiniMax 请求参数。"
+    "default": "",
+    "hint": "一般留空，插件会按区域自动使用默认地址。"
   },
   "timeout": {
     "description": "请求超时（秒）",
     "type": "int",
-    "default": 300
+    "default": 300,
+    "hint": "单次请求最长等待时间，一般不用改。"
+  },
+  "auto_create_provider_source": {
+    "description": "自动创建 MiniMax Code 提供商源",
+    "type": "bool",
+    "default": true,
+    "hint": "开启时自动添加 mmx_minimax_code 及默认模型；关闭后可在 WebUI「新增供应商」手动添加，二者择一即可。"
+  },
+  "auto_signin": {
+    "description": "每天自动签到",
+    "type": "bool",
+    "default": false,
+    "hint": "需先用 /mmx login 登录。开启后每 30 分钟检查一次，并领取当天的签到积分；每天只能领一次，重复领取不会多给。也可随时用 /mmx signin 手动领取。"
+  },
+  "thinking_effort": {
+    "description": "工作台推理强度",
+    "type": "string",
+    "options": ["default", "low", "medium", "high", "xhigh", "max"],
+    "default": "default",
+    "hint": "只是记录你在 MCode 工作台里选的档位，不会改变发给 MiniMax 的请求。"
   },
   "allow_astrbot_temp_dir": {
     "description": "允许读取 AstrBot 临时目录",
     "type": "bool",
     "default": true,
-    "hint": "开启后 LLM 工具和直接指令可读取 AstrBot 临时目录（聊天图片与生成缓存所在目录，由所有插件共享）内的文件；关闭可收紧信任面，但生成结果将无法再作为输入使用。"
-  },
-  "auto_signin": {
-    "description": "MiniMax Code 账号每日自动签到",
-    "type": "bool",
-    "default": false,
-    "hint": "需先 /mmx login 登录。开启后每 30 分钟巡检一次并领取当日签到积分（上游按天幂等，重复领取不叠加）；也可随时用 /mmx signin 手动领取。"
+    "hint": "开启后，指令和 AI 可以读取 AstrBot 临时目录里的文件（聊天图片和生成结果都放在这里，所有插件共用）。关闭更安全，但生成的图片等就不能再当作输入使用。"
   },
   "video_poll_interval": {
-    "description": "视频生成轮询间隔（秒）",
+    "description": "视频进度查询间隔（秒）",
     "type": "int",
-    "default": 5
+    "default": 5,
+    "hint": "生成视频时，每隔多少秒查一次进度。"
   },
   "video_timeout": {
-    "description": "视频生成超时（秒）",
+    "description": "视频等待时间上限（秒）",
     "type": "int",
-    "default": 600
+    "default": 600,
+    "hint": "等待视频生成的最长时间。超时后只是不再等待，视频仍在 MiniMax 后台生成，会告诉你任务编号，之后可再查询。"
   },
   "default_image_model": {
     "description": "默认图片生成模型",
@@ -63,12 +74,14 @@
   "default_video_sef_model": {
     "description": "默认首尾帧视频模型",
     "type": "string",
-    "default": "MiniMax-Hailuo-02"
+    "default": "MiniMax-Hailuo-02",
+    "hint": "用首帧和尾帧图片生成视频时使用。"
   },
   "default_video_subject_model": {
-    "description": "默认角色一致性视频模型",
+    "description": "默认角色参考视频模型",
     "type": "string",
-    "default": "S2V-01"
+    "default": "S2V-01",
+    "hint": "用角色参考图保持人物一致生成视频时使用。"
   },
   "default_speech_model": {
     "description": "默认语音合成模型",
@@ -76,9 +89,10 @@
     "default": "speech-2.8-hd"
   },
   "default_speech_voice": {
-    "description": "默认语音合成音色（voice_id，可用 mmx_speech_voices 查看带性别标注的音色列表）",
+    "description": "默认语音音色",
     "type": "string",
-    "default": "English_expressive_narrator"
+    "default": "English_expressive_narrator",
+    "hint": "填音色 ID（voice_id）。可让 AI 调用 mmx_speech_voices 查看音色列表，列表里带有性别标注。"
   },
   "default_transcription_model": {
     "description": "默认语音转文字模型",

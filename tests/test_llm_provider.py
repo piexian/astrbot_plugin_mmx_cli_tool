@@ -267,6 +267,84 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
             json={"messages": [{"role": "user", "content": "hi"}], "stream": stream},
         )
 
+    async def test_same_instance_follows_region_switch(self):
+        """同一实例随登录区域切换，下一次请求即改写目标主机，无需重载。"""
+        region = {"value": "cn"}
+        provider = self.llm_provider.MiniMaxCodeProvider(
+            token_getter=lambda: "tok-1",
+            credentials_getter=lambda: ("tok-1", "login-1"),
+            region_getter=lambda: region["value"],
+        )
+        for value, host in (
+            ("cn", "agent.minimax.cn"),
+            ("global", "agent.minimax.io"),
+            ("", "agent.minimax.cn"),  # 未登录：兜底 cn
+            ("bogus", "agent.minimax.cn"),  # 非法区域：兜底 cn
+        ):
+            region["value"] = value
+            request = self._outgoing_request()
+            await provider._rewrite_outgoing_headers(request)
+            self.assertEqual(request.url.host, host, value)
+            self.assertEqual(request.url.scheme, "https")
+            self.assertEqual(request.headers["Host"], host)
+            self.assertEqual(request.url.path, "/mavis/api/v1/llm/v1/messages")
+
+    async def test_invalid_fallback_region_normalized(self):
+        provider = self.llm_provider.MiniMaxCodeProvider(
+            region="weird",
+            token_getter=lambda: "tok-1",
+            credentials_getter=lambda: ("tok-1", "login-1"),
+            region_getter=lambda: "",
+        )
+        self.assertEqual(provider._region, "cn")
+        request = self._outgoing_request()
+        await provider._rewrite_outgoing_headers(request)
+        self.assertEqual(request.url.host, "agent.minimax.cn")
+
+    async def test_region_rewrite_reaches_transport(self):
+        """改写后的目标主机必须真正到达传输层。"""
+        captured = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(200, json={"ok": True}, request=request)
+
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        self.addAsyncCleanup(http_client.aclose)
+        with patch.object(
+            self.base_cls, "_create_http_client", return_value=http_client
+        ):
+            provider = self.llm_provider.MiniMaxCodeProvider(
+                token_getter=lambda: "tok-1",
+                credentials_getter=lambda: ("tok-1", "login-1"),
+                region_getter=lambda: "global",
+            )
+        await provider.client.kwargs["http_client"].send(self._outgoing_request())
+        self.assertEqual(captured[0].url.host, "agent.minimax.io")
+        self.assertEqual(captured[0].headers["Host"], "agent.minimax.io")
+        self.assertEqual(captured[0].url.path, "/mavis/api/v1/llm/v1/messages")
+
+    async def test_get_models_uses_login_region(self):
+        region = {"value": "global"}
+        provider = self.llm_provider.MiniMaxCodeProvider(
+            token_getter=lambda: "tok-1",
+            region_getter=lambda: region["value"],
+        )
+        calls: list[str] = []
+
+        async def fake_fetch(value, transport=None):
+            calls.append(value)
+            return [f"model-{value}"]
+
+        self.addCleanup(self.llm_provider.clear_token_source)
+        with patch.object(self.llm_provider, "fetch_available_models", fake_fetch):
+            self.assertEqual(await provider.get_models(), ["model-global"])
+            self.assertEqual(await provider.get_models(), ["model-global"])  # 命中缓存
+            region["value"] = "cn"
+            self.assertEqual(await provider.get_models(), ["model-cn"])
+        self.assertEqual(calls, ["global", "cn"])
+        self.assertEqual(self.llm_provider._models_cache_region, "cn")
+
     async def test_outgoing_headers_are_whitelisted_per_conversation(self):
         captured = []
 
@@ -580,25 +658,46 @@ class AdapterRegistrationTests(unittest.TestCase):
             llm_provider.set_token_source(
                 lambda: "cfg-tok",
                 credentials_getter=lambda: ("cfg-tok", "cfg-login"),
+                region_getter=lambda: "global",
             )
             provider = llm_provider.MiniMaxCodeProvider(
                 {
                     "id": "my_mmcode",
                     "model": "MiniMax-M3.1-Flash",
-                    "region": "global",
+                    "region": "cn",  # 旧配置残留字段：被忽略
                     "timeout": 60,
                 }
             )
             self.assertEqual(provider.meta().id, "my_mmcode")
-            self.assertEqual(
-                provider.base_url, "https://agent.minimax.io/mavis/api/v1/llm"
+            request = httpx.Request(
+                "POST",
+                "https://agent.minimax.cn/mavis/api/v1/llm/v1/messages",
+                json={"messages": []},
             )
+            import asyncio
+
+            asyncio.run(provider._rewrite_outgoing_headers(request))
+            self.assertEqual(request.url.host, "agent.minimax.io")
+            self.assertEqual(request.headers["Host"], "agent.minimax.io")
+            self.assertEqual(request.url.path, "/mavis/api/v1/llm/v1/messages")
             self.assertEqual(provider.get_current_key(), "cfg-tok")
             self.assertEqual(
                 provider.resolve_request_headers()["Authorization"], "Bearer cfg-tok"
             )
             llm_provider.clear_token_source()
             self.assertEqual(provider.get_current_key(), "")
+            self.assertIsNone(llm_provider._module_region_getter)
+
+    def test_template_has_no_region(self):
+        with provider_stubs() as (llm_provider, _):
+            import astrbot.core.provider.register as reg
+
+            llm_provider.register_provider_adapter_type()
+            tmpl = reg.provider_cls_map["minimax_code"].default_config_tmpl
+            self.assertNotIn("region", tmpl)
+            self.assertEqual(tmpl["id"], "mmx_minimax_code")
+            self.assertEqual(tmpl["type"], "minimax_code")
+            self.assertEqual(tmpl["provider_type"], "chat_completion")
 
 
 class FakeAstrBotConfig(dict):
@@ -817,6 +916,8 @@ class ProviderSourceTests(unittest.IsolatedAsyncioTestCase):
                         )
                         self.assertEqual(entry["max_context_tokens"], 512000)
                     self.assertEqual(plugin._provider_source_warning, "")
+                    self.assertEqual(plugin._provider_source_state, "managed")
+                    self.assertNotIn("region", source)
 
                     # 幂等：重复执行不追加、不落盘
                     await plugin._ensure_provider_source()
@@ -864,8 +965,8 @@ class ProviderSourceTests(unittest.IsolatedAsyncioTestCase):
                         ],
                     )
 
-    async def test_region_change_reloads_loaded_entries(self):
-        """换区域重新登录后，已加载的默认模型必须按新区域重载。"""
+    async def test_region_change_does_not_touch_sources_or_reload(self):
+        """换区域重新登录后：不改源配置、不落盘、不重载已加载条目。"""
         from astrbot_plugin_mmx_cli_tool.mmx.oauth import OAuthToken
 
         with provider_stubs():
@@ -891,23 +992,13 @@ class ProviderSourceTests(unittest.IsolatedAsyncioTestCase):
                             region="global",
                         )
                     )
-                    # 记录每次加载前旧实例是否已被移除（load_provider 为 mock，不会回填实例）
-                    seen: list[tuple[str, bool]] = []
-
-                    async def fake_load(entry):
-                        entry_id = entry["id"]
-                        present = any(
-                            getattr(p, "provider_config", {}).get("id") == entry_id
-                            for p in manager.provider_insts
-                        )
-                        seen.append((entry_id, present))
-
-                    manager.load_provider = AsyncMock(side_effect=fake_load)
+                    saved_before = config.saved
+                    sources_before = [dict(x) for x in config["provider_sources"]]
                     await plugin._ensure_provider_source()
-                    self.assertEqual(config["provider_sources"][0]["region"], "global")
-                    self.assertEqual(manager.load_provider.await_count, 2)
-                    self.assertEqual(len(seen), 2)
-                    self.assertTrue(all(not present for _, present in seen))
+                    self.assertEqual(config.saved, saved_before)
+                    self.assertEqual(config["provider_sources"], sources_before)
+                    self.assertNotIn("region", config["provider_sources"][0])
+                    manager.load_provider.assert_not_awaited()
 
     async def test_terminate_clears_module_token_source(self):
         """正常提供商源路径（无运行时实例）terminate 也必须清理模块来源。"""
@@ -944,6 +1035,144 @@ class ProviderSourceTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(config.saved, 0)
                     self.assertEqual(config["provider"], [])
                     self.assertIs(config["provider_sources"][0], foreign)
+                    self.assertEqual(plugin._provider_source_state, "conflict")
+
+    async def test_config_read_failure_resets_state(self):
+        with (
+            provider_stubs(),
+            tempfile.TemporaryDirectory() as tmp,
+            plugin_modules(Path(tmp)) as (main, _),
+        ):
+            context, _, _ = make_fake_context()
+            plugin = main.Main(context, {"api_key": ["k"]})
+            plugin._provider_source_state = "managed"
+            plugin._provider_source_warning = "old"
+
+            def boom():
+                raise RuntimeError("no config")
+
+            context.get_config = boom
+            await plugin._ensure_provider_source()
+            self.assertEqual(plugin._provider_source_state, "")
+            self.assertEqual(plugin._provider_source_warning, "")
+
+    async def test_user_managed_same_type_source_is_left_alone(self):
+        with (
+            provider_stubs(),
+            tempfile.TemporaryDirectory() as tmp,
+            plugin_modules(Path(tmp)) as (main, _),
+        ):
+            context, config, manager = make_fake_context()
+            mine = {
+                "id": "mmx_minimax_code",
+                "type": "minimax_code",
+                "api_base": "http://x",
+            }
+            config["provider_sources"].append(mine)
+            plugin = main.Main(context, {"api_key": ["k"]})
+            await plugin.initialize()
+            self.addAsyncCleanup(plugin.terminate)
+
+            self.assertEqual(plugin._provider_source_warning, "")
+            self.assertEqual(plugin._provider_source_state, "user_managed")
+            self.assertEqual(config.saved, 0)
+            self.assertEqual(config["provider"], [])
+            self.assertIsNone(plugin._llm_provider)
+            self.assertNotIn("mmx_minimax_code", manager.inst_map)
+            self.assertEqual(
+                mine,
+                {
+                    "id": "mmx_minimax_code",
+                    "type": "minimax_code",
+                    "api_base": "http://x",
+                },
+            )
+
+    async def test_switch_off_leaves_config_untouched(self):
+        from astrbot_plugin_mmx_cli_tool.mmx.oauth import OAuthToken
+
+        with (
+            provider_stubs() as (llm_provider, _),
+            tempfile.TemporaryDirectory() as tmp,
+            plugin_modules(Path(tmp)) as (main, _),
+        ):
+            import astrbot.core.provider.register as reg
+
+            context, config, manager = make_fake_context()
+            plugin = main.Main(
+                context,
+                {"api_key": ["k"], "auto_create_provider_source": False},
+            )
+            plugin._token_store.save(
+                OAuthToken("a", "r", 9e9, region="global", login_epoch="e1")
+            )
+            await plugin.initialize()
+            self.addAsyncCleanup(plugin.terminate)
+
+            self.assertEqual(plugin._provider_source_state, "disabled")
+            self.assertEqual(plugin._provider_source_warning, "")
+            self.assertEqual(config["provider_sources"], [])
+            self.assertEqual(config["provider"], [])
+            self.assertEqual(config.saved, 0)
+            self.assertEqual(manager.inst_map, {})
+            self.assertIsNone(plugin._llm_provider)
+            self.assertIn("minimax_code", reg.provider_cls_map)
+            self.assertEqual(llm_provider._module_token_getter(), "a")
+            self.assertEqual(llm_provider._module_region(), "global")
+
+            # 登录后同步同样不触碰配置、不走回退
+            with patch.object(
+                plugin, "_ensure_provider_source", AsyncMock()
+            ) as ensure:
+                await plugin._sync_provider_source()
+                ensure.assert_not_awaited()
+            self.assertEqual(config.saved, 0)
+            self.assertEqual(plugin._provider_source_state, "disabled")
+
+    async def test_switch_off_keeps_existing_managed_source(self):
+        with (
+            provider_stubs(),
+            tempfile.TemporaryDirectory() as tmp,
+            plugin_modules(Path(tmp)) as (main, _),
+        ):
+            context, config, _ = make_fake_context()
+            managed = {
+                "id": "mmx_minimax_code",
+                "type": "minimax_code",
+                "managed_by": "astrbot_plugin_mmx_cli_tool",
+                "region": "cn",
+            }
+            config["provider_sources"].append(managed)
+            plugin = main.Main(
+                context, {"api_key": ["k"], "auto_create_provider_source": False}
+            )
+            await plugin.initialize()
+            self.addAsyncCleanup(plugin.terminate)
+
+            self.assertEqual(config.saved, 0)
+            self.assertEqual(config["provider"], [])
+            self.assertEqual(managed["region"], "cn")
+            self.assertEqual(len(config["provider_sources"]), 1)
+
+    async def test_unregister_runtime_provider_keeps_token_source(self):
+        from astrbot_plugin_mmx_cli_tool.mmx.oauth import OAuthToken
+
+        with (
+            provider_stubs() as (llm_provider, _),
+            tempfile.TemporaryDirectory() as tmp,
+            plugin_modules(Path(tmp)) as (main, _),
+        ):
+            context, _, _ = make_fake_context()
+            plugin = main.Main(context, {"api_key": ["k"]})
+            await plugin.initialize()
+            self.addAsyncCleanup(plugin.terminate)
+            plugin._token_store.save(
+                OAuthToken("a", "r", 9e9, region="global", login_epoch="e1")
+            )
+            self.assertTrue(await plugin._register_llm_provider())
+            await plugin._unregister_llm_provider()
+            self.assertEqual(llm_provider._module_token_getter(), "a")
+            self.assertEqual(llm_provider._module_region(), "global")
 
 
 if __name__ == "__main__":

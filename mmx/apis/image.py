@@ -60,6 +60,7 @@ class ImageAPI:
             "POST",
             image_endpoint(self._client.base_url),
             body=body,
+            model=model or "",
         )
 
     async def save(

@@ -125,6 +125,15 @@ class MiniMaxService:
         self._reason = None if self._configured else "missing_api_key"
         self._changed.set()
 
+    def _set_configured(self, configured: bool):
+        """登录获取或失去 API Key 后同步就绪状态（仅在 ready/unavailable 间切换）。"""
+        self._configured = configured
+        if self._state not in ("ready", "unavailable"):
+            return
+        self._state = "ready" if configured else "unavailable"
+        self._reason = None if configured else "missing_api_key"
+        self._changed.set()
+
     def _check_closed(self):
         if self._state in ("closing", "closed"):
             raise ServiceError("service_closed")

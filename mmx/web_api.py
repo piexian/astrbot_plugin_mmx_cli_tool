@@ -443,12 +443,17 @@ class MCodeWebAPI:
             "closed": "closed",
         }.get(state, "degraded")
         token = plugin._token_store.load()
-        auth_mode = "oauth" if token else ("api_key" if plugin._static_keys else "none")
+        key_count = (
+            plugin._key_pool.key_count
+            if plugin._key_pool is not None
+            else len(plugin._static_keys)
+        )
+        auth_mode = "oauth" if token else ("api_key" if key_count else "none")
         region = token.region if token else _text(plugin._region, 16) or "cn"
         if token:
             account_label = f"{OAUTH_CLIENT_ID} ({region.upper()})"
-        elif plugin._static_keys:
-            account_label = f"静态 API Key × {len(plugin._static_keys)}"
+        elif key_count:
+            account_label = f"API Key × {key_count}"
         else:
             account_label = "未配置凭据"
         return {
@@ -466,6 +471,9 @@ class MCodeWebAPI:
             "thinking_effort": plugin._thinking_effort,
             "provider_source_warning": str(
                 getattr(plugin, "_provider_source_warning", "") or ""
+            ),
+            "provider_source_state": str(
+                getattr(plugin, "_provider_source_state", "") or ""
             ),
             "capabilities": list(plugin._service.capabilities().get("features", [])),
             "views": [VIEW_NAME],
@@ -813,14 +821,16 @@ class MCodeWebAPI:
             )
             return
         plugin._token_store.save(token)
-        # 与 /mmx login 命令路径一致：登录后同步提供商源 region/默认模型，
-        # 避免 UI 登录国际站后 Provider 仍按旧区域请求。
+        # 与 /mmx login 命令路径一致：登录后按开关同步提供商源与默认模型
+        # （请求区域由 Provider 实例跟随登录态，无需写入源配置）。
         try:
-            await plugin._ensure_provider_source()
-            if plugin._provider_source_warning:
-                await plugin._register_llm_provider()
+            await plugin._sync_provider_source()
         except Exception as exc:  # noqa: BLE001 - 登录已成功，源初始化失败仅记录
             logger.warning(f"[mmx-web] 登录后初始化 LLM 提供商源失败: {exc}")
+        try:
+            await plugin._sync_login_key(refetch=True)
+        except Exception as exc:  # noqa: BLE001 - 登录已成功，获取 Key 失败仅记录
+            logger.warning(f"[mmx-web] 登录后获取开放平台 API Key 失败: {exc}")
         session.status = "authorized"
         session.token_expires_at = int(token.expires_at)
         session.message = "授权完成，已保存登录凭据"
@@ -876,6 +886,8 @@ class MCodeWebAPI:
         if token:
             await plugin._oauth.revoke(token.refresh_token, token.region)
             plugin._token_store.clear()
+        plugin._api_key_store.clear()
+        await plugin._sync_login_key()
         self._cancel_login_sessions()
         return {"ok": True}
 
@@ -997,9 +1009,11 @@ class MCodeWebAPI:
             targets.append((node, file_name, prompt))
         if not targets:
             raise BridgeError("所选节点没有批注，请先在画布上圈注")
-        if not plugin._static_keys:
+        if not plugin._has_open_key():
             raise BridgeError(
-                "画布批注分析需要开放平台 API Key，请在插件配置中填写 api_key", 503
+                "画布批注分析需要开放平台 API Key，"
+                "请在插件配置中填写 api_key，或先登录账号",
+                503,
             )
         results = await asyncio.gather(
             *(

@@ -391,6 +391,14 @@ class MiniMaxCodeAccount:
             "GET", origin, "/backend/account/token_plan_credit", with_query=False
         )
 
+    async def fetch_api_key(self) -> str:
+        """从积分池接口取登录账号绑定的开放平台 API Key（未公开的后台接口）。"""
+        pool = await self.credit_pool()
+        api_key = pool.get("api_key")
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise MiniMaxError(ErrorCategory.GENERAL, "账户接口未返回开放平台 API Key")
+        return api_key.strip()
+
     async def credit_details(self) -> dict[str, Any]:
         """积分明细（credits 明细列表）。"""
         region, _ = await self._creds_getter()

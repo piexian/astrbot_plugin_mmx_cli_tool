@@ -529,3 +529,55 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
                 with self.assert_code("not_ready"):
                     await other.get_service().search("query")
         self.assertEqual([], self.calls)
+
+    async def test_set_configured_toggles_ready_and_unavailable(self):
+        other = self.main.Main(self.context, {"api_key": []})
+        self.addAsyncCleanup(other.terminate)
+        await other.initialize()
+        svc = other.get_service()
+        self.assertEqual("unavailable", svc.get_status()["state"])
+        self.assertEqual("missing_api_key", svc.get_status()["reason"])
+
+        waiter = asyncio.create_task(svc.wait_ready(5))
+        await asyncio.sleep(0)
+        svc._set_configured(True)
+        status = await waiter
+        self.assertEqual("ready", status["state"])
+        self.assertTrue(status["ready"])
+        self.assertIsNone(status["reason"])
+
+        svc._set_configured(False)
+        status = svc.get_status()
+        self.assertEqual("unavailable", status["state"])
+        self.assertFalse(status["ready"])
+        self.assertEqual("missing_api_key", status["reason"])
+        with self.assert_code("not_ready"):
+            await svc.search("query")
+
+    async def test_set_configured_while_initializing_only_records_flag(self):
+        other = self.main.Main(self.context, {"api_key": []})
+        self.addAsyncCleanup(other.terminate)
+        svc = other.get_service()
+
+        svc._set_configured(True)
+        self.assertEqual("initializing", svc.get_status()["state"])
+        self.assertIsNone(svc.get_status()["reason"])
+
+        svc._initialize()
+        self.assertEqual("ready", svc.get_status()["state"])
+
+    async def test_set_configured_ignored_while_closing_and_after_close(self):
+        other = self.main.Main(self.context, {"api_key": ["fake-key"]})
+        self.addAsyncCleanup(other.terminate)
+        await other.initialize()
+        svc = other.get_service()
+
+        svc._begin_close()
+        svc._set_configured(False)
+        self.assertEqual("closing", svc.get_status()["state"])
+        self.assertEqual("service_closed", svc.get_status()["reason"])
+
+        await other.terminate()
+        svc._set_configured(True)
+        self.assertEqual("closed", svc.get_status()["state"])
+        self.assertEqual("service_closed", svc.get_status()["reason"])

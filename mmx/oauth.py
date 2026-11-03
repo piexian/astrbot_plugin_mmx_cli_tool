@@ -358,6 +358,20 @@ class OAuthClient:
             pass
 
 
+def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
+    """原子写入仅属主可读写（0600）的 JSON 文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fp:
+        fp.write(json.dumps(payload, ensure_ascii=False, indent=2))
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
 class TokenStore:
     """OAuth Token 持久化（auth.json，权限 0600）。"""
 
@@ -378,16 +392,46 @@ class TokenStore:
         return OAuthToken.from_dict(data)
 
     def save(self, token: OAuthToken) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_name(self._path.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fp:
-            fp.write(json.dumps(token.to_dict(), ensure_ascii=False, indent=2))
-        os.replace(tmp, self._path)
+        _write_private_json(self._path, token.to_dict())
+
+    def clear(self) -> None:
         try:
-            os.chmod(self._path, 0o600)
-        except OSError:
+            self._path.unlink()
+        except FileNotFoundError:
             pass
+
+
+class ApiKeyStore:
+    """登录账号绑定的开放平台 API Key 持久化（open_api_key.json，权限 0600）。
+
+    Key 与登录 epoch 绑定：重新登录（epoch 变化）后旧 Key 不再可用。
+    """
+
+    def __init__(self, path: Path | str) -> None:
+        self._path = Path(path)
+
+    def load(self, login_epoch: str) -> str:
+        """返回与 login_epoch 匹配的 Key；文件缺失、损坏或 epoch 不符时返回空串。"""
+        if not login_epoch:
+            return ""
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(data, dict) or data.get("login_epoch") != login_epoch:
+            return ""
+        api_key = data.get("api_key")
+        if not isinstance(api_key, str) or not api_key:
+            return ""
+        return api_key
+
+    def save(self, login_epoch: str, api_key: str) -> None:
+        if not login_epoch or not api_key:
+            raise ValueError("保存 API Key 需要非空的登录 epoch 与 Key")
+        _write_private_json(
+            self._path, {"login_epoch": login_epoch, "api_key": api_key}
+        )
+
     def clear(self) -> None:
         try:
             self._path.unlink()

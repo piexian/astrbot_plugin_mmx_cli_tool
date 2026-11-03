@@ -213,6 +213,7 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.plugin._oauth.start_device_authorization = AsyncMock(return_value=auth)
         self.plugin._oauth.poll_device_token = AsyncMock(return_value=token)
         self.plugin._oauth.revoke = AsyncMock()
+        self.plugin._account.fetch_api_key = AsyncMock(return_value="sk-cp-fake-key")
         web_request.reset(body={"region": "cn"})
 
         started = await self.call("oauth/start")
@@ -302,16 +303,72 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.plugin._oauth.start_device_authorization = AsyncMock(return_value=auth)
         self.plugin._oauth.poll_device_token = AsyncMock(return_value=token)
-        self.plugin._ensure_provider_source = AsyncMock()
+        self.plugin._sync_provider_source = AsyncMock()
+        self.plugin._sync_login_key = AsyncMock()
         web_request.reset(body={"region": "global"})
 
         started = await self.call("oauth/start")
         session = self.web._login_sessions[started["session_id"]]
         await session.task
 
-        self.plugin._ensure_provider_source.assert_awaited_once()
+        self.plugin._sync_provider_source.assert_awaited_once()
+        # 登录后强制重新获取开放平台 API Key（与 /mmx login 一致）
+        self.plugin._sync_login_key.assert_awaited_once_with(refetch=True)
         self.assertEqual(session.status, "authorized")
         self.assertEqual(self.plugin._token_store.load().region, "global")
+
+    async def test_oauth_ui_login_survives_login_key_failure(self):
+        """登录已成功，获取 API Key 失败只记录，不影响授权结果。"""
+        auth = DeviceAuthInfo(
+            device_code="device-code",
+            user_code="ABCD-1234",
+            code_verifier="verifier",
+            verification_uri="https://account.minimax.cn/oauth2/device",
+            verification_uri_complete="https://account.minimax.cn/oauth2/device?user_code=ABCD-1234",
+            expires_in=600,
+            interval=4.0,
+        )
+        token = OAuthToken(
+            access_token="access",
+            refresh_token="refresh",
+            expires_at=time.time() + 7200,
+            region="cn",
+        )
+        self.plugin._oauth.start_device_authorization = AsyncMock(return_value=auth)
+        self.plugin._oauth.poll_device_token = AsyncMock(return_value=token)
+        self.plugin._sync_provider_source = AsyncMock()
+        self.plugin._sync_login_key = AsyncMock(
+            side_effect=RuntimeError("账户接口不可达")
+        )
+        web_request.reset(body={"region": "cn"})
+
+        started = await self.call("oauth/start")
+        session = self.web._login_sessions[started["session_id"]]
+        await session.task
+
+        self.plugin._sync_login_key.assert_awaited_once_with(refetch=True)
+        self.assertEqual(session.status, "authorized")
+        self.assertEqual(self.plugin._token_store.load().access_token, "access")
+
+    async def test_oauth_logout_clears_login_key(self):
+        self.plugin._token_store.save(
+            OAuthToken(
+                access_token="access",
+                refresh_token="refresh",
+                expires_at=time.time() + 7200,
+                region="cn",
+                login_epoch="epoch-1",
+            )
+        )
+        self.plugin._api_key_store.save("epoch-1", "sk-cp-fake-key")
+        self.plugin._oauth.revoke = AsyncMock()
+        self.plugin._sync_login_key = AsyncMock()
+        web_request.reset(body={})
+
+        self.assertEqual(await self.call("oauth/logout"), {"ok": True})
+
+        self.assertEqual(self.plugin._api_key_store.load("epoch-1"), "")
+        self.plugin._sync_login_key.assert_awaited_once_with()
 
     async def test_oauth_denied_status_and_unknown_session(self):
         auth = DeviceAuthInfo(
@@ -572,6 +629,39 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
             "file_name": file_name,
             "annotations": annotations,
         }
+
+    async def test_canvas_iterate_requires_open_platform_key(self):
+        """既没配置 api_key 也没有登录获取的 Key 时，批注分析返回 503 并提示登录。"""
+        described = AsyncMock(return_value={"content": "结果"})
+        self.plugin._vision.describe = described
+        self.plugin._static_keys = []
+        self.plugin._client.set_credentials("", self.plugin._default_base_url)
+        web_request.reset(
+            body={"nodes": [self._iterate_node("node_a", "a.png", "A 图过曝")]}
+        )
+
+        response = await self.call("canvas/iterate")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("api_key", response.content["message"])
+        self.assertIn("先登录账号", response.content["message"])
+        described.assert_not_awaited()
+
+    async def test_canvas_iterate_accepts_login_obtained_key(self):
+        described = AsyncMock(return_value={"content": "结果"})
+        self.plugin._vision.describe = described
+        self.plugin._static_keys = []
+        self.plugin._client.set_credentials(
+            "sk-cp-fake-key", self.plugin._default_base_url
+        )
+        web_request.reset(
+            body={"nodes": [self._iterate_node("node_a", "a.png", "A 图过曝")]}
+        )
+
+        result = await self.call("canvas/iterate")
+
+        self.assertEqual(result["submitted"], 1)
+        described.assert_awaited_once()
 
     async def test_canvas_iterate_builds_prompt_per_node(self):
         described = AsyncMock(

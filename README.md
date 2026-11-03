@@ -1,305 +1,299 @@
 # MiniMax 多模态工具
 
-为 AstrBot 提供 MiniMax 图片、视频、语音合成与转写、联网搜索、搜图与以图搜图、AI 音乐音效、视觉理解和额度查询能力。
+让你的 AstrBot 机器人用上 MiniMax：画图、做视频、文字转语音、语音转文字、联网搜索、看图、搜图、写音乐和音效，还能查额度。
 
 > [!TIP]
-> **音乐与音效已切换至 MiniMax Agent 接口。** 当前 `mmx_generate_music`、`mmx_generate_sound_effect` 及 `/mmx music`、`/mmx sfx` 使用 Agent Matrix 网关，优先使用 `/mmx login` 授权的账号 Token，未登录时回退静态 API Key，与已关闭的开放平台音乐服务无关。翻唱及旧后台任务工具不再提供。
+> 音乐和音效现在走 MiniMax Agent 接口（不是已关闭的开放平台音乐服务），建议先 `/mmx login` 登录再用。翻唱功能和旧的后台任务工具已不再提供。
 
-## 环境要求
+## 快速开始
 
-| 依赖 | 版本要求 |
-|------|----------|
-| httpx | >= 0.27.0 |
-| AstrBot | >= 4.26.0（「MCode 工作台」视图需要；旧版本下插件仅保留聊天指令与 LLM 工具） |
+1. **安装插件**
+   - 方式一：在 AstrBot 插件市场搜索「MiniMax 多模态工具」，点击安装。
+   - 方式二：插件界面右下角加号 → 从链接安装，输入：
+     ```
+     https://github.com/piexian/astrbot_plugin_mmx_cli_tool
+     ```
+2. **准备凭据**（两种方式，选一种就行）：
+   - **（推荐）登录账号**：管理员发送 `/mmx login`，按提示选择区域并打开链接授权。登录成功后，插件会自动获取 API Key，图片、视频、语音等功能直接可用，不用再手动填写；搜图、音乐、MiniMax Code 对话、签到也一并解锁。如果登录后提示「未能自动获取 API Key」，改用下面的方式自己填。
+   - **自己填写 API Key**：到 [MiniMax Token Plan（国内站）](https://platform.minimaxi.com/user-center/payment/token-plan) 获取 Key，填进插件配置的 `api_key`。同时把 `region` 选成 Key 所属的网站：`cn` 是国内站，`global` 是国际站。
+3. **试一试**：发送 `/mmx image 一只戴帽子的猫`，稍等片刻就能收到图片。
 
-## 功能
+运行要求：AstrBot 4.26.0 及以上（「MCode 工作台」需要；更低版本只能用聊天指令和 AI 工具），Python 依赖 httpx 0.27.0 及以上。
 
-- 17 个 LLM Tool，支持图片/视频/语音合成与转写/联网搜索/搜图与以图搜图/AI 音乐音效/视觉理解/文件管理
-- `/mmx` 命令组，用户可直接通过指令快速调用
-- `/mmx login` 账号 OAuth 登录（设备授权），解锁搜图、以图搜图、AI 音乐音效等 Agent 账号能力，Token 自动刷新
-- 智能参数校验与纠偏机制，对 AI 友好
-- API 多 Key 轮询与额度查询
-- 生成的图片/视频优先下载到 AstrBot 临时目录，发送不依赖远程链接；下载失败才回退 URL
-- AstrBot 控制台内置「MCode 工作台」视图：状态与额度、扫码登录、无限画布批注、搜图/以图搜图/AI 音乐音效与终端事件流
-## 安装
+## 需要准备什么
 
-**方式一**：在 AstrBot 插件市场搜索「MiniMax 多模态工具」，点击安装。
+| 功能 | 只填了 API Key | 只登录了账号（`/mmx login`） |
+|------|:------:|:------:|
+| 图片、视频、语音合成、语音转文字、联网搜索、看图、文件管理、额度查询 | 可以用 | 可以用（登录后自动获取 API Key） |
+| 搜图、以图搜图、AI 音乐、AI 音效 | 没登录时用它顶替，但服务器可能不认，会提示你去登录 | 建议登录，最稳 |
+| MiniMax Code 对话、签到、积分查询 | 用不了 | 必须登录 |
 
-**方式二**：插件界面右下角加号 → 从链接安装，输入：
-```
-https://github.com/piexian/astrbot_plugin_mmx_cli_tool
-```
+既没填 API Key 也没登录时，第一行的功能都用不了；没登录时，最后一行的功能会提示你先 `/mmx login`。
 
-## 工具列表
+两种都有时，以配置里填的 `api_key` 为准，登录不会覆盖它。
 
-| 工具 | 功能 | 权限 |
+登录后自动获取的 API Key：
+
+- 保存在插件数据目录里的 `open_api_key.json`（Linux/macOS 上只有运行 AstrBot 的用户能读写），相当于密码，不要发给别人。
+- 请求区域跟随你登录时选的区域，不看配置里的 `region`。
+- 重新登录（`/mmx login`）会重新获取一次；退出登录（`/mmx logout`）会把它一并删除。
+- 如果它哪天失效了（比如图片、视频一直提示 Key 无效），再发送一次 `/mmx login` 即可。
+
+## 功能一览
+
+AI 在对话中可以自动调用下面 17 个工具。
+
+| 工具 | 作用 | 使用条件 |
 |------|------|------|
-| `mmx_generate_image` | 根据文字描述生成图片（支持 aspectRatio、角色参考等），图片自动下载到本地临时目录并返回本地路径 | 无 |
-| `mmx_generate_video` | 根据文字描述及首尾帧等生成视频，同步等待完成后自动下载到本地临时目录并返回本地路径 | 无 |
-| `mmx_video_task_get` | 查询视频生成任务的最新状态和进度 | 无 |
-| `mmx_video_download` | 通过文件 ID 下载完成的视频到本地 | 无 |
-| `mmx_file_upload` | 上传插件数据目录或 AstrBot 临时目录内的文件到 MiniMax 存储 | 管理员 |
-| `mmx_file_list` | 列出已上传到 MiniMax 存储的文件 | 管理员 |
-| `mmx_file_delete` | 删除已上传的 MiniMax 文件 | 管理员 |
-| `mmx_speech_synthesize` | 将文本合成语音（TTS），支持 30+ 种音色和语速/音量/音高控制 | 无 |
-| `mmx_speech_voices` | 查询可用 TTS 系统音色列表 | 无 |
-| `mmx_speech_transcribe` | 音频转文字，支持说话人、时间戳及 SRT/WebVTT 字幕 | 无 |
-| `mmx_web_search` | 联网搜索信息 | 无 |
-| `mmx_describe_image` | 分析/描述图片内容（视觉理解） | 无 |
-| `mmx_check_quota` | 查询 API 剩余额度 | 无 |
-| `mmx_search_images` | 搜图并下载：检索真实网络图片并保存到本地临时目录，返回本地路径 | 需登录¹ |
-| `mmx_image_reverse_search` | 以图搜图：查找图片来源与相似网页，返回 Top 3 出处卡片 | 需登录¹ |
-| `mmx_generate_music` | Agent 账号体系 AI 音乐生成（可带歌词，mp3/wav），音频下载后返回本地路径 | 需登录¹ |
-| `mmx_generate_sound_effect` | Agent 账号体系 AI 音效生成，音频下载后返回本地路径 | 需登录¹ |
+| `mmx_generate_image` | 按文字描述画图，支持比例、角色参考等；图片先存到本地再发送 | 所有人 |
+| `mmx_generate_video` | 按文字描述（可加首尾帧）生成视频，等生成完再存到本地发送 | 所有人 |
+| `mmx_video_task_get` | 查询视频任务的进度 | 所有人 |
+| `mmx_video_download` | 用文件 ID 把做好的视频下载到本地 | 所有人 |
+| `mmx_file_upload` | 把插件数据目录或 AstrBot 临时目录里的文件传到 MiniMax 存储 | 仅管理员 |
+| `mmx_file_list` | 列出已传到 MiniMax 存储的文件 | 仅管理员 |
+| `mmx_file_delete` | 删除已传到 MiniMax 存储的文件 | 仅管理员 |
+| `mmx_speech_synthesize` | 文字转语音，可调音色、语速、音量、音高 | 所有人 |
+| `mmx_speech_voices` | 查看可用的音色 | 所有人 |
+| `mmx_speech_transcribe` | 语音转文字，可区分说话人、带时间戳，也能生成 SRT/WebVTT 字幕 | 所有人 |
+| `mmx_web_search` | 联网搜索 | 所有人 |
+| `mmx_describe_image` | 看图说话，描述或分析图片内容 | 所有人 |
+| `mmx_check_quota` | 查询 API 剩余额度 | 所有人 |
+| `mmx_search_images` | 搜图：找真实的网络图片并存到本地 | 建议登录¹ |
+| `mmx_image_reverse_search` | 以图搜图：找图片出处和相似网页，返回前 3 条 | 建议登录¹ |
+| `mmx_generate_music` | 生成音乐，可带歌词，格式 mp3 或 wav | 建议登录¹ |
+| `mmx_generate_sound_effect` | 生成音效 | 建议登录¹ |
 
-¹ 这四项走 MiniMax Agent Matrix 网关，优先使用 `/mmx login` 授权的账号 Token；未登录时回退静态 API Key，网关拒绝时会提示先登录。
+¹ 这四项优先使用你 `/mmx login` 登录的账号；没登录时会改用 API Key，但服务器不接受时会提示你先登录。
 
-## 使用
+## 指令用法
 
-### 指令
+在聊天里发送 `/mmx` 开头的指令，不用经过 AI。标注「管理员」的只有管理员能用，标注「需登录」的要先 `/mmx login`。每条指令的全部参数、取值范围和示例见 [完整指令与参数说明](docs/commands.md)。
 
-```
-/mmx image <描述> [--aspect-ratio 16:9] [--seed 42]  # 生成图片，可用 --subject-ref 引用图片
-/mmx video <描述> [--first-frame <图片>] [--no-wait]  # 生成视频，可附带或引用图片
-/mmx speech <文本> [--voice <音色>] [--format mp3]  # 语音合成
-/mmx speech transcribe [--file <路径>] [--language zh]  # 语音转文字，可附带或引用音频
-/mmx file upload --file <路径> [--purpose retrieval]  # 上传文件（管理员）
-/mmx file list                 # 列出文件（管理员）
-/mmx file delete --file-id <id> # 删除文件（管理员）
-/mmx search <查询>             # 联网搜索
-/mmx vision <描述要求>         # 图片理解（支持当前消息带图或引用图片）
-/mmx quota                    # 查询额度（多 Key 默认每页显示 3 个）
-/mmx quota page <页码>        # 翻页查看 Key 额度
-/mmx login                     # 登录 MiniMax 账号（管理员，两阶段设备授权）
-/mmx logout                    # 退出账号登录（管理员）
-/mmx signin                   # 领取今日签到积分（管理员，需登录）
-/mmx usage                    # 查看积分/套餐余量/签到进度（管理员，需登录）
-/mmx search-image <关键词> [--n 数量]   # 搜图并下载
-/mmx reverse-image [图片URL]    # 以图搜图（可附带或引用图片）
-/mmx music <提示词> [--lyrics 歌词] [--format mp3]  # AI 音乐生成（需登录）
-/mmx sfx <音效描述>             # AI 音效生成（需登录）
-```
+### 图片
 
-
-### 示例
+画图。可以加 `--aspect-ratio 16:9` 指定比例，用 `--subject-ref` 参考某张图里的人物。
 
 ```
-/mmx image a cute cat wearing a hat, watercolor style --aspect-ratio 1:1 --aigc-watermark
-/mmx video a sunset over the ocean with gentle waves --first-frame --no-wait
-/mmx speech 欢迎使用 MiniMax 语音合成功能 --speed 1.1 --subtitles --pronunciation MiniMax/(mini max)
-/mmx speech transcribe --response-format srt --language zh
-/mmx file list
-/mmx search 今天天气怎么样
-/mmx vision 描述这张图片里有什么
-/mmx quota
-/mmx quota page 2
+/mmx image 一只戴帽子的猫，水彩风格 --aspect-ratio 1:1
 ```
 
-直接指令使用 kebab-case，例如 `--aspect-ratio`、`--sample-rate`。LLM 工具参数仍使用导出的 JSON Tool 名称，例如 `aspectRatio`、`sampleRate`。
+### 视频
 
+生成视频。生成需要一些时间，默认会等做完再发送；加 `--no-wait` 则提交后马上返回任务编号。想用一张图当起始画面，加 `--first-frame` 并在消息里附带或引用图片。
 
-常用图片指令参数：
+```
+/mmx video 海边日落，海浪轻轻拍打
+/mmx video 让图里的人挥手 --first-frame   # 同时附带或引用一张图片
+```
 
-| 参数 | 说明 |
-|------|------|
-| `--aspect-ratio <比例>` | 图片比例，如 `1:1`、`16:9` |
-| `--n <数量>` | 生成张数，1-9 |
-| `--seed <数字>` | 随机种子 |
-| `--width` / `--height` | 自定义尺寸，需同时提供，512-2048 且为 8 的倍数 |
-| `--prompt-optimizer` | 启用提示词优化 |
-| `--aigc-watermark` | 添加 AI 生成内容水印 |
-| `--subject-ref <参数>` | 角色参考，支持 `type=character,image=path-or-url`；省略值时使用当前消息或引用消息中的图片 |
-| `--response-format <url\|base64>` | 返回格式，默认 `url` |
+### 语音合成
 
-常用视频指令参数：
+把文字读出来。
 
-| 参数 | 说明 |
-|------|------|
-| `--model <模型>` | 指定视频模型；通常可省略并由插件自动选择 |
-| `--first-frame <图片>` | 起始帧图片，支持 URL、插件数据目录内路径、当前消息图片或引用图片 |
-| `--last-frame <图片>` | 结束帧图片，需同时提供 `--first-frame`；省略值时可取第二张附件图 |
-| `--subject-image <图片>` | 角色一致性参考图；省略值时使用当前消息或引用消息中的图片 |
-| `--callback-url <URL>` | 完成回调地址 |
-| `--no-wait` / `--async` | 提交任务后立即返回 `task_id` |
-| `--poll-interval <秒>` | 等待生成时的轮询间隔 |
-
-常用语音指令参数：
-
-| 参数 | 说明 |
-|------|------|
-| `--model <模型>` | TTS 模型，如 `speech-2.8-hd` |
-| `--voice <音色>` | 音色 ID，缺省用配置项 `default_speech_voice` |
-| `--speed` / `--volume` / `--pitch` | 语速、音量、音高 |
-| `--emotion <情绪>` | 情绪，如 `happy`、`sad`、`angry`、`fearful`、`disgusted`、`surprised`、`calm`、`fluent`、`whisper` |
-| `--text-normalization` | 启用文本规范化（数字、符号自然朗读） |
-| `--latex-read` | 朗读文本中的 LaTeX 公式 |
-| `--format <格式>` | `mp3`、`pcm`、`flac`、`wav`、`pcmu_raw`、`pcmu_wav`、`opus` |
-| `--sample-rate <数字>` / `--bitrate <数字>` / `--channels <数字>` | 音频采样率、码率、声道数 |
-| `--language <语言>` | 语种增强 |
-| `--subtitles` | 请求字幕时间信息 |
-| `--pronunciation <文本/(读音)>` | 自定义读音（服务端原样透传格式），可重复传入 |
+```
+/mmx speech 欢迎使用 MiniMax 语音合成 --speed 1.1
+```
 
 ### 语音转文字
 
-`/mmx speech transcribe`（别名 `recognize`）默认使用 `asr-1.0`；省略 `--file` 时读取当前消息或引用消息中的音频。
-
-| 参数 | 说明 |
-|------|------|
-| `--file <路径>` | 插件数据目录或允许的 AstrBot 临时目录内音频；不接受手写 URL |
-| `--model <模型>` | 缺省读取 `default_transcription_model` |
-| `--language <语言>` | 如 `zh`、`en`；省略自动识别 |
-| `--response-format <格式>` | `json`、`verbose_json`、`srt`、`vtt`，默认 `json` |
-| `--timestamp-level <粒度>` | `sentence` 或 `word`；仅详细 JSON 和字幕生效 |
-| `--stream` | 通过 SSE 接收并汇总后回复，仅支持 `json`，不能与 `--out` 同用 |
-| `--out <相对路径>` | 写入插件数据目录；省略时字幕、详细 JSON 和长文本结果保存到临时目录 |
-
-支持 MP3、WAV、M4A、FLAC、AAC、Opus、Ogg、AIFF，最大 50 MB、500 秒；大小在本地检查，时长和编码由服务端检查。AMR/Silk、裸 PCM 等需先转换为支持的音频格式。
-
-普通转写直接回复文字，其余结果发送文件。保存失败会保留文字，不自动重试计费请求。LLM 工具使用 `responseFormat`、`timestampLevel` 等 camelCase 参数。合成以 `transcribe`/`recognize` 开头的文本时，请使用 `/mmx speech --text "transcribe ..."`。
-
-### LLM 对话中使用
-
-当 AI 需要生成图片、视频、语音，或进行搜索、图片理解时，会自动调用对应工具。
-
-例如对 AI 说「帮我把这段话合成语音：你好」→ 自动调用 `mmx_speech_synthesize`。
-生成的图片/视频会先下载到 AstrBot 临时目录，工具结果返回 `file_paths`/`file_path` 本地路径，发送时优先使用本地路径而非远程链接（远程链接可能过期或无法被接收端下载）。
-
-### MiniMax Code 对话通道与签到
-
-插件会把 `minimax_code` 适配器类型与提供商源 `mmx_minimax_code` 写入 AstrBot：WebUI「模型供应商」页可见该源，默认提供 `MiniMax-M3.1-Flash` 与 `MiniMax-M3` 两个模型条目，可继续添加自定义模型（上下文窗口默认 512K，可按条目调整；「获取模型列表」按钮实时拉取云端公开目录 `/mavis/api/v1/models`，无需登录）；源的 API Base URL 与 API Key 为占位提醒，实际请求由插件按登录区域注入 OAuth 令牌（走 Claude Messages 协议直连 `agent.minimax.cn` / `agent.minimax.io`，消耗订阅额度与签到积分）。源 ID `mmx_minimax_code` 若被其他配置占用，插件跳过写入并在工作台弹出告警，同时回退为运行时注册供会话/Agent 直接选用。令牌到期或 401 时自动刷新并重试。卸载插件前请先在「模型供应商」页删除 `mmx_minimax_code` 源及其模型条目，否则 AstrBot 重启时会提示找不到 `minimax_code` 适配器。
-
-MiniMax Code 对话会将 AstrBot `conversation_id` 稳定转写为 Mavis 会话 ID，token 刷新后保持不变；换账号登录后不复用旧会话。出站请求仅发送白名单头，AstrBot 头、SDK 遥测头与 `custom_headers` 不透传。
-
-签到与用量：
+把音频转成文字。可以用 `--file` 指定文件，也可以不写，直接附带或引用一段语音。
 
 ```
-/mmx signin    # 领取今日签到积分（管理员；按天幂等，重复领取不叠加）
-/mmx usage     # 查看积分余额、积分明细、套餐余量与签到进度（管理员）
+/mmx speech transcribe --language zh
 ```
 
-配置项 `auto_signin`（默认关闭）开启后，插件每 30 分钟巡检一次并自动领取当日签到积分。
+### 搜索与识图
 
-## 智能错误提示与参数规范
+```
+/mmx search 今天天气怎么样         # 联网搜索
+/mmx vision 描述这张图片里有什么     # 看图说话，需要附带或引用图片
+/mmx search-image 柴犬 --n 3        # 搜图并发送，--n 为张数（1-5，默认 3）
+/mmx reverse-image                 # 以图搜图，附带或引用图片，或在后面写图片链接
+```
 
-### 智能错误提示
-本插件实现了一套**面向 LLM 自动纠错**的智能错误反馈机制。当 LLM 传入参数缺失、类型错误或发生模式冲突（如视频生成中首尾帧与角色参考互斥）时，工具不直接崩溃，而是返回包含以下信息的结构化 JSON：
-- `ok`: `false`，指示调用失败
-- `error`: 明确的错误原因
-- `hint`: AI 参数纠正建议
-- `example`: 正确的传参 JSON 示例
-- `docs`: MiniMax 官方 API 文档链接
+### 音乐与音效
 
----
+```
+/mmx music 轻快的夏日民谣 --lyrics 歌词内容 --format mp3
+/mmx sfx 雨天打雷的声音
+```
 
-### 工具一览
+生成可能要几分钟。格式只支持 `mp3` 和 `wav`（音效固定为 mp3）。建议先登录。
 
-`mmx_generate_image`、`mmx_generate_video`、`mmx_video_task_get`、`mmx_video_download`、`mmx_speech_synthesize`、`mmx_speech_voices`、`mmx_speech_transcribe`、`mmx_web_search`、`mmx_describe_image`、`mmx_file_upload`、`mmx_file_list`、`mmx_file_delete`、`mmx_check_quota`
+### 账号与签到
 
-参数以各工具的实际声明为准（LLM 调用时自动可见），本文不再逐项展开。
+```
+/mmx login     # 登录 MiniMax 账号，并自动获取 API Key（管理员）
+/mmx logout    # 退出登录（管理员）
+/mmx signin    # 领取今天的签到积分（管理员，需登录）
+/mmx usage     # 查看积分、套餐余量和签到进度（管理员，需登录）
+```
+
+### 文件与额度
+
+```
+/mmx file upload --file <路径>   # 上传文件（管理员）
+/mmx file list                   # 列出已上传的文件（管理员）
+/mmx file delete --file-id <id>  # 删除文件（管理员）
+/mmx quota                       # 查看额度，Key 多时每页显示 3 个
+/mmx quota 2                     # 只看第 2 个 Key
+/mmx quota page 2                # 翻到第 2 页
+```
+
+上传文件时，路径只能指向插件数据目录或 AstrBot 临时目录里的文件。
+
+更多参数（如图片的比例与尺寸、语音的音色与格式、视频的首尾帧与时长、转写的字幕格式等）的写法、取值范围和默认值，见 [完整指令与参数说明](docs/commands.md)。
+
+## 在对话中使用
+
+直接跟 AI 说话就行，需要时它会自己调用工具。比如你说「帮我把这段话合成语音：你好」，它就会调用 `mmx_speech_synthesize`，把语音发给你。
+
+生成的图片、视频等会先下载成本地文件再发送，因为远程链接可能过期，或者接收端打不开。
+
+## MiniMax Code 对话与签到
+
+先 `/mmx login` 登录，再在会话或 Agent 设置中选择 MiniMax Code 模型。对话走官方通道（`agent.minimax.cn` / `agent.minimax.io`），消耗订阅额度与签到积分；区域跟随登录，令牌到期自动刷新。
+
+提供商源二选一（提供商源就是 AstrBot「模型供应商」页里的一个供应商配置）：
+
+- **自动（默认）**：`auto_create_provider_source` 开启时，插件创建 `mmx_minimax_code`，附带 `MiniMax-M3.1-Flash`、`MiniMax-M3` 两个模型。
+- **手动**：关闭该开关，自己在 WebUI 里添加：进入「模型供应商」页，点右上角「新增供应商」，在弹出的「新建模型提供商」窗口里选择 `minimax_code`（列表的最后一项），再添加模型。
+
+![在「新建模型提供商」窗口里选择 minimax_code](docs/images/add-provider-minimax-code.png)
+
+源里的 API Base URL 和 API Key 是占位符，无需填写。「获取模型列表」可拉取云端模型目录，上下文窗口默认 512K。若 `mmx_minimax_code` 已被其他类型的源占用，插件不会覆盖，会在工作台提示并改为运行时注册。
+
+> [!WARNING]
+> 卸载插件前，请先删除所有 MiniMax Code 类型的提供商源及其模型，否则 AstrBot 重启时会报找不到 `minimax_code` 适配器。
+
+每个 AstrBot 会话对应各自的 MiniMax Code 会话；换另一个账号重新登录后，不会沿用旧会话。提供商源里填的 `custom_headers` 不会被发送。
+
+签到和积分：
+
+```
+/mmx signin    # 领取今天的签到积分，每天只能领一次
+/mmx usage     # 查看积分余额、明细、套餐余量和签到进度
+```
+
+两个指令都只有管理员能用，并且要先登录。想自动签到，打开配置项 `auto_signin`，插件会每 30 分钟检查一次并领取当天的积分。
+
 ## MCode 工作台
 
-AstrBot 管理面板 → 插件 → 「MiniMax 多模态工具」→ 视图「MCode 工作台」，在控制台内直接使用本插件能力，页面在沙箱 iframe 中运行，不跳转外部站点。
+在 AstrBot 管理面板里直接使用本插件的界面：管理面板 → 插件 → 「MiniMax 多模态工具」→ 视图「MCode 工作台」。
 
-| 工作台面板 | 对接的后端能力 |
-|-----------|----------------|
-| 顶部状态栏（区域、凭据、模型、推理强度档位） | 插件运行状态与 OAuth Token 存储；档位写入插件配置 `thinking_effort` |
-| 额度侧栏 | Token Plan 双周期额度与账户余额，多 Key 汇总 |
-| 扫码登录 | OAuth 设备授权，与 `/mmx login` 共用同一份 `auth.json` |
-| 无限画布 | 画布文档落盘在 `data/plugin_data/astrbot_plugin_mmx_cli_tool/canvas/`；批注提交视觉理解模型 |
-| 媒体实验室 | 搜图、以图搜图、AI 音乐与音效（Matrix MCP），产物缓存到 AstrBot 临时目录 |
-| 终端事件流 | SSE 实时推送由工作台发起的后端调用（额度、登录、画布、搜图与音乐/音效等）的耗时与结果；聊天侧的 LLM 工具与指令调用不在其中 |
+| 面板 | 能做什么 |
+|------|----------|
+| 顶部状态栏 | 看当前区域、凭据、模型，并选择推理强度档位（保存到配置项 `thinking_effort`） |
+| 额度侧栏 | 查看额度和账户余额，多个 Key 会合并统计 |
+| 扫码登录 | 在页面里登录账号，效果和 `/mmx login` 一样，两边共用同一份登录状态 |
+| 无限画布 | 在画布上摆放图片并做批注，批注会交给视觉理解模型分析 |
+| 媒体实验室 | 搜图、以图搜图、生成音乐和音效 |
+| 终端事件流 | 实时显示你在工作台里发起的操作的耗时和结果；聊天里的指令和 AI 调用不会出现在这里 |
 
-- 视图路由沿用 AstrBot 控制台的登录鉴权，未登录无法调用。
-- 下载仅允许 AstrBot 临时目录内的文件（画布资产额外允许插件数据目录），拒绝绝对路径与 `..` 穿越；以图搜图的上传文件限定为图片扩展名，临时文件用后即删。
-- 搜图与音乐/音效返回的 `local_path` 是 AstrBot 临时目录内的文件名，可直接作为画布节点的路径引用，并被下载、画布批注与以图搜图复用。
-- 扫码登录面板的「我已完成授权，立即同步」会立刻查询一次授权结果，仅在后端确认完成后才绑定；仍在等待时提示先在浏览器或手机上确认。
-- 「团队方案（Team Plan）」看板始终是前端演示数据（卡片标有「演示数据」），本插件未提供对应后端接口，不会读写任何账号数据。
-- 演示内容仅在离线预览（页面未连上后端）时出现：终端示例日志与「+ 模拟实时事件」、画布「+ 新建规格便签」按钮、媒体实验室的示例搜图结果/溯源来源/音轨；连接后端后这些位置只显示真实结果。
+要注意：
 
-## 安全设计
+- 需要先登录 AstrBot 管理面板才能使用。
+- 「团队方案（Team Plan）」看板是演示数据，卡片上有「演示数据」标记，不会读写你的账号。
+- 页面没连上后端（离线预览）时，会出现一些示例内容；连上后端后只显示真实结果。
 
-- **API Key 脱敏**：错误日志中自动隐藏 API Key（仅显示前 4 后 4 字符）
-- **文件名安全**：自动保存使用时间戳或随机 ID 命名，避免路径注入
-- **输出目录限制**：生成媒体及转写文件默认保存到 AstrBot 临时目录；视频下载和转写的 `out` 仅允许写入插件数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）
-- **文件管理权限**：`/mmx file upload|list|delete` 与 `mmx_file_upload/list/delete` 仅管理员可用
-- **转写附件下载**：仅下载平台解析的附件 URL，不携带 MiniMax Key，限制 50 MB、60 秒并拒绝重定向；附件来源沿用平台信任边界
-- **LLM 文件上传限制**：`mmx_file_upload` 仅允许上传插件数据目录或 AstrBot 临时目录内的文件，避免模型诱导读取任意宿主文件
-- **本地媒体输入限制**：LLM 工具和直接指令中手写的图片/音频路径仅允许指向插件数据目录或 AstrBot 临时目录（聊天图片下载位置）；当前消息和引用消息中的附件仍由 AstrBot 解析后提交
-- **临时目录信任面**：AstrBot 临时目录由所有插件共享（聊天附件、其他插件的临时文件都在其中），放行该目录意味着 LLM 工具可读取其中的任意文件，并非"仅聊天图片"
-- **视频下载路径限制**：`mmx_video_download` 的 `out` 仅允许写入插件数据目录内，拒绝绝对路径和 `..` 穿越
-- **参数验证**：工具入口处校验关键参数
+## 配置说明
 
-## 配置
+在 AstrBot 管理面板的插件配置里修改。大多数项保持默认即可，一般只需要填 `api_key`，或者用 `/mmx login` 登录后让插件自动获取。
 
-在 AstrBot 管理面板的插件配置中可设置：
+| 配置项 | 类型 | 默认值 | 什么时候需要改 |
+|--------|------|--------|----------------|
+| `api_key` | 列表 | 空 | 可以不填：留空时，`/mmx login` 登录后会自动获取（见「需要准备什么」）。想自己管理 Key 时才填 MiniMax 的 API Key，可填多个：插件每 5 分钟查一次各 Key 的额度，优先用目标模型剩余额度最多的那个，额度未知时轮流使用；登录获取的 Key 会与这里的 Key 去重后一起参与选择 |
+| `region` | 字符串 | `cn` | 要和 API Key 所属网站一致：`cn` 国内站，`global` 国际站；登录后自动获取的 Key 跟随登录区域，不受它影响 |
+| `base_url` | 字符串 | 空 | 一般留空；想用自定义的 API 地址时才填 |
+| `timeout` | 整数 | `300` | 请求超时（秒），经常超时可以调大 |
+| `auto_create_provider_source` | 布尔 | `true` | 是否自动创建 MiniMax Code 提供商源；想手动添加就关掉 |
+| `auto_signin` | 布尔 | `false` | 想每天自动签到就打开，需先登录 |
+| `thinking_effort` | 字符串 | `default` | 工作台里的推理强度档位，可选 `default`、`low`、`medium`、`high`、`xhigh`、`max`，只是记录偏好，不影响请求 |
+| `allow_astrbot_temp_dir` | 布尔 | `true` | 是否允许读取 AstrBot 临时目录；想更安全就关掉，代价见下面的「安全说明」 |
+| `video_poll_interval` | 整数 | `5` | 生成视频时查进度的间隔（秒） |
+| `video_timeout` | 整数 | `600` | 等待视频生成的最长时间（秒）；超时后只是不再等，视频仍在后台生成，会告诉你任务编号 |
+| `default_image_model` | 字符串 | `image-01` | 想换默认图片模型时 |
+| `default_video_model` | 字符串 | `MiniMax-Hailuo-2.3` | 想换默认视频模型时 |
+| `default_video_sef_model` | 字符串 | `MiniMax-Hailuo-02` | 想换首尾帧视频用的模型时 |
+| `default_video_subject_model` | 字符串 | `S2V-01` | 想换角色参考视频用的模型时 |
+| `default_speech_model` | 字符串 | `speech-2.8-hd` | 想换默认语音合成模型时 |
+| `default_speech_voice` | 字符串 | `English_expressive_narrator` | 想换默认音色时，填音色 ID |
+| `default_transcription_model` | 字符串 | `asr-1.0` | 想换默认语音转文字模型时 |
 
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `api_key` | string | — | **必填**。从 https://platform.minimaxi.com/user-center/payment/token-plan 获取 |
-| `region` | string | `global` | API 区域：global（国际）或 cn（中国） |
-| `base_url` | string | — | 自定义 API 地址（留空使用默认） |
-| `timeout` | int | `300` | 请求超时（秒） |
-| `video_poll_interval` | int | `5` | 视频生成轮询间隔（秒） |
-| `video_timeout` | int | `600` | 视频生成超时（秒） |
-| `allow_astrbot_temp_dir` | bool | `true` | 允许读取 AstrBot 临时目录（聊天图片与生成缓存所在目录，全插件共享）；关闭可收紧信任面，但生成结果将无法再作为输入 |
-| `default_image_model` | string | `image-01` | 默认图片生成模型 |
-| `default_video_model` | string | `MiniMax-Hailuo-2.3` | 默认视频生成模型 |
-| `default_video_sef_model` | string | `MiniMax-Hailuo-02` | 默认首尾帧视频模型 |
-| `default_video_subject_model` | string | `S2V-01` | 默认角色一致性视频模型 |
-| `default_speech_model` | string | `speech-2.8-hd` | 默认语音合成模型 |
-| `default_speech_voice` | string | `English_expressive_narrator` | 默认语音合成音色（voice_id） |
-| `default_transcription_model` | string | `asr-1.0` | 默认语音转文字模型 |
-| `thinking_effort` | string | `default` | 工作台显示的推理强度档位（`default/low/medium/high/xhigh/max`），仅作偏好记录，不改变本插件的 MiniMax 请求参数 |
-| `auto_signin` | bool | `false` | MiniMax Code 账号每日自动签到（需登录）：每 30 分钟巡检并领取当日积分，上游按天幂等 |
+## 安全说明
+
+- 文件相关的指令和工具（上传、列表、删除）只有管理员能用。
+- 本插件只会读写两个地方：插件自己的数据目录（`data/plugin_data/astrbot_plugin_mmx_cli_tool/`）和 AstrBot 临时目录，不会读取服务器上的其他文件。
+- AstrBot 临时目录是所有插件共用的，除了聊天图片，还可能有其他插件的临时文件。打开 `allow_astrbot_temp_dir` 更方便（生成的图片可以直接再拿来用），关闭则更安全，但生成结果就不能再当输入了。
+- 日志里的 API Key 会被隐藏，只显示前 4 位和后 4 位。
+- 更多技术细节（完整安全规则与内部机制）见 [docs/development.md](docs/development.md)。
 
 ## 项目结构
 
 ```
 astrbot_plugin_mmx_cli_tool/
-├── main.py                          # 插件入口（Star 子类）
-├── metadata.yaml                    # 插件元数据
-├── _conf_schema.json                # 插件配置 Schema
-├── requirements.txt                 # Python 依赖
-├── README.md                        # 项目说明文档
+├── main.py                     # 插件入口：指令、工具注册、生命周期
+├── metadata.yaml               # 插件信息
+├── _conf_schema.json           # 配置项定义
+├── requirements.txt            # Python 依赖
+├── README.md                   # 使用说明
+├── CHANGELOG.md                # 更新日志
 ├── docs/
-│   └── plugin-api.md                # 插件协作 SDK v1 文档
-├── .astrbot-plugin/
-│   └── i18n/
-│       └── zh-CN.json               # 中文翻译
-├── views/
-│   └── mcode_dashboard/             # MCode 工作台视图构建产物（index.html + assets）
-├── web/                             # MCode 工作台视图源码（Vue 3 + Vite）
-├── mmx/                             # MiniMax API 客户端层
-│   ├── __init__.py
-│   ├── client.py                    # MiniMax HTTP 客户端与鉴权
-│   ├── endpoints.py                 # API 端点 URL 构建
-│   ├── errors.py                    # 错误分类与映射
-│   ├── sse.py                       # SSE 流式解析
-│   ├── files.py                     # 文件上传、列表、删除与检索
-│   ├── plugin_service.py            # 插件协作 SDK v1 门面
-│   ├── video_business.py            # 视频生成模式与参数前置校验
-│   ├── quota_usage.py               # 额度数据标准化与汇总
-│   ├── canvas_store.py              # 画布文档持久化与变更幂等应用
-│   ├── web_api.py                   # MCode 工作台 Web API 路由与 SSE 事件
-│   └── apis/                        # MiniMax API 领域封装
-│       ├── image.py                 # 图片生成 API
-│       ├── video.py                 # 视频生成与任务轮询 API
-│       ├── speech.py                # 语音合成 API
-│       ├── transcription.py          # 语音转文字 API
-│       ├── search.py                # 联网搜索 API
-│       ├── vision.py                # 视觉理解 API
-│       └── quota.py                 # 额度查询 API
-└── tools/                           # LLM 工具
-    ├── __init__.py
-    ├── image_tools.py               # 图片生成工具
-    ├── video_tools.py               # 视频生成工具
-    ├── video_task_tools.py          # 视频任务查询与下载工具
-    ├── speech_tools.py              # 语音合成与音色列表工具
-    ├── transcription_tools.py       # 语音转文字工具
-    ├── file_tools.py                # 文件上传、列表与删除工具
-    ├── search_tools.py              # 联网搜索工具
-    ├── vision_tools.py              # 视觉理解工具
-    └── quota_tools.py               # 额度查询工具
+│   ├── commands.md             # 完整指令与参数说明
+│   ├── development.md          # 技术细节
+│   ├── images/                 # 文档截图
+│   └── plugin-api.md           # 插件协作 SDK 文档
+├── .astrbot-plugin/i18n/
+│   └── zh-CN.json              # 中文翻译
+├── mmx/                        # 核心逻辑
+│   ├── client.py               # HTTP 客户端与鉴权
+│   ├── keypool.py              # 多 Key 额度调度
+│   ├── endpoints.py            # 接口地址
+│   ├── errors.py               # 错误分类
+│   ├── sse.py                  # 流式响应解析
+│   ├── utils.py                # 通用函数
+│   ├── apis/                   # 开放平台接口
+│   │   ├── image.py            # 图片生成
+│   │   ├── video.py            # 视频生成与任务查询
+│   │   ├── speech.py           # 语音合成
+│   │   ├── transcription.py    # 语音转文字
+│   │   ├── search.py           # 联网搜索
+│   │   ├── vision.py           # 看图
+│   │   └── quota.py            # 额度查询
+│   ├── files.py                # 文件上传、列表、删除
+│   ├── transcription.py        # 转写输入检查与结果保存
+│   ├── video_business.py       # 视频模式校验
+│   ├── direct_command_args.py  # /mmx 指令参数解析
+│   ├── attachment_input.py     # 读取消息里的附件
+│   ├── vision_input.py         # 读取看图指令的图片
+│   ├── voice_gender.py         # 音色性别标注
+│   ├── quota_usage.py          # 额度数据整理
+│   ├── oauth.py                # 账号登录（/mmx login）
+│   ├── account.py              # 账号积分、套餐与签到
+│   ├── matrix.py               # Agent 接口：搜图、以图搜图、音乐、音效
+│   ├── media_transfer.py       # Agent 接口的文件上传下载
+│   ├── llm_provider.py         # MiniMax Code 对话供应商
+│   ├── canvas_store.py         # 工作台画布存储
+│   ├── web_api.py              # 工作台后端接口
+│   └── plugin_service.py       # 插件协作 SDK 入口
+├── tools/                      # 给 AI 调用的工具
+│   ├── image_tools.py          # 图片生成
+│   ├── video_tools.py          # 视频生成
+│   ├── video_task_tools.py     # 视频任务查询与下载
+│   ├── speech_tools.py         # 语音合成与音色列表
+│   ├── transcription_tools.py  # 语音转文字
+│   ├── search_tools.py         # 联网搜索
+│   ├── vision_tools.py         # 看图
+│   ├── file_tools.py           # 文件管理
+│   ├── quota_tools.py          # 额度查询
+│   ├── image_search_tools.py   # 搜图
+│   ├── image_reverse_tools.py  # 以图搜图
+│   ├── music_tools.py          # 音乐与音效
+│   ├── schema.py               # 工具参数定义辅助
+│   └── result.py               # 工具返回值辅助
+├── tests/                      # 单元测试
+├── web/                        # 工作台前端源码（Vue 3 + Vite）
+└── views/mcode_dashboard/      # 工作台前端构建产物
 ```
 
 ## 插件协作 SDK v1
@@ -319,7 +313,6 @@ SDK 返回结构化结果，不发送聊天消息、不唤醒 Agent。视频等�
 ## 开发验证
 
 安装 `requirements.txt` 后运行 `python -m unittest discover -s tests -v`。测试使用 Mock HTTP 和 AstrBot 桩，不需要 API Key，也不替代真实服务及 AstrBot 加载验证。安装 AstrBot 的开发环境可另运行 `python -m unittest discover -s tests -p native_discovery.py -v`，检查真实 Main/Context 原生发现和生命周期；该入口不加入仅依赖 httpx 的离线 CI。
-
 
 ## 更新日志
 

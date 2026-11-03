@@ -58,6 +58,9 @@ class Event:
     def chain_result(self, chain):
         return chain
 
+    def image_result(self, url):
+        return url
+
 
 def decorator(*args, **kwargs):
     return lambda function: function

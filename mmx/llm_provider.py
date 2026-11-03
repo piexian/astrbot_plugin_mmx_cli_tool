@@ -12,6 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import Any
+from urllib.parse import urlsplit
 
 from astrbot.core.provider.entities import ProviderMeta, ProviderType
 from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
@@ -91,6 +92,12 @@ def _module_credentials() -> tuple[str, str]:
     return _module_token(), ""
 
 
+def _module_region() -> str:
+    if _module_region_getter is not None:
+        return _module_region_getter()
+    return ""
+
+
 async def _module_refresh() -> None:
     if _module_token_refresher is not None:
         await _module_token_refresher()
@@ -100,6 +107,7 @@ _module_token_getter: Callable[[], str] = _empty_token_getter
 _module_token_refresher: Callable[[], Awaitable[None]] | None = None
 _module_models_fetcher: Callable[[], Awaitable[list[str]]] | None = None
 _module_credentials_getter: Callable[[], tuple[str, str]] | None = None
+_module_region_getter: Callable[[], str] | None = None
 
 #: 云端模型列表的模块级缓存（WebUI 每次点击都会新建临时实例，缓存必须模块级）
 _MODELS_CACHE_TTL = 300.0
@@ -113,24 +121,27 @@ def set_token_source(
     refresher: Callable[[], Awaitable[None]] | None = None,
     models_fetcher: Callable[[], Awaitable[list[str]]] | None = None,
     credentials_getter: Callable[[], tuple[str, str]] | None = None,
+    region_getter: Callable[[], str] | None = None,
 ) -> None:
-    """绑定配置模式实例的令牌、刷新、模型与登录会话来源。"""
+    """绑定配置模式实例的令牌、刷新、模型、登录会话与区域来源。"""
     global _module_token_getter, _module_token_refresher, _module_models_fetcher
-    global _module_credentials_getter
+    global _module_credentials_getter, _module_region_getter
     _module_token_getter = getter
     _module_token_refresher = refresher
     _module_models_fetcher = models_fetcher
     _module_credentials_getter = credentials_getter
+    _module_region_getter = region_getter
 
 
 def clear_token_source() -> None:
     global _module_token_getter, _module_token_refresher
     global _module_models_fetcher, _models_cache, _models_cache_at, _models_cache_region
-    global _module_credentials_getter
+    global _module_credentials_getter, _module_region_getter
     _module_token_getter = _empty_token_getter
     _module_token_refresher = None
     _module_models_fetcher = None
     _module_credentials_getter = None
+    _module_region_getter = None
     _models_cache = []
     _models_cache_at = 0.0
     _models_cache_region = ""
@@ -219,7 +230,6 @@ def register_provider_adapter_type() -> bool:
                 "enable": True,
                 "key": [API_KEY_NOTICE],
                 "api_base": API_BASE_PLACEHOLDER,
-                "region": "cn",
                 "timeout": 120,
             },
             provider_display_name="MiniMax Code",
@@ -255,10 +265,14 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         token_getter: Callable[[], str] | None = None,
         auth_refresher: Callable[[], Awaitable[None]] | None = None,
         credentials_getter: Callable[[], tuple[str, str]] | None = None,
+        region_getter: Callable[[], str] | None = None,
     ) -> None:
-        """支持插件直连与 AstrBot 配置模式构造。"""
+        """支持插件直连与 AstrBot 配置模式构造。
+
+        region 仅作兜底区域（默认 cn）；实际请求区域由 region_getter 跟随登录态。
+        """
         provider_config = dict(provider_config or {})
-        region = region or str(provider_config.get("region") or "cn")
+        region = region if region in MATRIX_BASES else "cn"
         origin = MATRIX_BASES.get(region, MATRIX_BASES["cn"]).rstrip("/")
         provider_config.setdefault("id", PROVIDER_ID)
         provider_config["type"] = PROVIDER_TYPE
@@ -279,6 +293,7 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         self._credentials_getter = credentials_getter
         self._fallback_login_epoch = secrets.token_hex(16)
         self._region = region
+        self._region_getter = region_getter or _module_region
         self._auth_refresher = auth_refresher
 
         from anthropic import AsyncAnthropic
@@ -302,6 +317,14 @@ class MiniMaxCodeProvider(ProviderAnthropic):
             http_client=http_client,
         )
 
+    def _current_region(self) -> str:
+        """当前请求区域：优先跟随登录态，未登录或非法时用兜底区域。"""
+        try:
+            region = str(self._region_getter() or "")
+        except Exception:  # noqa: BLE001 - 取区域失败回退兜底区域
+            region = ""
+        return region if region in MATRIX_BASES else self._region
+
     # ---- 元数据与密钥 ----
 
     def meta(self) -> ProviderMeta:
@@ -320,10 +343,11 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         双区域部署串缓存。
         """
         global _models_cache, _models_cache_at, _models_cache_region
+        region = self._current_region()
         now = time.monotonic()
         if (
             _models_cache
-            and _models_cache_region == self._region
+            and _models_cache_region == region
             and now - _models_cache_at < _MODELS_CACHE_TTL
         ):
             return list(_models_cache)
@@ -334,11 +358,11 @@ class MiniMaxCodeProvider(ProviderAnthropic):
             except Exception:  # noqa: BLE001 - 取数失败回退公开目录
                 fetched = []
         if not fetched:
-            fetched = await fetch_available_models(self._region)
+            fetched = await fetch_available_models(region)
         if fetched:
             _models_cache = list(dict.fromkeys(fetched))
             _models_cache_at = now
-            _models_cache_region = self._region
+            _models_cache_region = region
             return list(_models_cache)
         return list(DEFAULT_MODELS)
 
@@ -392,9 +416,18 @@ class MiniMaxCodeProvider(ProviderAnthropic):
     async def _rewrite_outgoing_headers(self, request: Any) -> None:
         """在实际发送前提取会话并重建应用层请求头。"""
         token, login_epoch = self._credentials()
+        region = self._current_region()
         bound_epoch = _REQUEST_LOGIN_EPOCH.get()
         if bound_epoch and bound_epoch != login_epoch:
             raise MiniMaxError(ErrorCategory.AUTH, "MiniMax 账号已切换，请重试")
+        # 区域跟随登录态：按当前区域改写目标主机，保持路径与查询不变
+        target = urlsplit(MATRIX_BASES[region])
+        host = target.hostname or ""
+        if host:
+            request.url = request.url.copy_with(
+                scheme=target.scheme or "https", host=host, port=target.port
+            )
+            request.headers["Host"] = target.netloc
         session_key = _REQUEST_SESSION_KEY.get() or request.extensions.get(
             "mmx_session_key", ""
         )

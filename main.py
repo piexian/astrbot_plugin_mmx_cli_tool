@@ -14,6 +14,8 @@ import time as _time
 import uuid
 from pathlib import Path
 
+import httpx
+
 from astrbot.api import AstrBotConfig, logger, star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.core.message import components as Comp
@@ -36,7 +38,7 @@ from .mmx.files import FileAPI
 from .mmx.matrix import MatrixAPI
 from .mmx.account import MiniMaxCodeAccount
 from .mmx.media_transfer import MatrixMediaClient, MediaTransferError
-from .mmx.oauth import OAuthClient, OAuthError, TokenStore
+from .mmx.oauth import ApiKeyStore, OAuthClient, OAuthError, TokenStore
 from .mmx.web_api import EFFORT_LEVELS, MCodeWebAPI
 from .mmx.vision_input import extract_image_input, extract_image_inputs
 from .mmx.direct_command_args import (
@@ -49,8 +51,9 @@ from .mmx.direct_command_args import (
     parse_transcription_command,
     parse_video_command,
 )
+from .mmx.endpoints import REGIONS
 from .mmx.errors import ErrorCategory, MiniMaxError, friendly_message
-from .mmx.keypool import KeyPool
+from .mmx.keypool import KeyPool, unique_keys
 from .mmx.quota_usage import (
     format_quota_reset_time,
     format_quota_usage,
@@ -175,22 +178,10 @@ def _format_account_balance(result: dict) -> list[str]:
     return lines
 
 
-def _normalize_quota_command_args(raw: str) -> str:
-    text = raw.strip()
-    if not text:
-        return ""
-
-    parts = text.split(maxsplit=2)
-    first = parts[0].lstrip("/").lower()
-    if first == "mmx":
-        if len(parts) >= 2 and parts[1].lower() == "quota":
-            return parts[2].strip() if len(parts) > 2 else ""
-        rest = text.split(maxsplit=1)
-        return rest[1].strip() if len(rest) > 1 else ""
-    if first == "quota":
-        rest = text.split(maxsplit=1)
-        return rest[1].strip() if len(rest) > 1 else ""
-    return text
+def _command_tail(event: AstrMessageEvent, fallback: str = "") -> str:
+    """取 /mmx <子指令> 之后的完整文本：普通 str 参数只能拿到首个词。"""
+    parts = event.message_str.strip().split(maxsplit=2)
+    return (parts[2] if len(parts) > 2 else "").strip() or fallback.strip()
 
 
 @filter.command_group("mmx")
@@ -207,10 +198,8 @@ class Main(star.Star):
         # 读取配置
         self._config = config
         raw_keys = config.get("api_key", [])
-        keys: list[str] = (
-            [str(k).strip() for k in raw_keys if str(k).strip()]
-            if isinstance(raw_keys, list)
-            else []
+        keys = unique_keys(
+            [str(k) for k in raw_keys] if isinstance(raw_keys, list) else []
         )
         region = str(config.get("region", "cn"))
         base_url_override = str(config.get("base_url", "")).strip() or None
@@ -245,7 +234,10 @@ class Main(star.Star):
 
         # 创建客户端 — 支持单 Key 和多 Key 池两种模式
         if not keys:
-            logger.warning("[mmx] api_key 未配置，插件将无法调用 API")
+            logger.warning(
+                "[mmx] api_key 未配置：/mmx login 登录账号后会自动获取 API Key，"
+                "在此之前插件无法调用开放平台 API"
+            )
             self._key_pool = None
             client_kwargs: dict = {
                 "api_key": "",
@@ -258,6 +250,7 @@ class Main(star.Star):
             logger.info(f"[mmx] 多 Key 模式已启用，共 {len(keys)} 个 Key")
             client_kwargs = {
                 "key_getter": self._key_pool.get_key,
+                "pool_error_handler": self._on_pool_error,
                 "base_url": base_url_override,
                 "region": region,
                 "timeout": timeout,
@@ -272,12 +265,16 @@ class Main(star.Star):
             }
 
         self._client = MiniMaxClient(**client_kwargs)
+        # 登录获取 Key 后按登录区域切换地址；登出或获取失败时回到这里记录的默认地址
+        self._base_url_override = base_url_override
+        self._default_base_url = self._client.base_url
 
         # OAuth 账号登录与 Matrix MCP 底座（搜图/以图搜图/音乐音效）
         self._region = region
         self._static_keys = keys
         self._oauth = OAuthClient()
         self._token_store = TokenStore(self._plugin_data_dir / "auth.json")
+        self._api_key_store = ApiKeyStore(self._plugin_data_dir / "open_api_key.json")
         self._matrix = MatrixAPI(
             self._client, self._matrix_credentials, self._refresh_matrix_token
         )
@@ -293,9 +290,16 @@ class Main(star.Star):
         self._llm_provider_login_epoch = ""
         self._llm_provider_region = ""
         self._auto_signin_task: asyncio.Task | None = None
+        self._key_quota_task: asyncio.Task | None = None
+        self._started = False
         self._auto_signin_enabled = bool(config.get("auto_signin", False))
         self._signin_claimed_day = ""
         self._provider_source_warning = ""
+        # 提供商源状态：managed / user_managed / conflict / disabled（未判定为空）
+        self._provider_source_state = ""
+        self._auto_create_provider_source = bool(
+            config.get("auto_create_provider_source", True)
+        )
         # 以图搜图工具实例（LLM 与直接指令共用）
         self._reverse_image_tool = ImageReverseSearchTool(
             self._matrix,
@@ -381,6 +385,8 @@ class Main(star.Star):
         return self._service
 
     async def initialize(self) -> None:
+        # 先按登录账号补全 API Key，就绪状态才能反映真实可用性
+        await self._sync_login_key()
         self._service._initialize()
         self._web_api = MCodeWebAPI(self)
         self._web_api.register()
@@ -406,20 +412,23 @@ class Main(star.Star):
                 self._provider_token,
                 self._provider_refresh,
                 credentials_getter=self._provider_credentials,
+                region_getter=self._provider_region,
             )
         except Exception as e:
             logger.warning(f"[mmx] LLM 运行时来源绑定失败: {e}")
-        await self._ensure_provider_source()
-        if self._provider_source_warning:
-            # 提供商源 ID 被外部配置占用：退回运行时直注册，保证会话下拉可用
-            await self._register_llm_provider()
+        await self._sync_provider_source()
         if self._auto_signin_enabled:
             self._auto_signin_task = asyncio.create_task(self._auto_signin_loop())
+        self._started = True
+        self._ensure_key_quota_task()
 
     async def terminate(self) -> None:
         if self._auto_signin_task is not None:
             self._auto_signin_task.cancel()
             self._auto_signin_task = None
+        if self._key_quota_task is not None:
+            self._key_quota_task.cancel()
+            self._key_quota_task = None
         await self._unregister_llm_provider()  # 仅回退路径的运行时实例需要注销
         try:
             from .mmx import llm_provider as _llm_module
@@ -510,6 +519,96 @@ class Main(star.Star):
         if token and token.ensure_login_epoch():
             self._token_store.save(token)
 
+    def _has_open_key(self) -> bool:
+        """是否有可用于开放平台的 Key（配置的 Key 池/固定 Key，或登录获取的 Key）。"""
+        return self._key_pool is not None or bool(self._client.api_key)
+
+    async def _sync_login_key(self, *, refetch: bool = False) -> bool:
+        """把登录账号的开放平台 Key 与配置的 Key 合并去重，多于 1 个时进 Key 池。
+
+        Key 按登录 epoch 持久化一次；重新登录（epoch 变化）或 refetch 时重新获取，
+        区域跟随登录。返回当前是否有可用的开放平台 Key。
+        """
+        self._ensure_token_login_epoch()
+        token = self._token_store.load()
+        key = ""
+        if token is not None:
+            key = "" if refetch else self._api_key_store.load(token.login_epoch)
+            # 配置了 Key 时启动不主动请求账户接口（避免启动期依赖登录态），
+            # 登录动作（refetch）仍会获取并并入池
+            if not key and (refetch or not self._static_keys):
+                try:
+                    key = await self._account.fetch_api_key()
+                except (MiniMaxError, httpx.HTTPError) as e:
+                    # 网络故障同样只记录：启动期不能因账户接口不可达而中断插件初始化
+                    logger.warning(f"[mmx] 获取登录账号的开放平台 API Key 失败: {e}")
+                else:
+                    self._api_key_store.save(token.login_epoch, key)
+
+        keys = unique_keys([*self._static_keys, key])
+        if token is None or not key:
+            # 没有登录 Key：回到配置默认地址，登录 Key 已从池里移除
+            base_url = self._default_base_url
+        else:
+            base_url = self._base_url_override or REGIONS.get(token.region, REGIONS["cn"])
+
+        if len(keys) > 1:
+            pool = self._key_pool or KeyPool(keys, self._region)
+            pool.set_keys(keys)
+            self._key_pool = pool
+            self._client.set_key_getter(pool.get_key)
+            self._client.set_credentials("", base_url)
+        else:
+            self._key_pool = None
+            self._client.set_key_getter(None)
+            self._client.set_credentials(keys[0] if keys else "", base_url)
+        self._service._set_configured(bool(keys))
+        self._ensure_key_quota_task()
+        return bool(keys)
+
+    def _ensure_key_quota_task(self) -> None:
+        """池存在且插件已启动时，确保额度刷新循环在跑。"""
+        if not self._started or self._key_pool is None:
+            return
+        if self._key_quota_task is not None and not self._key_quota_task.done():
+            return
+        self._key_quota_task = asyncio.create_task(self._key_quota_loop())
+
+    async def _key_quota_loop(self) -> None:
+        """后台按 TTL 刷新 Key 池额度，选 Key 时才能优先用剩余额度多的那个。"""
+        while True:
+            pool = self._key_pool
+            if pool is None:
+                return
+            try:
+                failures = await pool.refresh_if_stale(self._quota.info, force=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                failures = [f"额度刷新失败: {e}"]
+            for failure in failures:
+                logger.debug(f"[mmx] {failure}")
+            await asyncio.sleep(KeyPool.QUOTA_CACHE_TTL)
+
+    async def _on_pool_error(
+        self, key_index: int, model: str, error: MiniMaxError
+    ) -> None:
+        """请求遇额度或鉴权错误时更新 Key 池，避免继续选中同一个 Key。"""
+        if self._key_pool is None:
+            return
+        if error.category is ErrorCategory.QUOTA:
+            await self._key_pool.mark_model_exhausted(key_index, model)
+        elif error.category is ErrorCategory.AUTH:
+            await self._key_pool.mark_key_invalid(key_index)
+
+    def _login_key_notice(self, has_key: bool) -> str:
+        """登录成功回复里追加的 API Key 获取结果。"""
+        if not has_key:
+            return "\n未能自动获取 API Key，图片、视频、语音等功能请在插件配置中填写 api_key。"
+        if self._static_keys:
+            return "\n已登录账号获取的 API Key 已并入 Key 池，与配置的 Key 去重后统一按额度轮换。"
+        return "\n已自动获取 API Key，图片、视频、语音等功能无需再填写 api_key。"
+
     def _provider_credentials(self) -> tuple[str, str]:
         """从同一份登录态读取 access token 与登录 epoch。"""
         token = self._token_store.load()
@@ -521,6 +620,11 @@ class Main(star.Star):
         """LLM Provider 当前访问令牌（每次请求读取，令牌轮换即时生效）。"""
         token = self._token_store.load()
         return token.access_token if token else ""
+
+    def _provider_region(self) -> str:
+        """LLM Provider 当前请求区域（跟随登录态，未登录返回空串由兜底区域接管）。"""
+        token = self._token_store.load()
+        return token.region if token else ""
 
     async def _provider_refresh(self) -> None:
         """Provider 401 时的强制刷新钩子；失败抛 MiniMaxError 由调用方中止重试。"""
@@ -553,6 +657,7 @@ class Main(star.Star):
                 self._provider_token,
                 self._provider_refresh,
                 credentials_getter=self._provider_credentials,
+                region_getter=self._provider_region,
             )
         except Exception as e:
             logger.warning(
@@ -564,6 +669,7 @@ class Main(star.Star):
             token_getter=self._provider_token,
             auth_refresher=self._provider_refresh,
             credentials_getter=self._provider_credentials,
+            region_getter=self._provider_region,
         )
         self._llm_provider = provider
         self._llm_provider_login_epoch = token.login_epoch
@@ -595,14 +701,13 @@ class Main(star.Star):
             self._llm_provider_region = ""
             return
         try:
-            from .mmx.llm_provider import PROVIDER_ID, clear_token_source
+            from .mmx.llm_provider import PROVIDER_ID
 
             manager = self.context.provider_manager
             manager.provider_insts[:] = [
                 p for p in manager.provider_insts if p is not provider
             ]
             manager.inst_map.pop(PROVIDER_ID, None)
-            clear_token_source()
         except Exception:
             pass
 
@@ -614,12 +719,25 @@ class Main(star.Star):
         except Exception as e:
             logger.warning(f"[mmx] 关闭旧 LLM Provider 失败: {e}")
 
+    async def _sync_provider_source(self) -> None:
+        """按开关同步提供商源；关闭时不触碰配置，占用冲突时退回运行时直注册。"""
+        if not self._auto_create_provider_source:
+            self._provider_source_state = "disabled"
+            self._provider_source_warning = ""
+            return
+        await self._ensure_provider_source()
+        if self._provider_source_warning:
+            await self._register_llm_provider()
+
     async def _ensure_provider_source(self) -> None:
         """把 mmx_minimax_code 提供商源与默认模型条目写入 AstrBot 配置。
 
-        源 ID 被外部配置占用时不改写并记录告警（工作台弹提示）；
+        同 ID 且类型为 minimax_code 的非托管源视为用户自建，不接管不告警；
+        其余占用（类型不同）不改写并记录告警（工作台弹提示）；
         模型条目只补缺，用户自定义或修改过的条目保持原样。
         """
+        self._provider_source_warning = ""
+        self._provider_source_state = ""
         try:
             from .mmx.llm_provider import (
                 API_BASE_PLACEHOLDER,
@@ -634,7 +752,6 @@ class Main(star.Star):
             # AstrBot 供应商 API 不可用的环境（离线测试桩）直接跳过
             return
 
-        self._provider_source_warning = ""
         try:
             config = self.context.get_config()
             manager = self.context.provider_manager
@@ -646,8 +763,6 @@ class Main(star.Star):
         if manager.provider_sources_config is not sources:
             manager.provider_sources_config = sources
 
-        token = self._token_store.load()
-        region = token.region if token else "cn"
         existing = next(
             (
                 s
@@ -657,6 +772,14 @@ class Main(star.Star):
             None,
         )
         if existing is not None and existing.get("managed_by") != MANAGED_BY:
+            if existing.get("type") == PROVIDER_TYPE:
+                self._provider_source_state = "user_managed"
+                logger.info(
+                    f"[mmx] 检测到用户手动创建的 MiniMax Code 提供商源 {PROVIDER_SOURCE_ID}，"
+                    "插件不接管"
+                )
+                return
+            self._provider_source_state = "conflict"
             self._provider_source_warning = (
                 f"提供商源 ID {PROVIDER_SOURCE_ID} 已被其他配置占用，"
                 "插件未写入 MiniMax Code 源；请处理重名后重载插件。"
@@ -664,8 +787,8 @@ class Main(star.Star):
             logger.warning(f"[mmx] {self._provider_source_warning}")
             return
 
+        self._provider_source_state = "managed"
         dirty = False
-        region_changed = False
         if existing is None:
             sources.append(
                 {
@@ -679,7 +802,6 @@ class Main(star.Star):
                     "timeout": 120,
                     "proxy": "",
                     "custom_headers": {},
-                    "region": region,
                     "managed_by": MANAGED_BY,
                 }
             )
@@ -687,10 +809,6 @@ class Main(star.Star):
             logger.info(
                 "[mmx] 已写入提供商源 mmx_minimax_code（模型供应商页可见，可添加自定义模型）"
             )
-        elif existing.get("region") != region:
-            existing["region"] = region
-            dirty = True
-            region_changed = True
 
         providers = config.setdefault("provider", [])
         for model in DEFAULT_MODELS:
@@ -735,16 +853,10 @@ class Main(star.Star):
             )
             if entry is None or not entry.get("enable", True):
                 continue
-            if entry_id in manager.inst_map and not region_changed:
-                # 已加载且区域未变：无需重复实例化
+            if entry_id in manager.inst_map:
+                # 已加载：区域由实例按登录态动态跟随，无需重载
                 continue
             try:
-                manager.provider_insts[:] = [
-                    p
-                    for p in manager.provider_insts
-                    if getattr(p, "provider_config", {}).get("id") != entry_id
-                ]
-                manager.inst_map.pop(entry_id, None)
                 await manager.load_provider(dict(entry))
             except Exception as e:
                 logger.warning(f"[mmx] 模型 {model} 即时加载失败（重启后生效）: {e}")
@@ -866,22 +978,39 @@ class Main(star.Star):
                 yield event.plain_result(f"登录失败: {e}")
             return
         self._token_store.save(token)
+        has_key = await self._sync_login_key(refetch=True)
         from .mmx.llm_provider import DEFAULT_MODELS
 
-        await self._ensure_provider_source()
-        if self._provider_source_warning:
-            await self._register_llm_provider()
-        extra = (
-            "\n已在「模型供应商」页注册提供商源 mmx_minimax_code"
-            f"（默认模型 {' / '.join(DEFAULT_MODELS)}，可继续添加自定义模型），"
-            "会话或 Agent 设置选择后对话走 MiniMax Code 官方通道（可用签到积分）。"
-            if not self._provider_source_warning
-            else "\n提供商源 ID mmx_minimax_code 已被其他配置占用，已回退为运行时注册，"
-            "会话/Agent 设置中仍可直接选择 mmx_minimax_code。"
-        )
+        await self._sync_provider_source()
+        state = self._provider_source_state
+        if state == "user_managed":
+            extra = (
+                "\n检测到已手动创建的 MiniMax Code 提供商源 mmx_minimax_code，"
+                "插件不会接管，请在会话或 Agent 设置中选择它。"
+            )
+        elif state == "conflict":
+            extra = (
+                "\n提供商源 ID mmx_minimax_code 已被其他配置占用，已回退为运行时注册，"
+                "会话/Agent 设置中仍可直接选择 mmx_minimax_code。"
+            )
+        elif state == "disabled":
+            extra = (
+                "\n已关闭自动创建提供商源：请管理员前往 WebUI「模型供应商 → 新增供应商」，"
+                "选择 minimax_code 并添加提供商源与模型；请求区域会自动跟随本次登录。"
+            )
+        elif state == "managed":
+            extra = (
+                "\n已在「模型供应商」页注册提供商源 mmx_minimax_code"
+                f"（默认模型 {' / '.join(DEFAULT_MODELS)}，可继续添加自定义模型），"
+                "会话或 Agent 设置选择后对话走 MiniMax Code 官方通道（可用签到积分）。"
+            )
+        else:
+            extra = "\n提供商源同步未完成，详见日志。"
         yield event.plain_result(
             f"✅ MiniMax 账号登录成功（{'国内站' if region == 'cn' else '国际站'}）！\n"
-            "已解锁搜图、以图搜图、AI 音乐与音效生成能力。" + extra
+            "已解锁搜图、以图搜图、AI 音乐与音效生成能力。"
+            + extra
+            + self._login_key_notice(has_key)
         )
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -894,6 +1023,8 @@ class Main(star.Star):
             return
         await self._oauth.revoke(token.refresh_token, token.region)
         self._token_store.clear()
+        self._api_key_store.clear()
+        await self._sync_login_key()
         await self._unregister_llm_provider()
         yield event.plain_result(
             "已退出 MiniMax 账号登录。\n"
@@ -1026,9 +1157,7 @@ class Main(star.Star):
     @mmx_group.command("search-image")
     async def mmx_search_image(self, event: AstrMessageEvent, *, query: str = ""):
         """搜图并下载。用法: /mmx search-image <关键词> [--n 数量]"""
-        # AstrBot 按空格切分参数，query 只有第一个词；优先取消息原文尾部
-        parts = event.message_str.strip().split(maxsplit=2)
-        raw_args = (parts[2] if len(parts) > 2 else "").strip() or (query or "").strip()
+        raw_args = _command_tail(event, query)
         if not raw_args:
             yield event.plain_result("用法: /mmx search-image <关键词> [--n 数量]")
             return
@@ -1066,11 +1195,7 @@ class Main(star.Star):
     @mmx_group.command("reverse-image")
     async def mmx_reverse_image(self, event: AstrMessageEvent, *, image: str = ""):
         """以图搜图。用法: /mmx reverse-image [图片URL]（可附带或引用图片）"""
-        # AstrBot 按空格切分参数，image 只有第一个词；优先取消息原文尾部
-        parts = event.message_str.strip().split(maxsplit=2)
-        image_input = (parts[2] if len(parts) > 2 else "").strip() or (
-            image or ""
-        ).strip()
+        image_input = _command_tail(event, image)
         trusted_local = False
         if not image_input:
             extracted, saw_image = await extract_image_input(
@@ -1114,11 +1239,7 @@ class Main(star.Star):
     @mmx_group.command("music")
     async def mmx_music(self, event: AstrMessageEvent, *, prompt: str = ""):
         """AI 音乐生成。用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]"""
-        # AstrBot 按空格切分参数，prompt 只有第一个词；优先取消息原文尾部
-        parts = event.message_str.strip().split(maxsplit=2)
-        raw_args = (parts[2] if len(parts) > 2 else "").strip() or (
-            prompt or ""
-        ).strip()
+        raw_args = _command_tail(event, prompt)
         if not raw_args:
             yield event.plain_result(
                 "用法: /mmx music <提示词> [--lyrics 歌词] [--format mp3]"
@@ -1149,9 +1270,7 @@ class Main(star.Star):
     @mmx_group.command("sfx")
     async def mmx_sfx(self, event: AstrMessageEvent, *, prompt: str = ""):
         """AI 音效生成。用法: /mmx sfx <音效描述>"""
-        # AstrBot 按空格切分参数，prompt 只有第一个词；优先取消息原文尾部
-        parts = event.message_str.strip().split(maxsplit=2)
-        text = (parts[2] if len(parts) > 2 else "").strip() or (prompt or "").strip()
+        text = _command_tail(event, prompt)
         if not text.strip():
             yield event.plain_result("用法: /mmx sfx <音效描述>")
             return
@@ -1234,15 +1353,7 @@ class Main(star.Star):
     @mmx_group.command("speech")
     async def mmx_speech(self, event: AstrMessageEvent, *, text: str = ""):
         """语音合成，或用 transcribe/recognize 子命令转写音频。"""
-        raw_args = text
-        if not raw_args:
-            parts = event.message_str.strip().split(maxsplit=2)
-            if (
-                len(parts) >= 2
-                and parts[0].lstrip("/") == "mmx"
-                and parts[1] == "speech"
-            ):
-                raw_args = parts[2] if len(parts) > 2 else ""
+        raw_args = _command_tail(event, text)
         parts = raw_args.strip().split(maxsplit=1)
         action = parts[0] if parts else ""
         rest = parts[1] if len(parts) > 1 else ""
@@ -1310,7 +1421,7 @@ class Main(star.Star):
     @mmx_group.command("file")
     async def mmx_file(self, event: AstrMessageEvent, *, args: str = ""):
         """文件管理。用法: /mmx file upload|list|delete"""
-        raw_args = args or event.message_str
+        raw_args = _command_tail(event, args)
         try:
             parsed = parse_file_command(raw_args)
         except DirectCommandError as e:
@@ -1382,9 +1493,7 @@ class Main(star.Star):
     @mmx_group.command("image")
     async def mmx_image(self, event: AstrMessageEvent, *, prompt: str = ""):
         """生成图片。用法: /mmx image <描述> [--aspect-ratio 16:9] [--seed 42]"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        raw_args = prompt or (parts[1] if len(parts) > 1 else "")
+        raw_args = _command_tail(event, prompt)
         try:
             args = parse_image_command(raw_args)
         except DirectCommandError as e:
@@ -1471,9 +1580,7 @@ class Main(star.Star):
     @mmx_group.command("video")
     async def mmx_video(self, event: AstrMessageEvent, *, prompt: str = ""):
         """生成视频。用法: /mmx video <描述> [--first-frame <图片>] [--no-wait]"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        raw_args = prompt or (parts[1] if len(parts) > 1 else "")
+        raw_args = _command_tail(event, prompt)
         try:
             args = parse_video_command(raw_args)
         except DirectCommandError as e:
@@ -1679,9 +1786,7 @@ class Main(star.Star):
     @mmx_group.command("search")
     async def mmx_search(self, event: AstrMessageEvent, *, query: str = ""):
         """联网搜索。用法: /mmx search <查询>"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        query = query or (parts[1] if len(parts) > 1 else "")
+        query = _command_tail(event, query)
         if not query:
             yield event.plain_result(
                 "用法: /mmx search <查询>。例如: /mmx search 今天天气"
@@ -1724,9 +1829,7 @@ class Main(star.Star):
     @mmx_group.command("vision")
     async def mmx_vision(self, event: AstrMessageEvent, *, prompt: str = ""):
         """图片理解。用法: /mmx vision（支持当前消息带图或引用图片）"""
-        msg = event.message_str.strip()
-        parts = msg.split(maxsplit=1)
-        prompt = prompt or (parts[1] if len(parts) > 1 else "Describe the image.")
+        prompt = _command_tail(event, prompt) or "Describe the image."
 
         image_input, saw_image = await extract_image_input(
             event.get_messages(),
@@ -1776,7 +1879,7 @@ class Main(star.Star):
             all_keys.append((0, self._client.api_key or ""))
 
         page_size = 3
-        raw_args = _normalize_quota_command_args(index or event.message_str)
+        raw_args = _command_tail(event, index)
         page = 1
         selected_index: int | None = None
 
@@ -1841,6 +1944,11 @@ class Main(star.Star):
 
         lines: list[str] = []
         paged_multi_key = selected_index is None and len(all_keys) > 1
+        pool_state = (
+            {item["index"]: item for item in self._key_pool.get_summary()["keys"]}
+            if self._key_pool is not None
+            else {}
+        )
         if paged_multi_key:
             total_pages = max(1, (len(all_keys) + page_size - 1) // page_size)
             lines.append(
@@ -1855,6 +1963,9 @@ class Main(star.Star):
                 lines.append(f"Key [{ki + 1}] {masked}:")
             else:
                 lines.append(f"💰 Key [{ki + 1}] {masked} 额度:")
+            state = pool_state.get(ki)
+            if state is not None and not state["enabled"]:
+                lines.append(f"  已停用：{state['disabled_reason'] or '原因未知'}")
             if (
                 isinstance(raw_result, dict)
                 and raw_result.get("kind") == "account_balance"

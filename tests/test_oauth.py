@@ -19,6 +19,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from astrbot_plugin_mmx_cli_tool.mmx.oauth import (
+    ApiKeyStore,
     DeviceAuthInfo,
     OAuthClient,
     OAuthError,
@@ -363,6 +364,73 @@ class TokenStoreTests(unittest.TestCase):
         token = OAuthToken("a", "r", expires_at=time.time() + 30)
         self.assertTrue(token.is_expired())
         self.assertFalse(token.is_expired(margin=10))
+
+
+class ApiKeyStoreTests(unittest.TestCase):
+    def test_save_load_roundtrip_and_clear(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "open_api_key.json"
+            store = ApiKeyStore(path)
+            self.assertEqual("", store.load("epoch-1"))
+            store.save("epoch-1", "sk-cp-fake-key")
+            self.assertEqual("sk-cp-fake-key", store.load("epoch-1"))
+            self.assertEqual(
+                {"login_epoch": "epoch-1", "api_key": "sk-cp-fake-key"},
+                json.loads(path.read_text(encoding="utf-8")),
+            )
+            store.clear()
+            self.assertFalse(path.exists())
+            self.assertEqual("", store.load("epoch-1"))
+            store.clear()  # 文件不存在时同样不报错
+
+    def test_save_overwrites_previous_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ApiKeyStore(Path(tmp) / "open_api_key.json")
+            store.save("epoch-1", "sk-cp-old")
+            store.save("epoch-2", "sk-cp-new")
+            self.assertEqual("", store.load("epoch-1"))
+            self.assertEqual("sk-cp-new", store.load("epoch-2"))
+
+    def test_load_requires_matching_non_empty_epoch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ApiKeyStore(Path(tmp) / "open_api_key.json")
+            store.save("epoch-1", "sk-cp-fake-key")
+            self.assertEqual("", store.load("epoch-2"))
+            self.assertEqual("", store.load(""))
+
+    @unittest.skipIf(os.name == "nt", "Windows 不支持 POSIX 权限位")
+    def test_file_mode_is_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "open_api_key.json"
+            ApiKeyStore(path).save("epoch-1", "sk-cp-fake-key")
+            self.assertEqual(0o600, path.stat().st_mode & 0o777)
+
+    def test_load_ignores_missing_corrupt_or_malformed_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "open_api_key.json"
+            store = ApiKeyStore(path)
+            self.assertEqual("", store.load("epoch-1"))
+            malformed = (
+                "not json",
+                json.dumps(["epoch-1", "sk-cp-fake-key"]),
+                json.dumps({"login_epoch": "epoch-1"}),
+                json.dumps({"login_epoch": "epoch-1", "api_key": ""}),
+                json.dumps({"login_epoch": "epoch-1", "api_key": 123}),
+            )
+            for content in malformed:
+                with self.subTest(content=content[:20]):
+                    path.write_text(content, encoding="utf-8")
+                    self.assertEqual("", store.load("epoch-1"))
+
+    def test_save_rejects_empty_epoch_or_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "open_api_key.json"
+            store = ApiKeyStore(path)
+            with self.assertRaises(ValueError):
+                store.save("", "sk-cp-fake-key")
+            with self.assertRaises(ValueError):
+                store.save("epoch-1", "")
+            self.assertFalse(path.exists())
 
 
 if __name__ == "__main__":
