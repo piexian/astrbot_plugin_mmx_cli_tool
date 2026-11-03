@@ -7,6 +7,7 @@
 - 同 ID 且类型为 `minimax_code` 的手动创建提供商源视为用户自管，不再误报冲突、不被接管。
 - 新增配置项 `auto_create_provider_source`（默认开启）：关闭后不自动创建提供商源与默认模型，需在 WebUI「新增供应商」手动添加；`/mmx login` 提示随状态变化。
 - 修复运行时回退 Provider 注销时清空模块级令牌来源，导致配置模式实例失去令牌的问题。
+- 文档：README 面向新手重写（新增快速开始、准备事项与安全说明），部分技术细节（安全规则、内部机制）移至 `docs/development.md`，补全项目结构，`_conf_schema.json` 的说明文字改为通俗表述并按功能分组；修正配置表中 `region` 默认值（实为 `cn`）、`api_key` 类型（列表）及缺失的 `auto_create_provider_source`，补充 `/mmx video` 的 `--duration`、`--ratio` 参数。
 
 ## 0.7.1 - 2026-10-24
 
