@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import tempfile
@@ -341,22 +342,39 @@ class LoginKeyCommandTests(LoginKeyTestCase):
 class StaticKeyTests(LoginKeyTestCase):
     config = {"api_key": ["sk-static-fake"], "region": "global"}
 
-    async def test_configured_key_is_never_replaced(self):
+    async def test_configured_key_is_merged_into_pool_not_replaced(self):
+        self.plugin._quota.info = AsyncMock(return_value={"model_remains": []})
         await self.plugin.initialize()
+        self.assertIsNone(self.plugin._key_quota_task)  # 单 Key 不建池，也不刷额度
         self.login(region="cn")
 
         self.assertTrue(await self.plugin._sync_login_key())
+        self.plugin._account.fetch_api_key.assert_not_awaited()  # 启动轮不请求账户接口
+
         self.assertTrue(await self.plugin._sync_login_key(refetch=True))
 
-        self.plugin._account.fetch_api_key.assert_not_awaited()
-        self.assertEqual("sk-static-fake", self.plugin._client.api_key)
-        self.assertEqual(GLOBAL_URL, self.plugin._client.base_url)
+        self.plugin._account.fetch_api_key.assert_awaited_once()
+        self.assertEqual(
+            ["sk-static-fake", KEY_1],
+            [state.key for state in self.plugin._key_pool._states],
+        )
+        self.assertEqual(CN_URL, self.plugin._client.base_url)
         self.assertEqual("ready", self.plugin._service.get_status()["state"])
         self.assertTrue(self.plugin._has_open_key())
+        self.assertIsNotNone(self.plugin._key_quota_task)  # 运行时建池后补起刷新循环
 
-    async def test_login_reply_has_no_key_notice(self):
-        self.assertEqual("", self.plugin._login_key_notice(True))
-        self.assertEqual("", self.plugin._login_key_notice(False))
+    async def test_login_key_already_configured_is_not_duplicated(self):
+        self.login(region="cn")
+        self.plugin._account.fetch_api_key = AsyncMock(return_value="sk-static-fake")
+
+        self.assertTrue(await self.plugin._sync_login_key(refetch=True))
+
+        self.assertIsNone(self.plugin._key_pool)
+        self.assertEqual("sk-static-fake", self.plugin._client.api_key)
+
+    async def test_login_reply_announces_merged_key(self):
+        self.assertIn("并入 Key 池", self.plugin._login_key_notice(True))
+        self.assertIn("未能自动获取 API Key", self.plugin._login_key_notice(False))
 
     async def test_logout_keeps_configured_key(self):
         await self.plugin.initialize()
@@ -380,6 +398,46 @@ class KeyPoolTests(LoginKeyTestCase):
 
         self.plugin._account.fetch_api_key.assert_not_awaited()
         self.assertTrue(self.plugin._has_open_key())
+
+    async def test_key_quota_refresh_task_fills_pool(self):
+        item = {
+            "model_name": "general",
+            "current_interval_total_count": 100,
+            "current_interval_usage_count": 20,
+            "current_interval_remaining_count": 80,
+            "current_interval_remaining_percent": 80,
+            "current_interval_status": 1,
+        }
+        self.plugin._quota.info = AsyncMock(return_value={"model_remains": [item]})
+
+        await self.plugin.initialize()
+        for _ in range(50):
+            if self.plugin._quota.info.await_count >= 2:
+                break
+            await asyncio.sleep(0.01)
+
+        self.assertIsNotNone(self.plugin._key_quota_task)
+        self.assertEqual(2, self.plugin._quota.info.await_count)
+        quotas = self.plugin._key_pool.get_summary()["keys"][0]["model_quotas"]
+        self.assertEqual(80, quotas["general"]["remaining"])
+
+    async def test_pool_error_handler_marks_quota_and_auth(self):
+        self.plugin._key_pool.set_keys(["sk-static-fake-1", "sk-static-fake-2"])
+        self.plugin._key_pool._states[0].model_quotas = {
+            "general": {"remaining": 10}
+        }
+
+        await self.plugin._on_pool_error(
+            0, "MiniMax-Text-01", MiniMaxError(ErrorCategory.QUOTA, "额度不足")
+        )
+        await self.plugin._on_pool_error(
+            1, "", MiniMaxError(ErrorCategory.AUTH, "Key 失效")
+        )
+
+        first, second = self.plugin._key_pool.get_summary()["keys"]
+        self.assertEqual(0, first["model_quotas"]["general"]["remaining"])
+        self.assertFalse(second["enabled"])
+        self.assertEqual("API Key 无效或已过期", second["disabled_reason"])
 
 
 class BaseUrlOverrideTests(LoginKeyTestCase):

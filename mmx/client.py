@@ -22,6 +22,9 @@ class MiniMaxClient:
         self,
         api_key: str | None = None,
         key_getter: Callable[[str], Awaitable[tuple[str, int]]] | None = None,
+        pool_error_handler: (
+            Callable[[int, str, MiniMaxError], Awaitable[None]] | None
+        ) = None,
         base_url: str | None = None,
         region: str = "cn",
         timeout: float = 300,
@@ -29,6 +32,7 @@ class MiniMaxClient:
     ) -> None:
         self._api_key = api_key
         self._key_getter = key_getter
+        self._pool_error_handler = pool_error_handler
         self._base_url = (base_url or REGIONS.get(region, REGIONS["cn"])).rstrip("/")
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(timeout),
@@ -51,14 +55,31 @@ class MiniMaxClient:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
 
-    async def _resolve(self, model: str = "") -> str:
-        """获取本次请求的 API Key。"""
+    def set_key_getter(
+        self, key_getter: Callable[[str], Awaitable[tuple[str, int]]] | None
+    ) -> None:
+        """运行时切换 Key 池选择器（登录 Key 并入后池可能新建或消失）。"""
+        self._key_getter = key_getter
+
+    async def _resolve(self, model: str = "") -> tuple[str, int]:
+        """获取本次请求的 (API Key, Key 池序号)；固定 Key 用 -1。"""
         if self._key_getter is not None:
-            key, _ = await self._key_getter(model)
-            return key
+            return await self._key_getter(model)
         if self._api_key is not None:
-            return self._api_key
+            return self._api_key, -1
         raise RuntimeError("未配置 API Key")
+
+    async def _notify_pool_error(
+        self, key_index: int, model: str, error: MiniMaxError
+    ) -> None:
+        """把额度或鉴权失败回写 Key 池，回写失败不覆盖原始 API 错误。"""
+        if self._pool_error_handler is None or key_index < 0:
+            return
+        try:
+            await self._pool_error_handler(key_index, model, error)
+        except Exception as e:
+            # 回写失败不能盖住原始 API 错误，挂到异常上一起抛出
+            error.add_note(f"Key 池状态回写失败: {e}")
 
     async def request(
         self,
@@ -79,7 +100,10 @@ class MiniMaxClient:
         if headers:
             hdrs.update(headers)
 
-        api_key = api_key_override or await self._resolve(model)
+        if api_key_override:
+            api_key, key_index = api_key_override, -1
+        else:
+            api_key, key_index = await self._resolve(model)
 
         if auth_style == "x-api-key":
             hdrs["x-api-key"] = api_key
@@ -117,7 +141,9 @@ class MiniMaxClient:
         if not res.is_success:
             try:
                 await res.aread()
-                raise classify_error(res.status_code, res, path)
+                error = classify_error(res.status_code, res, path)
+                await self._notify_pool_error(key_index, model, error)
+                raise error
             finally:
                 await res.aclose()
         if stream:

@@ -53,7 +53,7 @@ from .mmx.direct_command_args import (
 )
 from .mmx.endpoints import REGIONS
 from .mmx.errors import ErrorCategory, MiniMaxError, friendly_message
-from .mmx.keypool import KeyPool
+from .mmx.keypool import KeyPool, unique_keys
 from .mmx.quota_usage import (
     format_quota_reset_time,
     format_quota_usage,
@@ -198,10 +198,8 @@ class Main(star.Star):
         # 读取配置
         self._config = config
         raw_keys = config.get("api_key", [])
-        keys: list[str] = (
-            [str(k).strip() for k in raw_keys if str(k).strip()]
-            if isinstance(raw_keys, list)
-            else []
+        keys = unique_keys(
+            [str(k) for k in raw_keys] if isinstance(raw_keys, list) else []
         )
         region = str(config.get("region", "cn"))
         base_url_override = str(config.get("base_url", "")).strip() or None
@@ -252,6 +250,7 @@ class Main(star.Star):
             logger.info(f"[mmx] 多 Key 模式已启用，共 {len(keys)} 个 Key")
             client_kwargs = {
                 "key_getter": self._key_pool.get_key,
+                "pool_error_handler": self._on_pool_error,
                 "base_url": base_url_override,
                 "region": region,
                 "timeout": timeout,
@@ -291,6 +290,8 @@ class Main(star.Star):
         self._llm_provider_login_epoch = ""
         self._llm_provider_region = ""
         self._auto_signin_task: asyncio.Task | None = None
+        self._key_quota_task: asyncio.Task | None = None
+        self._started = False
         self._auto_signin_enabled = bool(config.get("auto_signin", False))
         self._signin_claimed_day = ""
         self._provider_source_warning = ""
@@ -418,11 +419,16 @@ class Main(star.Star):
         await self._sync_provider_source()
         if self._auto_signin_enabled:
             self._auto_signin_task = asyncio.create_task(self._auto_signin_loop())
+        self._started = True
+        self._ensure_key_quota_task()
 
     async def terminate(self) -> None:
         if self._auto_signin_task is not None:
             self._auto_signin_task.cancel()
             self._auto_signin_task = None
+        if self._key_quota_task is not None:
+            self._key_quota_task.cancel()
+            self._key_quota_task = None
         await self._unregister_llm_provider()  # 仅回退路径的运行时实例需要注销
         try:
             from .mmx import llm_provider as _llm_module
@@ -518,19 +524,19 @@ class Main(star.Star):
         return self._key_pool is not None or bool(self._client.api_key)
 
     async def _sync_login_key(self, *, refetch: bool = False) -> bool:
-        """未配置 api_key 时，改用登录账号绑定的开放平台 API Key。
+        """把登录账号的开放平台 Key 与配置的 Key 合并去重，多于 1 个时进 Key 池。
 
         Key 按登录 epoch 持久化一次；重新登录（epoch 变化）或 refetch 时重新获取，
         区域跟随登录。返回当前是否有可用的开放平台 Key。
         """
-        if self._static_keys:
-            return True
         self._ensure_token_login_epoch()
         token = self._token_store.load()
         key = ""
         if token is not None:
             key = "" if refetch else self._api_key_store.load(token.login_epoch)
-            if not key:
+            # 配置了 Key 时启动不主动请求账户接口（避免启动期依赖登录态），
+            # 登录动作（refetch）仍会获取并并入池
+            if not key and (refetch or not self._static_keys):
                 try:
                     key = await self._account.fetch_api_key()
                 except (MiniMaxError, httpx.HTTPError) as e:
@@ -538,25 +544,70 @@ class Main(star.Star):
                     logger.warning(f"[mmx] 获取登录账号的开放平台 API Key 失败: {e}")
                 else:
                     self._api_key_store.save(token.login_epoch, key)
+
+        keys = unique_keys([*self._static_keys, key])
         if token is None or not key:
-            # 未登录或获取失败：清掉内存里上一个账号的 Key，回到配置默认地址
-            self._client.set_credentials("", self._default_base_url)
-            self._service._set_configured(False)
-            return False
-        base_url = self._base_url_override or REGIONS.get(token.region, REGIONS["cn"])
-        self._client.set_credentials(key, base_url)
-        self._service._set_configured(True)
-        return True
+            # 没有登录 Key：回到配置默认地址，登录 Key 已从池里移除
+            base_url = self._default_base_url
+        else:
+            base_url = self._base_url_override or REGIONS.get(token.region, REGIONS["cn"])
+
+        if len(keys) > 1:
+            pool = self._key_pool or KeyPool(keys, self._region)
+            pool.set_keys(keys)
+            self._key_pool = pool
+            self._client.set_key_getter(pool.get_key)
+            self._client.set_credentials("", base_url)
+        else:
+            self._key_pool = None
+            self._client.set_key_getter(None)
+            self._client.set_credentials(keys[0] if keys else "", base_url)
+        self._service._set_configured(bool(keys))
+        self._ensure_key_quota_task()
+        return bool(keys)
+
+    def _ensure_key_quota_task(self) -> None:
+        """池存在且插件已启动时，确保额度刷新循环在跑。"""
+        if not self._started or self._key_pool is None:
+            return
+        if self._key_quota_task is not None and not self._key_quota_task.done():
+            return
+        self._key_quota_task = asyncio.create_task(self._key_quota_loop())
+
+    async def _key_quota_loop(self) -> None:
+        """后台按 TTL 刷新 Key 池额度，选 Key 时才能优先用剩余额度多的那个。"""
+        while True:
+            pool = self._key_pool
+            if pool is None:
+                return
+            try:
+                failures = await pool.refresh_if_stale(self._quota.info, force=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                failures = [f"额度刷新失败: {e}"]
+            for failure in failures:
+                logger.debug(f"[mmx] {failure}")
+            await asyncio.sleep(KeyPool.QUOTA_CACHE_TTL)
+
+    async def _on_pool_error(
+        self, key_index: int, model: str, error: MiniMaxError
+    ) -> None:
+        """请求遇额度或鉴权错误时更新 Key 池，避免继续选中同一个 Key。"""
+        if self._key_pool is None:
+            return
+        if error.category is ErrorCategory.QUOTA:
+            await self._key_pool.mark_model_exhausted(key_index, model)
+        elif error.category is ErrorCategory.AUTH:
+            await self._key_pool.mark_key_invalid(key_index)
 
     def _login_key_notice(self, has_key: bool) -> str:
-        """登录成功回复里追加的 API Key 获取结果；已配置 api_key 时无需提示。"""
+        """登录成功回复里追加的 API Key 获取结果。"""
+        if not has_key:
+            return "\n未能自动获取 API Key，图片、视频、语音等功能请在插件配置中填写 api_key。"
         if self._static_keys:
-            return ""
-        if has_key:
-            return "\n已自动获取 API Key，图片、视频、语音等功能无需再填写 api_key。"
-        return (
-            "\n未能自动获取 API Key，图片、视频、语音等功能请在插件配置中填写 api_key。"
-        )
+            return "\n已登录账号获取的 API Key 已并入 Key 池，与配置的 Key 去重后统一按额度轮换。"
+        return "\n已自动获取 API Key，图片、视频、语音等功能无需再填写 api_key。"
 
     def _provider_credentials(self) -> tuple[str, str]:
         """从同一份登录态读取 access token 与登录 epoch。"""
@@ -1893,6 +1944,11 @@ class Main(star.Star):
 
         lines: list[str] = []
         paged_multi_key = selected_index is None and len(all_keys) > 1
+        pool_state = (
+            {item["index"]: item for item in self._key_pool.get_summary()["keys"]}
+            if self._key_pool is not None
+            else {}
+        )
         if paged_multi_key:
             total_pages = max(1, (len(all_keys) + page_size - 1) // page_size)
             lines.append(
@@ -1907,6 +1963,9 @@ class Main(star.Star):
                 lines.append(f"Key [{ki + 1}] {masked}:")
             else:
                 lines.append(f"💰 Key [{ki + 1}] {masked} 额度:")
+            state = pool_state.get(ki)
+            if state is not None and not state["enabled"]:
+                lines.append(f"  已停用：{state['disabled_reason'] or '原因未知'}")
             if (
                 isinstance(raw_result, dict)
                 and raw_result.get("kind") == "account_balance"

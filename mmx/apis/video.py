@@ -82,6 +82,7 @@ class VideoAPI:
             "POST",
             video_gen_endpoint(self._client.base_url),
             body=body,
+            model=model or "",
         )
 
     async def _generate_v2(
@@ -186,6 +187,7 @@ class VideoAPI:
             "POST",
             video_gen_v2_endpoint(self._client.base_url),
             body=body,
+            model=VIDEO_V2_MODEL,
         )
     async def get_task(
         self, task_id: str, *, model: str | None = None
@@ -195,12 +197,14 @@ class VideoAPI:
             result = await self._client.request_json(
                 "GET",
                 video_task_v2_endpoint(self._client.base_url, task_id),
+                model=VIDEO_V2_MODEL,
             )
             # V2 返回 {task: {...}}，归一化为与 V1 一致的扁平结构
             return result.get("task", result)
         return await self._client.request_json(
             "GET",
             video_task_endpoint(self._client.base_url, task_id),
+            model=model or "",
         )
 
     async def wait_for_completion(

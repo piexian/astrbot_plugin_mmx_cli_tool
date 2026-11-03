@@ -213,6 +213,7 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.plugin._oauth.start_device_authorization = AsyncMock(return_value=auth)
         self.plugin._oauth.poll_device_token = AsyncMock(return_value=token)
         self.plugin._oauth.revoke = AsyncMock()
+        self.plugin._account.fetch_api_key = AsyncMock(return_value="sk-cp-fake-key")
         web_request.reset(body={"region": "cn"})
 
         started = await self.call("oauth/start")

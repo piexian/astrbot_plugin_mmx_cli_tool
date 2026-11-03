@@ -443,12 +443,17 @@ class MCodeWebAPI:
             "closed": "closed",
         }.get(state, "degraded")
         token = plugin._token_store.load()
-        auth_mode = "oauth" if token else ("api_key" if plugin._static_keys else "none")
+        key_count = (
+            plugin._key_pool.key_count
+            if plugin._key_pool is not None
+            else len(plugin._static_keys)
+        )
+        auth_mode = "oauth" if token else ("api_key" if key_count else "none")
         region = token.region if token else _text(plugin._region, 16) or "cn"
         if token:
             account_label = f"{OAUTH_CLIENT_ID} ({region.upper()})"
-        elif plugin._static_keys:
-            account_label = f"静态 API Key × {len(plugin._static_keys)}"
+        elif key_count:
+            account_label = f"API Key × {key_count}"
         else:
             account_label = "未配置凭据"
         return {

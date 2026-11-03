@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from typing import Any
 
 VIDEO_QUOTA_MODEL_KEYWORDS = ("video", "hailuo", "t2v", "i2v", "s2v", "视频")
@@ -10,6 +11,42 @@ VIDEO_QUOTA_MODEL_KEYWORDS = ("video", "hailuo", "t2v", "i2v", "s2v", "视频")
 
 def is_video_quota_model(model: object) -> bool:
     return any(word in str(model or "").lower() for word in VIDEO_QUOTA_MODEL_KEYWORDS)
+
+
+# 额度接口返回计划级模型名（如 general、video），请求里是具体模型 ID，靠关键字归类
+QUOTA_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
+    "video": ("video", "hailuo", "t2v", "i2v", "s2v", "h3", "视频"),
+    "image": ("image", "t2i", "图片", "绘图"),
+    "speech": ("speech", "audio", "tts", "asr", "transcri", "语音", "音频"),
+    "text": ("text", "chat", "general", "文本", "对话", "通用"),
+}
+
+
+def resolve_quota_model(model: str, known: Iterable[str]) -> str:
+    """把请求模型映射成额度接口返回的模型名；对不上时返回空串。"""
+    name = str(model or "").strip()
+    if not name:
+        return ""
+    lowered = name.lower()
+    for candidate in known:
+        if str(candidate).lower() == lowered:
+            return str(candidate)
+
+    family = next(
+        (
+            fam
+            for fam, words in QUOTA_MODEL_FAMILIES.items()
+            if any(word in lowered for word in words)
+        ),
+        "",
+    )
+    if not family:
+        return ""
+    for candidate in known:
+        text = str(candidate).lower()
+        if any(word in text for word in QUOTA_MODEL_FAMILIES[family]):
+            return str(candidate)
+    return ""
 
 
 def _to_number(value: Any) -> float | None:

@@ -65,7 +65,7 @@
 |------|------|
 | `mmx/client.py` | `MiniMaxClient`：共享 httpx 客户端、Key 选择、鉴权头、超时、错误分类入口 |
 | `mmx/errors.py` | `ErrorCategory`、`MiniMaxError`、`classify_error`、`friendly_message` |
-| `mmx/keypool.py` | `KeyPool`：多 Key 池，按目标模型剩余额度选 Key（实际接线见第 4 节） |
+| `mmx/keypool.py` | `KeyPool`：多 Key 池，后台按 TTL 刷新额度并按目标模型剩余额度选 Key；`unique_keys` 负责去重 |
 | `mmx/endpoints.py` | 全部端点 URL 构造、区域表（`REGIONS`、`ACCOUNT_ORIGINS`、`MATRIX_BASES`）、OAuth 常量 |
 | `mmx/oauth.py` | `OAuthClient` 设备授权 + PKCE、`OAuthToken`、`TokenStore`（`auth.json`）、`ApiKeyStore`（`open_api_key.json`） |
 | `mmx/account.py` | `MiniMaxCodeAccount`：签名请求，身份、积分、套餐余量、签到，以及取登录账号的 API Key |
@@ -179,7 +179,7 @@ OAuth 登录（`mmx/oauth.py::OAuthClient`）：
   <- 原始 dict（封装层不重试，也不改写响应）
 ```
 
-- Key 取值顺序（`MiniMaxClient.request`）：`api_key_override`（Matrix、账号接口、逐 Key 查额度用）> `key_getter(model)`（Key 池）> 固定 `api_key`。
+- Key 取值顺序（`MiniMaxClient.request`）：`api_key_override`（Matrix、账号接口、逐 Key 查额度用）> `key_getter(model)`（Key 池）> 固定 `api_key`。图片、视频、语音与转写请求会把模型名传给池（`search`、`vision` 请求不带模型名），供按模型额度选择。
 - 固定 Key 为 `None` 才抛 `RuntimeError`；`Main` 未配置 Key 时传的是空串，请求会带着空 Bearer 发出并得到 401。
 - 超时默认取配置项 `timeout`（默认 300 秒），调用方可用 `timeout=` 覆盖；Matrix、账号接口都显式指定。
 - 业务错误可能出现在 HTTP 200 的 `base_resp.status_code` 或顶层 `error` 里，只有 `request_json` 与 `decode_json_response` 会检查；直接用 `request()` 的调用（视频下载、字幕转写）和账号接口（自己解析信封）不走这项检查。
@@ -192,7 +192,12 @@ OAuth 登录（`mmx/oauth.py::OAuthClient`）：
 - 没给 `model`：有已知额度的 Key 取总剩余最多者，否则在启用的 Key 间轮转。
 - 被判定额度耗尽而停用的 Key，`DISABLED_COOLDOWN`（600 秒）后重新启用。
 
-接线现状：`Main` 只把 `KeyPool.get_key` 交给客户端；`check_all_quotas`、`mark_failed`、`mark_model_exhausted` 在生产代码里没有调用方，`model_quotas` 始终为空（`QUOTA_CACHE_TTL` 也未使用），所以实际行为是在全部 Key 间轮转。只有转写会传 `model`。
+接线（第 4 节之外的实际代码路径）：
+
+- `Main.initialize` 在多 Key 时启动 `_key_quota_loop`，`terminate` 取消；循环每 `QUOTA_CACHE_TTL`（300 秒）调用 `KeyPool.refresh_if_stale(self._quota.info, force=True)` 刷新全部 Key 的额度，刷新失败按 Key 返回说明并由循环记 debug 日志。
+- 请求带 `model` 时用 `resolve_quota_model` 把请求模型映射到额度接口的模型名：先找同名，再按 image/video/speech/text 关键字归类，对不上按"额度未知"处理（不做猜测）。
+- 非 2xx 响应由 `MiniMaxClient.request` 把 `(key_index, model, error)` 交给 `Main._on_pool_error`：`QUOTA` 把该模型剩余记为 0，`AUTH` 停用该 Key。回写本身失败时把异常挂到原始 `MiniMaxError` 的 note 上，不覆盖它。
+- HTTP 200 内的业务额度错误（`base_resp.status_code`）不回写，最多滞后一个刷新周期。
 
 额度类入口（`/mmx quota`、`mmx_check_quota`、SDK `get_quota`、工作台额度）对每个 Key 单独调用 `QuotaAPI.info(key)`：
 
@@ -389,7 +394,7 @@ LLM 工具的 JSON 形态：
 
 - `open_api_key.json`（0600）由 `ApiKeyStore` 读写，内容 `{"login_epoch": ..., "api_key": ...}`。文件缺失、损坏或 epoch 与 `auth.json` 里的不一致都按不存在处理并重新获取；每次新登录都会生成新 epoch，所以每次登录取一次，之后重启直接读文件。
 - 区域与地址：`base_url` 配置非空时用它，否则取登录区域对应的 `REGIONS`，不看 `region` 配置，因为 Key 与区域都来自本次登录。未登录或获取失败时回到构造时记录的默认地址（`_default_base_url`）。
-- 优先级：配置了 `api_key`（单 Key 或多 Key 池）时完全不取，行为与之前一致；Matrix 网关仍优先使用 OAuth 令牌。
+- 优先级：配置的 `api_key` 与登录获取的 Key 用 `unique_keys` 去重后合并——多于 1 个时建 `KeyPool`（`set_keys` 保留已有 Key 的序号与统计），只剩 1 个时回到固定 Key。配置了 Key 时启动不主动请求账户接口，只有登录动作（`refetch=True`）才获取并并入池；Matrix 网关仍优先使用 OAuth 令牌。
 - 就绪状态：`MiniMaxService._set_configured` 在 `ready` 与 `unavailable`（原因 `missing_api_key`）之间切换，不触碰 `initializing`、`closing`、`closed`。
 - `Main._has_open_key()` 判断是否有可用的开放平台 Key（Key 池或客户端固定 Key），工作台画布批注分析用它做前置检查。
 
@@ -562,7 +567,8 @@ PR：
 - 认证失败的文案仍写"请检查配置中的 api_key"（`classify_error`）和"API Key 无效，请检查插件配置。"（`friendly_message`），即使 Key 是登录自动获取的，这时应重新 `/mmx login`。
 - 工作台额度面板的区域标签读取 `region` 配置（`_quota_payload`），不跟随登录区域；状态栏（`_status_payload`）则用登录区域。
 - 未配置 Key 也未登录时，指令没有前置检查，请求带着空 Bearer 发出并得到 401；只有 SDK 用 `not_ready` 拒绝。
-- `KeyPool` 的额度感知选择没有接线（第 4 节），多 Key 实际是轮转，与配置项说明里的"按额度轮换"不一致。
+- 按模型额度选择依赖额度接口返回的计划级模型名与请求模型能对上（`resolve_quota_model`）；对不上时该 Key 按额度未知参与轮转，不会更差但也没有额度加成。
+- 单 Key 模式不走池，额度感知只在多 Key（含登录 Key 合并后多于 1 个）时生效。
 - `ErrorCategory.NETWORK` 没有产生方，网络与超时异常以原始 `httpx` 异常的文本回复。
 - 工作台登出不会注销运行时回退的供应商实例（`/mmx logout` 会）；实例留着但没有令牌，请求会因 `AUTH` 失败。
 - 工作台下载路由始终以 AstrBot 临时目录为根，不受 `allow_astrbot_temp_dir` 影响。

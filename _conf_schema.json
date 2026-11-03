@@ -3,7 +3,7 @@
     "description": "MiniMax API Key",
     "type": "list",
     "default": [],
-    "hint": "在 MiniMax 开放平台获取，以 sk- 开头。可添加多个 Key，插件会按额度自动轮换使用。留空时，用 /mmx login 登录后插件会自动获取一个，无需手动填写。"
+    "hint": "在 MiniMax 开放平台获取，以 sk- 开头。可添加多个 Key：插件每 5 分钟查一次各 Key 的额度，优先用目标模型剩余额度最多的那个，额度未知时轮流使用。登录获取的 Key 会与这里的 Key 去重后一起参与选择。留空时，用 /mmx login 登录后插件会自动获取一个，无需手动填写。"
   },
   "region": {
     "description": "API 区域",

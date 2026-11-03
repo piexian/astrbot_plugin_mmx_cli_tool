@@ -107,6 +107,7 @@ class SpeechAPI:
             "POST",
             speech_endpoint(self._client.base_url),
             body=body,
+            model=model or "",
         )
 
     async def save(self, response: dict[str, Any], out_path: str) -> str:

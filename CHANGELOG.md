@@ -10,6 +10,7 @@
 - 未配置 `api_key` 时，`/mmx login`（及工作台扫码登录）成功后自动从账号接口获取开放平台 API Key 并保存到插件数据目录的 `open_api_key.json`：图片、视频、语音、转写、搜索、看图、文件、额度无需再手动填写；请求区域跟随登录区域，重新登录会刷新，`/mmx logout` 会删除；已配置的 `api_key` 仍然优先。
 - 文档：README 面向新手重写（新增快速开始、准备事项与安全说明），部分技术细节（安全规则、内部机制）移至 `docs/development.md`，补全项目结构，`_conf_schema.json` 的说明文字改为通俗表述并按功能分组；修正配置表中 `region` 默认值（实为 `cn`）、`api_key` 类型（列表）及缺失的 `auto_create_provider_source`，补充 `/mmx video` 的 `--duration`、`--ratio` 参数。
 - 修复 `image`/`video`/`search`/`vision`/`file`/`speech`/`quota` 子指令只收到首个词、丢弃后续参数的问题（如 `--aspect-ratio`、`--file`、`page 2`、多词查询与提示词），改为从消息原文取子指令后的完整文本；裸指令不再把子指令名当作参数。
+- 多 Key 的额度感知真正接线：后台每 5 分钟刷新各 Key 的模型额度，按目标模型剩余额度优先选 Key，额度未知时轮流；请求遇额度不足或鉴权失败会回写 Key 池并停用对应 Key。配置的 Key 与登录获取的 Key 去重后合并进同一个池，`/mmx quota` 额外显示停用原因。
 
 ## 0.7.1 - 2026-10-24
 
