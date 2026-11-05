@@ -166,11 +166,6 @@ AI 在对话中可以自动调用下面 17 个工具。
 > [!WARNING]
 > 卸载插件前，请先删除所有 MiniMax Code 类型的提供商源及其模型，否则 AstrBot 重启时会报找不到 `minimax_code` 适配器。
 
-插件重载不会使 MiniMax Code 模型失效：重载或重新登录后，插件会自动终止旧实例并按当前配置恢复（包括手动创建的源和自定义模型 ID）；冷启动仍由 AstrBot 正常加载。`auto_create_provider_source` 只控制是否自动写入提供商源配置，已手动添加的源不受影响。
-
-推理档位说明：MiniMax-M3.1-Flash 按 `thinking_effort` 发送 `output_config.effort`（默认 `default`）。想固定档位，可在提供商源模型的 `custom_extra_body` 里写 `{"output_config": {"effort": "high"}}`（优先级最高）；旧写法 `{"reasoning_effort": "high"}` 仍兼容，会按同档位发送且不再出现在请求里。MiniMax-M3 只有思考开/关：默认开（发送 `thinking: {"type": "adaptive"}`），在 `custom_extra_body` 里写 `{"thinking": {"type": "disabled"}}` 可关闭；档位对 M3 不生效。
-
-每个 AstrBot 会话对应各自的 MiniMax Code 会话；换另一个账号重新登录后，不会沿用旧会话。提供商源里填的 `custom_headers` 不会被发送。
 
 签到和积分：
 
