@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -20,6 +21,8 @@ from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
 from .endpoints import MATRIX_BASES
 from .errors import ErrorCategory, MiniMaxError
 
+
+logger = logging.getLogger(__name__)
 #: 供应商实例 ID（WebUI 会话/Agent 设置中按此选择）
 PROVIDER_ID = "mmx_minimax_code"
 PROVIDER_TYPE = "minimax_code"
@@ -38,6 +41,12 @@ API_KEY_NOTICE = "此处无需 API Key：令牌由插件 /mmx login 的 OAuth �
 _AGENT_ID = "main"
 MODELS = ["MiniMax-M3.1-Flash", "MiniMax-M3"]
 
+
+#: 官方工作台推理档位：MiniMax-M3.1-Flash（forced_on）按 output_config.effort 发送
+_EFFORT_LEVELS = ("default", "low", "medium", "high", "xhigh", "max")
+#: 模型请求形态：M3.1-Flash 按档位；MiniMax-M3（switchable）只有 adaptive/disabled 开关
+_EFFORT_MODEL = "minimax-m3.1-flash"
+_SWITCH_MODEL = "minimax-m3"
 LLM_PATH_PREFIX = "/mavis/api/v1/llm"
 _TRANSPORT_HEADER_NAMES = frozenset(
     {"accept-encoding", "connection", "content-length", "host"}
@@ -82,6 +91,10 @@ def _empty_token_getter() -> str:
     return ""
 
 
+def _default_effort() -> str:
+    return "default"
+
+
 def _module_token() -> str:
     return _module_token_getter()
 
@@ -98,6 +111,10 @@ def _module_region() -> str:
     return ""
 
 
+def _module_effort() -> str:
+    return _module_effort_getter()
+
+
 async def _module_refresh() -> None:
     if _module_token_refresher is not None:
         await _module_token_refresher()
@@ -108,6 +125,7 @@ _module_token_refresher: Callable[[], Awaitable[None]] | None = None
 _module_models_fetcher: Callable[[], Awaitable[list[str]]] | None = None
 _module_credentials_getter: Callable[[], tuple[str, str]] | None = None
 _module_region_getter: Callable[[], str] | None = None
+_module_effort_getter: Callable[[], str] = _default_effort
 
 #: 云端模型列表的模块级缓存（WebUI 每次点击都会新建临时实例，缓存必须模块级）
 _MODELS_CACHE_TTL = 300.0
@@ -122,26 +140,29 @@ def set_token_source(
     models_fetcher: Callable[[], Awaitable[list[str]]] | None = None,
     credentials_getter: Callable[[], tuple[str, str]] | None = None,
     region_getter: Callable[[], str] | None = None,
+    effort_getter: Callable[[], str] | None = None,
 ) -> None:
-    """绑定配置模式实例的令牌、刷新、模型、登录会话与区域来源。"""
+    """绑定配置模式实例的令牌、刷新、模型、登录会话、区域与工作台档位来源。"""
     global _module_token_getter, _module_token_refresher, _module_models_fetcher
-    global _module_credentials_getter, _module_region_getter
+    global _module_credentials_getter, _module_region_getter, _module_effort_getter
     _module_token_getter = getter
     _module_token_refresher = refresher
     _module_models_fetcher = models_fetcher
     _module_credentials_getter = credentials_getter
     _module_region_getter = region_getter
+    _module_effort_getter = effort_getter or _default_effort
 
 
 def clear_token_source() -> None:
     global _module_token_getter, _module_token_refresher
     global _module_models_fetcher, _models_cache, _models_cache_at, _models_cache_region
-    global _module_credentials_getter, _module_region_getter
+    global _module_credentials_getter, _module_region_getter, _module_effort_getter
     _module_token_getter = _empty_token_getter
     _module_token_refresher = None
     _module_models_fetcher = None
     _module_credentials_getter = None
     _module_region_getter = None
+    _module_effort_getter = _default_effort
     _models_cache = []
     _models_cache_at = 0.0
     _models_cache_region = ""
@@ -266,6 +287,7 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         auth_refresher: Callable[[], Awaitable[None]] | None = None,
         credentials_getter: Callable[[], tuple[str, str]] | None = None,
         region_getter: Callable[[], str] | None = None,
+        effort_getter: Callable[[], str] | None = None,
     ) -> None:
         """支持插件直连与 AstrBot 配置模式构造。
 
@@ -280,6 +302,38 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         provider_config["api_base"] = f"{origin}{LLM_PATH_PREFIX}"
         provider_config.setdefault("model", DEFAULT_MODELS[0])
         provider_config.setdefault("timeout", 120.0)
+        # custom_extra_body 归一化仅限两个已适配模型：reasoning_effort 旧别名与
+        # output_config/thinking 由请求准备统一落位（合并语义确定）；自定义模型
+        # 不弹任何字段，显式配置原样透传到最终请求
+        self._legacy_effort = ""
+        self._explicit_output_config: dict[str, Any] | None = None
+        self._explicit_thinking: dict[str, Any] | None = None
+        extra_body = provider_config.get("custom_extra_body")
+        extra_body = dict(extra_body) if isinstance(extra_body, dict) else {}
+        model_name = str(provider_config.get("model", "")).strip().lower()
+        if model_name in (_EFFORT_MODEL, _SWITCH_MODEL):
+            legacy_effort = str(
+                extra_body.pop("reasoning_effort", "") or ""
+            ).strip().lower()
+            if legacy_effort:
+                # 非法旧别名告警并固定 default：不透传，也不向工作台档位滑落
+                self._legacy_effort = self._validated_effort(
+                    legacy_effort, provider_config.get("id"), model_name
+                )
+            output_config = extra_body.pop("output_config", None)
+            if isinstance(output_config, dict):
+                self._explicit_output_config = dict(output_config)
+                if "effort" in self._explicit_output_config:
+                    # 非法显式档位告警并固定 default，其余键原样保留
+                    self._explicit_output_config["effort"] = self._validated_effort(
+                        self._explicit_output_config["effort"],
+                        provider_config.get("id"),
+                        model_name,
+                    )
+            thinking = extra_body.pop("thinking", None)
+            if isinstance(thinking, dict):
+                self._explicit_thinking = dict(thinking)
+        provider_config["custom_extra_body"] = extra_body
         super().__init__(
             provider_config, provider_settings or {}, use_api_key=use_api_key
         )
@@ -295,6 +349,9 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         self._region = region
         self._region_getter = region_getter or _module_region
         self._auth_refresher = auth_refresher
+        self._effort_getter = effort_getter or _module_effort
+        # 与 AstrBot 基类一致（桩环境下基类不赋值）；显式配置时请求准备不改写
+        self.thinking_config = provider_config.get("anth_thinking_config", {})
 
         from anthropic import AsyncAnthropic
 
@@ -504,6 +561,79 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         finally:
             _REQUEST_SESSION_KEY.reset(session_token)
             _REQUEST_LOGIN_EPOCH.reset(epoch_token)
+
+    # ---- 请求参数（M3.1 effort 档位 / M3 thinking 开关） ----
+
+    @staticmethod
+    def _validated_effort(raw: Any, provider_id: Any, model: Any) -> str:
+        """显式档位校验：合法返回归一化小写；非法告警并回退推荐档位 default。"""
+        effort = str(raw or "").strip().lower()
+        if effort in _EFFORT_LEVELS:
+            return effort
+        logger.warning(
+            f"[mmx] Provider {provider_id} 模型 {model} 的推理档位类型无效"
+            f"（{type(raw).__name__}），已回退 default"
+        )
+        return "default"
+
+    def _resolve_effort(self) -> str:
+        """M3.1 最终档位：显式 output_config > reasoning_effort 旧别名 > 工作台 > default。
+
+        显式档位构造时已校验：非法值告警并固定 default，不向低优先级滑落。
+        """
+        if self._explicit_output_config is not None and (
+            "effort" in self._explicit_output_config
+        ):
+            return self._explicit_output_config["effort"]
+        if self._legacy_effort:
+            return self._legacy_effort
+        effort = str(self._effort_getter() or "").strip().lower()
+        return effort if effort in _EFFORT_LEVELS else "default"
+
+    def _patch_model_payloads(self, payloads: dict) -> None:
+        """按模型落最终 thinking/output_config；普通与流式共用，不碰其余字段。"""
+        model = str(self.get_model() or "").strip().lower()
+        if model not in (_EFFORT_MODEL, _SWITCH_MODEL):
+            return
+        if model == _EFFORT_MODEL:
+            if self.thinking_config:
+                # 显式 anth_thinking_config：先恢复非冲突显式字段再交基类，
+                # native thinking/effort 由基类应用并覆盖显式档位
+                if self._explicit_output_config is not None:
+                    payloads["output_config"] = dict(self._explicit_output_config)
+                elif self._legacy_effort:
+                    payloads["output_config"] = {"effort": self._legacy_effort}
+                return
+            payloads.pop("thinking", None)
+            if self._explicit_thinking is not None:
+                payloads["thinking"] = dict(self._explicit_thinking)
+            output_config = (
+                dict(self._explicit_output_config)
+                if self._explicit_output_config is not None
+                else {}
+            )
+            output_config["effort"] = self._resolve_effort()
+            payloads["output_config"] = output_config
+            return
+        # M3：二值开关，不吃工作台档位，也不发送档位字段
+        payloads.pop("output_config", None)
+        if self.thinking_config:
+            # 显式 anth_thinking_config：native thinking 交基类应用；
+            # 显式 thinking/output_config 对 M3 均为冲突字段，不恢复
+            return
+        if self._explicit_thinking is not None:
+            payloads["thinking"] = dict(self._explicit_thinking)
+        elif not isinstance(payloads.get("thinking"), dict):
+            payloads["thinking"] = {"type": "adaptive"}
+
+    async def _query(self, payloads: dict, tools: Any, **kwargs: Any):
+        self._patch_model_payloads(payloads)
+        return await super()._query(payloads, tools, **kwargs)
+
+    async def _query_stream(self, payloads: dict, tools: Any, **kwargs: Any):
+        self._patch_model_payloads(payloads)
+        async for chunk in super()._query_stream(payloads, tools, **kwargs):
+            yield chunk
 
 
 def _is_auth_error(exc: BaseException) -> bool:

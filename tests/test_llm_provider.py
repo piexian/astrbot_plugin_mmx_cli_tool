@@ -59,6 +59,8 @@ def make_provider_anthropic_stub():
             self.timeout = provider_config.get("timeout", 120)
             self.request_headers = {}
             self.custom_headers = self.request_headers
+            self.captured_queries = []
+            self.thinking_config = provider_config.get("anth_thinking_config", {})
             self.set_model(provider_config.get("model", "unknown"))
 
         def set_model(self, model_name):
@@ -72,6 +74,50 @@ def make_provider_anthropic_stub():
 
         def resolve_request_headers(self, **kwargs):
             return {}
+
+        def _stub_extra_body(self):
+            extra = self.provider_config.get("custom_extra_body")
+            return dict(extra) if isinstance(extra, dict) else {}
+
+        def _apply_thinking_config(self, payloads):
+            thinking_type = self.thinking_config.get("type", "")
+            if thinking_type == "adaptive":
+                payloads["thinking"] = {"type": "adaptive"}
+                effort = self.thinking_config.get("effort", "")
+                output_cfg = dict(payloads.get("output_config", {}))
+                if effort:
+                    output_cfg["effort"] = effort
+                if output_cfg:
+                    payloads["output_config"] = output_cfg
+            elif not thinking_type and self.thinking_config.get("budget"):
+                payloads["thinking"] = {
+                    "budget_tokens": self.thinking_config.get("budget"),
+                    "type": "enabled",
+                }
+
+        async def _query(self, payloads, tools, **kwargs):
+            self._apply_thinking_config(payloads)
+            self.captured_queries.append(
+                {
+                    "payloads": payloads,
+                    "extra_body": self._stub_extra_body(),
+                    "tools": tools,
+                    "kwargs": kwargs,
+                }
+            )
+            return SimpleNamespace(content=[], id="stub", usage=None)
+
+        async def _query_stream(self, payloads, tools, **kwargs):
+            self._apply_thinking_config(payloads)
+            self.captured_queries.append(
+                {
+                    "payloads": payloads,
+                    "extra_body": self._stub_extra_body(),
+                    "tools": tools,
+                    "kwargs": kwargs,
+                }
+            )
+            yield "chunk"
 
         async def terminate(self):
             await self.client.kwargs["http_client"].aclose()
@@ -635,6 +681,277 @@ class ProviderBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["calls"], 2)
 
 
+class PayloadPreparationTests(unittest.IsolatedAsyncioTestCase):
+    """最终 SDK 请求体回归：M3.1 effort 档位与 M3 thinking 开关。"""
+
+    async def asyncSetUp(self):
+        stubs = provider_stubs()
+        self.llm_provider, self.base_cls = self.enterContext(stubs)
+        self.effort_holder = {"value": "default"}
+        self.llm_provider.set_token_source(
+            lambda: "tok-1",
+            effort_getter=lambda: self.effort_holder["value"],
+        )
+        self.addCleanup(self.llm_provider.clear_token_source)
+        self.provider = self.llm_provider.MiniMaxCodeProvider(
+            region="cn",
+            token_getter=lambda: "tok-1",
+            credentials_getter=lambda: ("tok-1", "login-1"),
+        )
+
+    def _config_provider(self, provider_config):
+        return self.llm_provider.MiniMaxCodeProvider(
+            region="cn",
+            provider_config=provider_config,
+            token_getter=lambda: "tok-1",
+            credentials_getter=lambda: ("tok-1", "login-1"),
+        )
+
+    async def _captured_final(self, provider=None, *, stream=False, payloads=None):
+        provider = provider or self.provider
+        payloads = payloads if payloads is not None else {
+            "messages": [{"role": "user", "content": "hi"}],
+            "model": provider.get_model(),
+        }
+        if stream:
+            chunks = [chunk async for chunk in provider._query_stream(payloads, None)]
+            self.assertTrue(chunks)
+        else:
+            await provider._query(payloads, None)
+        captured = provider.captured_queries[-1]
+        return {**captured["payloads"], **captured["extra_body"]}, captured
+
+    async def test_m31_default_sends_effort_without_thinking(self):
+        final, _ = await self._captured_final()
+        self.assertEqual(final["output_config"], {"effort": "default"})
+        self.assertNotIn("thinking", final)
+        self.assertNotIn("reasoning_effort", final)
+        final_stream, _ = await self._captured_final(stream=True)
+        self.assertEqual(final_stream["output_config"], {"effort": "default"})
+        self.assertNotIn("thinking", final_stream)
+
+    async def test_workbench_effort_applies_immediately_per_request(self):
+        for level in ("low", "medium", "high", "xhigh", "max"):
+            self.effort_holder["value"] = level
+            final, _ = await self._captured_final()
+            self.assertEqual(final["output_config"], {"effort": level})
+        # 运行中改档：下一个请求读取新值
+        self.effort_holder["value"] = "low"
+        final, _ = await self._captured_final(stream=True)
+        self.assertEqual(final["output_config"], {"effort": "low"})
+
+    async def test_legacy_reasoning_effort_alias_maps_to_output_config(self):
+        provider = self._config_provider(
+            {"id": "legacy", "custom_extra_body": {"reasoning_effort": "max"}}
+        )
+        final, captured = await self._captured_final(provider)
+        self.assertEqual(final["output_config"], {"effort": "max"})
+        self.assertNotIn("reasoning_effort", captured["extra_body"])
+        self.assertNotIn("reasoning_effort", final)
+
+        # 无效别名：告警并固定 default，不向工作台档位滑落
+        self.effort_holder["value"] = "high"
+        invalid_cfg = {
+            "id": "legacy-invalid",
+            "custom_extra_body": {"reasoning_effort": "ultra"},
+        }
+        with self.assertLogs("astrbot_plugin_mmx_cli_tool", level="WARNING") as logs:
+            provider = self._config_provider(invalid_cfg)
+        final, captured = await self._captured_final(provider)
+        self.assertEqual(final["output_config"], {"effort": "default"})
+        self.assertNotIn("reasoning_effort", captured["extra_body"])
+        joined = "\n".join(logs.output)
+        self.assertIn("已回退 default", joined)
+        self.assertNotIn("ultra", joined)
+        self.assertNotIn("tok-", joined)
+
+    async def test_explicit_output_config_wins_and_other_fields_pass_through(self):
+        provider = self._config_provider(
+            {
+                "id": "explicit",
+                "custom_extra_body": {
+                    "output_config": {"effort": "xhigh"},
+                    "reasoning_effort": "low",
+                    "safety": "keep-me",
+                },
+            }
+        )
+        final, captured = await self._captured_final(provider)
+        self.assertEqual(final["output_config"], {"effort": "xhigh"})
+        self.assertEqual(captured["extra_body"].get("safety"), "keep-me")
+
+        # 显式 output_config 缺 effort：按 旧别名 > 工作台 解析并合入，保留其余键
+        provider = self._config_provider(
+            {
+                "id": "explicit-partial",
+                "custom_extra_body": {
+                    "output_config": {"keep": 1},
+                    "reasoning_effort": "medium",
+                },
+            }
+        )
+        final, _ = await self._captured_final(provider)
+        self.assertEqual(final["output_config"], {"keep": 1, "effort": "medium"})
+
+    async def test_m3_default_adaptive_and_workbench_effort_ignored(self):
+        provider = self._config_provider(
+            {"id": "m3", "model": "MiniMax-M3", "custom_extra_body": {}}
+        )
+        self.effort_holder["value"] = "max"
+        final, _ = await self._captured_final(provider)
+        self.assertEqual(final["thinking"], {"type": "adaptive"})
+        self.assertNotIn("output_config", final)
+
+    async def test_m3_explicit_disabled_is_kept(self):
+        provider = self._config_provider(
+            {
+                "id": "m3-off",
+                "model": "MiniMax-M3",
+                "custom_extra_body": {"thinking": {"type": "disabled"}},
+            }
+        )
+        final, captured = await self._captured_final(provider)
+        self.assertEqual(final["thinking"], {"type": "disabled"})
+        self.assertNotIn("output_config", final)
+        self.assertNotIn("thinking", captured["extra_body"])
+
+    async def test_custom_model_extra_body_passes_through(self):
+        """自定义模型不弹字段：三字段与其他字段原样到达最终合并参数（普通与流式）。"""
+        provider = self._config_provider(
+            {
+                "id": "custom",
+                "model": "MiniMax-M3-Lite",
+                "custom_extra_body": {
+                    "reasoning_effort": "high",
+                    "output_config": {"effort": "low"},
+                    "thinking": {"type": "disabled"},
+                    "safety": "keep-me",
+                },
+            }
+        )
+        final, captured = await self._captured_final(provider)
+        self.assertEqual(final["reasoning_effort"], "high")
+        self.assertEqual(final["output_config"], {"effort": "low"})
+        self.assertEqual(final["thinking"], {"type": "disabled"})
+        self.assertEqual(final["safety"], "keep-me")
+        self.assertEqual(captured["extra_body"]["safety"], "keep-me")
+
+        final_stream, _ = await self._captured_final(provider, stream=True)
+        self.assertEqual(final_stream["reasoning_effort"], "high")
+        self.assertEqual(final_stream["output_config"], {"effort": "low"})
+        self.assertEqual(final_stream["thinking"], {"type": "disabled"})
+        self.assertEqual(final_stream["safety"], "keep-me")
+
+    async def test_explicit_anth_thinking_config_keeps_native_behavior(self):
+        provider = self._config_provider(
+            {
+                "id": "native-thinking",
+                "anth_thinking_config": {"type": "adaptive", "effort": "high"},
+            }
+        )
+        self.effort_holder["value"] = "xhigh"
+        final, _ = await self._captured_final(provider)
+        # AstrBot 原生行为保持：档位来自 thinking_config，工作台不参与
+        self.assertEqual(final["thinking"], {"type": "adaptive"})
+        self.assertEqual(final["output_config"], {"effort": "high"})
+
+    async def test_generic_payload_fields_are_untouched(self):
+        payloads = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "model": "MiniMax-M3.1-Flash",
+            "max_tokens": 1024,
+            "metadata": {"user": "u1"},
+            "temperature": 0.3,
+        }
+        tools = object()  # 工具集由 AstrBot 原生处理，仅验证透传
+        await self.provider._query(payloads, tools)
+        captured = self.provider.captured_queries[-1]
+        self.assertIs(captured["tools"], tools)
+        merged = {**captured["payloads"], **captured["extra_body"]}
+        self.assertEqual(merged["max_tokens"], 1024)
+        self.assertEqual(merged["metadata"], {"user": "u1"})
+        self.assertEqual(merged["temperature"], 0.3)
+        self.assertEqual(merged["output_config"], {"effort": "default"})
+
+    async def test_concurrent_requests_keep_own_effort(self):
+        import asyncio
+
+        counter = {"n": 0}
+
+        def alternating():
+            counter["n"] += 1
+            return "low" if counter["n"] % 2 else "high"
+
+        self.llm_provider.set_token_source(
+            lambda: "tok-1", effort_getter=alternating
+        )
+        peers = [
+            self.llm_provider.MiniMaxCodeProvider(
+                region="cn",
+                token_getter=lambda: "tok-1",
+                credentials_getter=lambda: ("tok-1", "login-1"),
+            )
+            for _ in range(2)
+        ]
+        finals = await asyncio.gather(*(self._captured_final(p) for p in peers))
+        efforts = sorted(item[0]["output_config"]["effort"] for item in finals)
+        self.assertEqual(efforts, ["high", "low"])
+
+    async def test_invalid_explicit_effort_warns_and_pins_default(self):
+        """非法显式档位：告警并固定 default，不滑落到旧别名或工作台档位。"""
+        self.effort_holder["value"] = "xhigh"
+        invalid_cfg = {
+            "id": "invalid-effort",
+            "custom_extra_body": {
+                "output_config": {"effort": "ultra", "keep": 1},
+                "reasoning_effort": "max",
+            },
+        }
+        with self.assertLogs("astrbot_plugin_mmx_cli_tool", level="WARNING") as logs:
+            provider = self._config_provider(invalid_cfg)
+        final, captured = await self._captured_final(provider)
+        self.assertEqual(final["output_config"], {"keep": 1, "effort": "default"})
+        self.assertNotIn("reasoning_effort", captured["extra_body"])
+        joined = "\n".join(logs.output)
+        self.assertIn("invalid-effort", joined)
+        self.assertIn("已回退 default", joined)
+        self.assertNotIn("ultra", joined)
+        self.assertNotIn("tok-", joined)
+
+    async def test_anth_thinking_config_restores_explicit_fields(self):
+        """显式 thinking_config 组合：非冲突显式字段恢复，native thinking/effort 优先。"""
+        self.effort_holder["value"] = "max"  # 工作台档位在 native 分支不参与
+        provider = self._config_provider(
+            {
+                "id": "native-mix",
+                "anth_thinking_config": {"type": "adaptive", "effort": "high"},
+                "custom_extra_body": {
+                    "output_config": {"effort": "xhigh", "keep": 1},
+                    "thinking": {"type": "disabled"},
+                },
+            }
+        )
+        final, captured = await self._captured_final(provider)
+        self.assertEqual(final["thinking"], {"type": "adaptive"})
+        self.assertEqual(final["output_config"], {"keep": 1, "effort": "high"})
+        self.assertNotIn("thinking", captured["extra_body"])
+        final_stream, _ = await self._captured_final(provider, stream=True)
+        self.assertEqual(final_stream["thinking"], {"type": "adaptive"})
+        self.assertEqual(final_stream["output_config"], {"keep": 1, "effort": "high"})
+
+        # native 未定义 effort：显式档位（非冲突）保留，工作台仍不参与
+        provider2 = self._config_provider(
+            {
+                "id": "native-no-effort",
+                "anth_thinking_config": {"type": "adaptive"},
+                "custom_extra_body": {"output_config": {"effort": "low"}},
+            }
+        )
+        final2, _ = await self._captured_final(provider2)
+        self.assertEqual(final2["thinking"], {"type": "adaptive"})
+        self.assertEqual(final2["output_config"], {"effort": "low"})
+
+
 class AdapterRegistrationTests(unittest.TestCase):
     def test_register_idempotent_and_unregister(self):
         with provider_stubs() as (llm_provider, _):
@@ -712,8 +1029,12 @@ class FakeAstrBotConfig(dict):
         return True
 
 
-def make_fake_context(provider_insts=None):
-    """构造带配置与供应商管理器桩的插件上下文。"""
+def make_fake_context(provider_insts=None, *, provider_module=None):
+    """构造带配置与供应商管理器桩的插件上下文。
+
+    传入 provider_module 时，load_provider/terminate_provider 模拟 AstrBot 真实行为：
+    合并提供商源配置、构造当前模块实例并维护 insts 与 inst_map。
+    """
     from unittest.mock import AsyncMock
 
     manager = SimpleNamespace(
@@ -721,7 +1042,39 @@ def make_fake_context(provider_insts=None):
         inst_map={},
         provider_sources_config=[],
         load_provider=AsyncMock(),
+        terminate_provider=AsyncMock(),
     )
+
+    if provider_module is not None:
+
+        async def load_provider(provider_config):
+            merged = dict(provider_config)
+            for source in manager.provider_sources_config:
+                if isinstance(source, dict) and source.get("id") == merged.get(
+                    "provider_source_id"
+                ):
+                    merged = {**source, **merged}
+                    break
+            merged["id"] = provider_config["id"]
+            if not merged.get("enable", True):
+                return
+            inst = provider_module.MiniMaxCodeProvider(merged)
+            manager.provider_insts.append(inst)
+            manager.inst_map[merged["id"]] = inst
+
+        async def terminate_provider(provider_id):
+            inst = manager.inst_map.pop(provider_id, None)
+            if inst is None:
+                return
+            if inst in manager.provider_insts:
+                manager.provider_insts.remove(inst)
+            terminate = getattr(inst, "terminate", None)
+            if terminate is not None:
+                await terminate()
+
+        manager.load_provider = load_provider
+        manager.terminate_provider = terminate_provider
+
     config = FakeAstrBotConfig()
     config["provider"] = []
     # 与真实 AstrBot 相同：管理器与配置持有同一个列表引用
@@ -733,6 +1086,7 @@ def make_fake_context(provider_insts=None):
         get_config=lambda: config,
     )
     return context, config, manager
+
 
 
 class PluginRegistrationTests(unittest.IsolatedAsyncioTestCase):
@@ -925,45 +1279,6 @@ class ProviderSourceTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(config["provider_sources"]), 1)
                     self.assertEqual(len(config["provider"]), 2)
 
-    async def test_missing_instances_reloaded_when_config_clean(self):
-        """配置未变但实例缺失（禁用再启用等）时，热环境必须补加载。"""
-        with provider_stubs():
-            with tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                with plugin_modules(root) as (main, tools):
-                    context, config, manager = make_fake_context()
-                    plugin = main.Main(context, {"api_key": ["k"]})
-                    await plugin.initialize()
-                    self.addAsyncCleanup(plugin.terminate)
-                    manager.load_provider.assert_not_awaited()  # 冷启动未加载
-
-                    # 模拟 AstrBot 已完成原生初始化，但我们的实例缺失
-                    other = SimpleNamespace(provider_config={"id": "other/model"})
-                    config["provider"].append(
-                        {
-                            "id": "other/model",
-                            "enable": True,
-                            "provider_source_id": "other",
-                            "model": "m",
-                        }
-                    )
-                    manager.inst_map["other/model"] = other
-                    manager.provider_insts.append(other)
-
-                    await plugin._ensure_provider_source()
-                    self.assertEqual(config.saved, 1)  # 配置未变，未重复落盘
-                    self.assertEqual(manager.load_provider.await_count, 2)
-                    loaded_ids = [
-                        call.args[0]["id"]
-                        for call in manager.load_provider.await_args_list
-                    ]
-                    self.assertEqual(
-                        loaded_ids,
-                        [
-                            "mmx_minimax_code/MiniMax-M3.1-Flash",
-                            "mmx_minimax_code/MiniMax-M3",
-                        ],
-                    )
 
     async def test_region_change_does_not_touch_sources_or_reload(self):
         """换区域重新登录后：不改源配置、不落盘、不重载已加载条目。"""
@@ -1014,6 +1329,29 @@ class ProviderSourceTests(unittest.IsolatedAsyncioTestCase):
                     await plugin.terminate()
                     self.assertEqual(llm_provider._module_token_getter(), "")
                     self.assertIsNone(llm_provider._module_credentials_getter)
+
+    async def test_terminate_cleanup_failure_warns_but_still_unregisters(self):
+        """terminate 的令牌清理与适配器注销互不影响，失败有 warning 不静默。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                with plugin_modules(root) as (main, tools):
+                    context, _, _ = make_fake_context()
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    await plugin.initialize()
+
+                    with patch.object(
+                        llm_provider,
+                        "clear_token_source",
+                        side_effect=RuntimeError("boom-clear"),
+                    ):
+                        with self.assertLogs("mmx-test", level="DEBUG") as logs:
+                            await plugin.terminate()
+                    joined = "\n".join(logs.output)
+                    self.assertIn("清理模块级令牌来源失败", joined)
+                    self.assertIn("boom-clear", joined)
+                    # 清理失败不影响适配器注销
+                    self.assertIn("已注销 MiniMax Code 供应商适配器", joined)
 
     async def test_occupied_foreign_source_skips_with_warning(self):
         with provider_stubs():
@@ -1173,6 +1511,511 @@ class ProviderSourceTests(unittest.IsolatedAsyncioTestCase):
             await plugin._unregister_llm_provider()
             self.assertEqual(llm_provider._module_token_getter(), "a")
             self.assertEqual(llm_provider._module_region(), "global")
+
+
+class LegacyModuleProviderStub:
+    """上一轮插件模块的 Provider 残留替身：同名类型、不同类对象。"""
+
+    def __init__(self, entry):
+        self.provider_config = {**entry, "type": "minimax_code"}
+        self.terminated = False
+
+    async def terminate(self):
+        self.terminated = True
+
+
+class ProviderReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    """插件重载后 MiniMax Code 原生实例的终止与恢复。"""
+
+    def _source(self, source_id="mmx_minimax_code", **extra):
+        source = {"id": source_id, "type": "minimax_code", "api_base": "http://x"}
+        source.update(extra)
+        return source
+
+    def _entry(self, model, source_id="mmx_minimax_code", **extra):
+        entry = {
+            "id": f"{source_id}/{model}",
+            "enable": True,
+            "provider_source_id": source_id,
+            "model": model,
+            "custom_extra_body": {},
+        }
+        entry.update(extra)
+        return entry
+
+    def _place_stale(self, manager, *entries):
+        stale = [LegacyModuleProviderStub(entry) for entry in entries]
+        for inst in stale:
+            manager.provider_insts.append(inst)
+            manager.inst_map[inst.provider_config["id"]] = inst
+        return stale
+
+    def _save_login(self, plugin, token="a"):
+        from astrbot_plugin_mmx_cli_tool.mmx.oauth import OAuthToken
+
+        plugin._token_store.save(
+            OAuthToken(token, "r", 9e9, region="cn", login_epoch="login-1")
+        )
+
+    async def test_switch_off_replaces_stale_instances_for_custom_source(self):
+        """开关关闭 + 手动自定义源/模型：旧模块残留被终止并按当前模块恢复，配置不动。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    source = self._source("my_own_source")
+                    entry_a = self._entry("MyModel-A", "my_own_source")
+                    entry_b = self._entry("MyModel-B", "my_own_source")
+                    config["provider_sources"].append(source)
+                    config["provider"].extend([entry_a, entry_b])
+                    stale = self._place_stale(manager, entry_a, entry_b)
+                    setattr(manager, main._PROVIDER_HOT_FLAG, True)
+
+                    plugin = main.Main(
+                        context,
+                        {"api_key": ["k"], "auto_create_provider_source": False},
+                    )
+                    self._save_login(plugin, "tok-SUPERSECRET")
+                    await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+
+                    self.assertEqual(plugin._provider_source_state, "disabled")
+                    for inst in stale:
+                        self.assertTrue(inst.terminated)
+                    self.assertIsNot(manager.inst_map.get(entry_a["id"]), stale[0])
+                    self.assertIsNot(manager.inst_map.get(entry_b["id"]), stale[1])
+                    fresh_a = manager.inst_map[entry_a["id"]]
+                    fresh_b = manager.inst_map[entry_b["id"]]
+                    self.assertIsInstance(fresh_a, llm_provider.MiniMaxCodeProvider)
+                    self.assertIsInstance(fresh_b, llm_provider.MiniMaxCodeProvider)
+                    # 新实例读取新模块令牌来源（登录态令牌），不再是旧模块的空令牌
+                    self.assertEqual(fresh_a.get_current_key(), "tok-SUPERSECRET")
+                    self.assertEqual(fresh_b.get_current_key(), "tok-SUPERSECRET")
+                    # 配置不变、不落盘
+                    self.assertEqual(config.saved, 0)
+                    self.assertEqual(config["provider_sources"], [source])
+                    self.assertEqual(config["provider"], [entry_a, entry_b])
+
+    async def test_reload_recovers_user_managed_source(self):
+        """手动创建的同类型默认源：不改配置归属，但旧实例同样被恢复。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    source = self._source()  # 无 managed_by：用户自管
+                    entries = [
+                        self._entry("MiniMax-M3.1-Flash"),
+                        self._entry("MiniMax-M3"),
+                    ]
+                    config["provider_sources"].append(source)
+                    config["provider"].extend(entries)
+                    stale = self._place_stale(manager, *entries)
+                    setattr(manager, main._PROVIDER_HOT_FLAG, True)
+
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    self._save_login(plugin)
+                    await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+
+                    self.assertEqual(plugin._provider_source_state, "user_managed")
+                    self.assertNotIn("managed_by", source)
+                    self.assertEqual(config.saved, 0)
+                    self.assertEqual(config["provider_sources"], [source])
+                    self.assertTrue(all(inst.terminated for inst in stale))
+                    for entry in entries:
+                        self.assertIsInstance(
+                            manager.inst_map[entry["id"]],
+                            llm_provider.MiniMaxCodeProvider,
+                        )
+
+    async def test_cold_start_leaves_loading_to_astrbot(self):
+        """冷启动：ProviderManager 尚未原生加载，插件不抢先加载，无双实例。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    config["provider_sources"].append(self._source())
+                    config["provider"].extend(
+                        [self._entry("MiniMax-M3.1-Flash"), self._entry("MiniMax-M3")]
+                    )
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+
+                    self.assertEqual(manager.provider_insts, [])
+                    self.assertEqual(manager.inst_map, {})
+                    self.assertFalse(getattr(manager, main._PROVIDER_HOT_FLAG, False))
+
+    async def test_hot_recovery_loads_missing_and_skips_healthy(self):
+        """热环境缺失实例补加载；健康且属于当前模块的实例不被重复加载。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    source = self._source(managed_by="astrbot_plugin_mmx_cli_tool")
+                    entry_a = self._entry("MiniMax-M3.1-Flash")
+                    entry_b = self._entry("MiniMax-M3")
+                    config["provider_sources"].append(source)
+                    config["provider"].extend([entry_a, entry_b])
+                    healthy = llm_provider.MiniMaxCodeProvider(dict(entry_a))
+                    manager.provider_insts.append(healthy)
+                    manager.inst_map[entry_a["id"]] = healthy
+                    stale = self._place_stale(manager, entry_b)
+                    setattr(manager, main._PROVIDER_HOT_FLAG, True)
+
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    self._save_login(plugin)
+                    await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+
+                    self.assertTrue(stale[0].terminated)
+                    self.assertIs(manager.inst_map[entry_a["id"]], healthy)
+                    self.assertIsInstance(
+                        manager.inst_map[entry_b["id"]],
+                        llm_provider.MiniMaxCodeProvider,
+                    )
+                    # 再次恢复（登录/区域同步路径）不产生新实例
+                    insts_before = list(manager.provider_insts)
+                    await plugin._recover_provider_instances()
+                    self.assertEqual(manager.provider_insts, insts_before)
+
+    async def test_missing_instances_reloaded_when_config_clean(self):
+        """配置未变但实例缺失（禁用再启用等热重载）时，补加载且不重复落盘。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    config["provider_sources"].append(
+                        self._source(managed_by="astrbot_plugin_mmx_cli_tool")
+                    )
+                    entries = [
+                        self._entry("MiniMax-M3.1-Flash"),
+                        self._entry("MiniMax-M3"),
+                    ]
+                    config["provider"].extend(entries)
+                    setattr(manager, main._PROVIDER_HOT_FLAG, True)
+
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+
+                    self.assertEqual(config.saved, 0)
+                    self.assertEqual(
+                        list(manager.inst_map),
+                        [entry["id"] for entry in entries],
+                    )
+
+    async def test_hot_reload_with_only_minimax_models(self):
+        """只有 MiniMax 模型、没有其他供应商的热重载也能恢复。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    self._save_login(plugin)
+                    await plugin.initialize()  # 冷启动：只写配置
+                    for entry in list(config["provider"]):
+                        await manager.load_provider(dict(entry))  # AstrBot 原生加载
+                    self.assertEqual(len(manager.provider_insts), 2)
+
+                    await plugin.terminate()  # 插件重载：清理全部并打标记
+                    self.assertEqual(manager.provider_insts, [])
+                    self.assertEqual(manager.inst_map, {})
+                    self.assertTrue(getattr(manager, main._PROVIDER_HOT_FLAG, False))
+
+                    plugin2 = main.Main(context, {"api_key": ["k"]})
+                    await plugin2.initialize()
+                    self.addAsyncCleanup(plugin2.terminate)
+                    self.assertEqual(len(manager.provider_insts), 2)
+                    for inst in manager.provider_insts:
+                        self.assertIsInstance(inst, llm_provider.MiniMaxCodeProvider)
+
+    async def test_terminate_clears_all_and_reload_respects_config_changes(self):
+        """terminate 清理全部本类型实例；禁用、改型、已删除条目不被重新加载。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    config["provider_sources"].append(
+                        self._source(managed_by="astrbot_plugin_mmx_cli_tool")
+                    )
+                    entry_on = self._entry("MiniMax-M3.1-Flash")
+                    entry_off = self._entry("MiniMax-M3", enable=False)
+                    entry_changed = self._entry("MiniMax-M3-Lite", "other_src")
+                    config["provider"].extend([entry_on, entry_off, entry_changed])
+                    config["provider_sources"].append(
+                        {"id": "other_src", "type": "openai_chat_completion"}
+                    )
+                    # 改型前遗留的旧实例与已删除条目的残留
+                    legacy_changed = LegacyModuleProviderStub(entry_changed)
+                    legacy_gone = LegacyModuleProviderStub(
+                        self._entry("Gone", "mmx_minimax_code")
+                    )
+                    for inst in (legacy_changed, legacy_gone):
+                        manager.provider_insts.append(inst)
+                        manager.inst_map[inst.provider_config["id"]] = inst
+                    foreign = SimpleNamespace(
+                        provider_config={"id": "other/m", "type": "openai_chat_completion"}
+                    )
+                    manager.provider_insts.append(foreign)
+                    manager.inst_map["other/m"] = foreign
+
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    self._save_login(plugin)
+                    await plugin.initialize()  # 旧模块残留构成热环境：初始化即恢复原生条目
+                    self.assertTrue(await plugin._register_llm_provider())
+
+                    await plugin.terminate()
+                    # 全部本类型实例清理：旧模块残留 + 运行时直注册；其他类型不动
+                    self.assertEqual(
+                        [inst for inst in manager.provider_insts if inst is not foreign],
+                        [],
+                    )
+                    self.assertTrue(legacy_changed.terminated)
+                    self.assertTrue(legacy_gone.terminated)
+                    self.assertTrue(getattr(manager, main._PROVIDER_HOT_FLAG, False))
+
+                    plugin2 = main.Main(context, {"api_key": ["k"]})
+                    await plugin2.initialize()
+                    self.addAsyncCleanup(plugin2.terminate)
+                    # 只恢复启用且仍为 minimax_code 的条目
+                    self.assertEqual(
+                        [
+                            pid
+                            for pid, inst in manager.inst_map.items()
+                            if inst is not foreign
+                        ],
+                        [entry_on["id"]],
+                    )
+
+    async def test_reload_logs_key_events_without_tokens(self):
+        """关键事件有日志（注销/终止/恢复/失败原因/冷启动跳过），且不含令牌。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    cold_context, _, cold_manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    cold_plugin = main.Main(cold_context, {"api_key": ["k"]})
+                    with self.assertLogs("mmx-test", level="DEBUG") as cold_logs:
+                        await cold_plugin.initialize()
+                    self.addAsyncCleanup(cold_plugin.terminate)
+                    self.assertTrue(
+                        any("冷启动" in line for line in cold_logs.output)
+                    )
+
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    config["provider_sources"].append(
+                        self._source(managed_by="astrbot_plugin_mmx_cli_tool")
+                    )
+                    config["provider"].extend(
+                        [
+                            self._entry("MiniMax-M3.1-Flash"),
+                            self._entry("MiniMax-M3"),
+                            self._entry("MiniMax-M3-Lite"),
+                        ]
+                    )
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    self._save_login(plugin, "tok-SUPERSECRET")
+                    with self.assertLogs("mmx-test", level="DEBUG"):
+                        await plugin.initialize()  # 冷启动不加载
+
+                    original_load = manager.load_provider
+
+                    async def failing_load(provider_config):
+                        pid = provider_config["id"]
+                        if pid.endswith("MiniMax-M3"):
+                            raise RuntimeError("boom")
+                        if pid.endswith("MiniMax-M3-Lite"):
+                            return  # 模拟 AstrBot 自身吞掉异常
+                        await original_load(provider_config)
+
+                    manager.load_provider = failing_load
+                    await manager.load_provider(dict(config["provider"][0]))
+                    with self.assertLogs("mmx-test", level="DEBUG") as logs:
+                        await plugin.terminate()
+                        plugin2 = main.Main(context, {"api_key": ["k"]})
+                        await plugin2.initialize()
+                    self.addAsyncCleanup(plugin2.terminate)
+
+                    joined = "\n".join(logs.output)
+                    self.assertIn("已注销 MiniMax Code 供应商适配器", joined)
+                    self.assertIn("已终止 1 个旧 MiniMax Code 供应商实例", joined)
+                    # 失败时不再误报"恢复完成"，计数按实际成功/待重试拆分
+                    self.assertNotIn("恢复完成", joined)
+                    self.assertIn(
+                        "MiniMax Code 实例恢复结果：成功终止 0 个旧实例，"
+                        "成功加载 1 个模型，2 项待重试失败",
+                        joined,
+                    )
+                    self.assertIn("下次同步或重载插件可重试", joined)
+                    self.assertIn("mmx_minimax_code/MiniMax-M3", joined)
+                    self.assertIn("boom", joined)
+                    self.assertIn("mmx_minimax_code/MiniMax-M3-Lite", joined)
+                    self.assertIn("未进入实例表", joined)
+                    self.assertFalse(
+                        any("tok-SUPERSECRET" in line for line in logs.output)
+                    )
+
+    async def test_failed_recovery_keeps_hot_flag_retryable(self):
+        """仅 MiniMax 配置：首次加载失败热标记保留，再次恢复成功才清除，且不落盘。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    config["provider_sources"].append(
+                        self._source(managed_by="astrbot_plugin_mmx_cli_tool")
+                    )
+                    entry = self._entry("MiniMax-M3.1-Flash")
+                    config["provider"].append(entry)
+                    setattr(manager, main._PROVIDER_HOT_FLAG, True)
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    real_load = manager.load_provider
+
+                    async def failing_load(provider_config):
+                        raise RuntimeError("boom")
+
+                    manager.load_provider = failing_load
+                    await plugin._recover_provider_instances()
+                    # 加载失败：热标记保留，下次同步或显式恢复可重试
+                    self.assertTrue(getattr(manager, main._PROVIDER_HOT_FLAG, False))
+                    self.assertEqual(manager.inst_map, {})
+
+                    manager.load_provider = real_load
+                    saved_before = config.saved
+                    await plugin._recover_provider_instances()
+                    self.assertIn(entry["id"], manager.inst_map)
+                    self.assertFalse(getattr(manager, main._PROVIDER_HOT_FLAG, False))
+                    self.assertEqual(config.saved, saved_before)
+
+    async def test_sweep_counts_termination_failures(self):
+        """部分旧实例终止失败：按实际成功/失败计数记录，失败实例保留待下轮清理。"""
+        with provider_stubs():
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, _, manager = make_fake_context()
+                    entry_ok = self._entry("MiniMax-Ok", "src")
+                    entry_bad = self._entry("MiniMax-Bad", "src")
+                    self._place_stale(manager, entry_ok, entry_bad)
+
+                    async def terminate_provider(pid):
+                        if pid == entry_bad["id"]:
+                            raise RuntimeError("boom")
+                        inst = manager.inst_map.pop(pid, None)
+                        if inst in manager.provider_insts:
+                            manager.provider_insts.remove(inst)
+
+                    manager.terminate_provider = terminate_provider
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    with self.assertLogs("mmx-test", level="DEBUG") as logs:
+                        await plugin._sweep_native_provider_instances()
+                    joined = "\n".join(logs.output)
+                    self.assertIn("已终止 1 个旧 MiniMax Code 供应商实例", joined)
+                    self.assertIn("1 个终止失败", joined)
+                    self.assertIn("boom", joined)
+                    self.assertIn(entry_bad["id"], manager.inst_map)
+                    self.assertTrue(getattr(manager, main._PROVIDER_HOT_FLAG, False))
+
+    async def test_disabled_source_models_are_not_reloaded(self):
+        """来源禁用时其模型不补加载；其他启用来源不受影响，配置不改写。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    config["provider_sources"].append(self._source(enable=False))
+                    config["provider_sources"].append(self._source("other_active"))
+                    disabled_entries = [
+                        self._entry("MiniMax-M3.1-Flash"),
+                        self._entry("MiniMax-M3"),
+                    ]
+                    active_entry = self._entry("MyModel-A", "other_active")
+                    config["provider"].extend(disabled_entries + [active_entry])
+                    setattr(manager, main._PROVIDER_HOT_FLAG, True)
+
+                    plugin = main.Main(
+                        context,
+                        {"api_key": ["k"], "auto_create_provider_source": False},
+                    )
+                    self._save_login(plugin)
+                    await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+
+                    self.assertEqual(sorted(manager.inst_map), [active_entry["id"]])
+                    self.assertEqual(config.saved, 0)
+
+    async def test_terminate_without_instances_marks_hot_and_recovers(self):
+        """配置存在但零实例（如上次加载失败）：terminate 也打热标记，重载后恢复。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    config["provider_sources"].append(
+                        self._source(managed_by="astrbot_plugin_mmx_cli_tool")
+                    )
+                    entries = [
+                        self._entry("MiniMax-M3.1-Flash"),
+                        self._entry("MiniMax-M3"),
+                    ]
+                    config["provider"].extend(entries)
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    await plugin.initialize()  # 冷启动：无实例，不加载
+                    self.assertEqual(manager.provider_insts, [])
+
+                    await plugin.terminate()  # 零实例同样打热标记
+                    self.assertTrue(getattr(manager, main._PROVIDER_HOT_FLAG, False))
+
+                    plugin2 = main.Main(context, {"api_key": ["k"]})
+                    await plugin2.initialize()
+                    self.addAsyncCleanup(plugin2.terminate)
+                    self.assertEqual(
+                        sorted(manager.inst_map),
+                        sorted(entry["id"] for entry in entries),
+                    )
+
+    async def test_malformed_provider_config_skips_recovery(self):
+        """provider 配置非列表：告警并跳过恢复，不抛异常、不写配置。"""
+        with provider_stubs():
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context()
+                    config["provider_sources"] = None
+                    setattr(manager, main._PROVIDER_HOT_FLAG, True)
+                    plugin = main.Main(
+                        context,
+                        {"api_key": ["k"], "auto_create_provider_source": False},
+                    )
+                    with self.assertLogs("mmx-test", level="WARNING") as logs:
+                        await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+                    self.assertTrue(
+                        any(
+                            "跳过 MiniMax Code 实例恢复" in line for line in logs.output
+                        )
+                    )
+                    self.assertEqual(manager.provider_insts, [])
+                    self.assertEqual(config.saved, 0)
 
 
 if __name__ == "__main__":
