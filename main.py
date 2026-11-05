@@ -98,6 +98,9 @@ _REFRESH_FATAL_CODES = {
     "unauthorized_client",
 }
 
+#: ProviderManager 上的热重载标记：terminate 打点、initialize 消费（不写入用户配置）
+_PROVIDER_HOT_FLAG = "_mmx_cli_tool_provider_hot"
+
 
 def _clean_display_text(value: object, *, limit: int | None = None) -> str:
     text = str(value or "")
@@ -413,6 +416,7 @@ class Main(star.Star):
                 self._provider_refresh,
                 credentials_getter=self._provider_credentials,
                 region_getter=self._provider_region,
+                effort_getter=self._provider_effort,
             )
         except Exception as e:
             logger.warning(f"[mmx] LLM 运行时来源绑定失败: {e}")
@@ -430,14 +434,22 @@ class Main(star.Star):
             self._key_quota_task.cancel()
             self._key_quota_task = None
         await self._unregister_llm_provider()  # 仅回退路径的运行时实例需要注销
+        await self._sweep_native_provider_instances()
         try:
             from .mmx import llm_provider as _llm_module
-
+        except Exception as e:
+            logger.warning(f"[mmx] 加载 llm_provider 模块失败，跳过供应商注销: {e}")
+        else:
             # 无论是否走过运行时直注册，都清理模块级令牌/模型来源绑定
-            _llm_module.clear_token_source()
-            _llm_module.unregister_provider_adapter_type()
-        except Exception:
-            pass
+            try:
+                _llm_module.clear_token_source()
+            except Exception as e:
+                logger.warning(f"[mmx] 清理模块级令牌来源失败: {e}")
+            try:
+                _llm_module.unregister_provider_adapter_type()
+                logger.info("[mmx] 已注销 MiniMax Code 供应商适配器")
+            except Exception as e:
+                logger.warning(f"[mmx] 注销 MiniMax Code 供应商适配器失败: {e}")
         if self._web_api is not None:
             await self._web_api.close()
         self._service._begin_close()
@@ -626,6 +638,10 @@ class Main(star.Star):
         token = self._token_store.load()
         return token.region if token else ""
 
+    def _provider_effort(self) -> str:
+        """LLM Provider 当前推理档位（工作台实时读取，改档下一请求生效）。"""
+        return self._thinking_effort
+
     async def _provider_refresh(self) -> None:
         """Provider 401 时的强制刷新钩子；失败抛 MiniMaxError 由调用方中止重试。"""
         _, token = await self._refresh_matrix_token()
@@ -658,6 +674,7 @@ class Main(star.Star):
                 self._provider_refresh,
                 credentials_getter=self._provider_credentials,
                 region_getter=self._provider_region,
+                effort_getter=self._provider_effort,
             )
         except Exception as e:
             logger.warning(
@@ -670,6 +687,7 @@ class Main(star.Star):
             auth_refresher=self._provider_refresh,
             credentials_getter=self._provider_credentials,
             region_getter=self._provider_region,
+            effort_getter=self._provider_effort,
         )
         self._llm_provider = provider
         self._llm_provider_login_epoch = token.login_epoch
@@ -708,8 +726,8 @@ class Main(star.Star):
                 p for p in manager.provider_insts if p is not provider
             ]
             manager.inst_map.pop(PROVIDER_ID, None)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[mmx] 注销运行时 LLM Provider 失败: {e}")
 
         self._llm_provider = None
         self._llm_provider_login_epoch = ""
@@ -720,14 +738,15 @@ class Main(star.Star):
             logger.warning(f"[mmx] 关闭旧 LLM Provider 失败: {e}")
 
     async def _sync_provider_source(self) -> None:
-        """按开关同步提供商源；关闭时不触碰配置，占用冲突时退回运行时直注册。"""
+        """按开关同步提供商源；开关只控制配置写入，不影响实例恢复。"""
         if not self._auto_create_provider_source:
             self._provider_source_state = "disabled"
             self._provider_source_warning = ""
-            return
-        await self._ensure_provider_source()
-        if self._provider_source_warning:
-            await self._register_llm_provider()
+        else:
+            await self._ensure_provider_source()
+            if self._provider_source_warning:
+                await self._register_llm_provider()
+        await self._recover_provider_instances()
 
     async def _ensure_provider_source(self) -> None:
         """把 mmx_minimax_code 提供商源与默认模型条目写入 AstrBot 配置。
@@ -834,32 +853,142 @@ class Main(star.Star):
             except Exception as e:
                 logger.warning(f"[mmx] 提供商源配置落盘失败（重启后仍会生效）: {e}")
 
-        # 仅当 AstrBot 已完成原生供应商初始化（配置中已有条目加载进 inst_map）
-        # 才即时补齐/重载；冷启动交给原生 initialize，避免同一模型被加载两次。
-        native_loaded = any(
-            isinstance(p, dict) and p.get("id") in manager.inst_map for p in providers
-        )
-        if not native_loaded:
+
+    async def _sweep_native_provider_instances(self) -> None:
+        """插件卸载/重载时终止并移除全部 MiniMax Code 类型实例。
+
+        运行时直注册实例由 _unregister_llm_provider 处理，其他类型实例不动；
+        发现本类型实例时在 ProviderManager 上打热重载标记，供 initialize 恢复。
+        """
+        try:
+            from .mmx.llm_provider import PROVIDER_TYPE
+
+            manager = self.context.provider_manager
+            insts = list(manager.provider_insts)
+        except Exception as e:
+            logger.warning(f"[mmx] 读取供应商管理器失败，跳过旧 MiniMax Code 实例清理: {e}")
             return
-        for model in DEFAULT_MODELS:
-            entry_id = f"{PROVIDER_SOURCE_ID}/{model}"
-            entry = next(
-                (
-                    p
-                    for p in providers
-                    if isinstance(p, dict) and p.get("id") == entry_id
-                ),
-                None,
+        stale = [
+            inst
+            for inst in insts
+            if inst is not self._llm_provider
+            and isinstance(getattr(inst, "provider_config", None), dict)
+            and inst.provider_config.get("type") == PROVIDER_TYPE
+        ]
+        terminated = 0
+        failed = 0
+        for inst in stale:
+            pid = str(inst.provider_config.get("id") or "")
+            try:
+                await manager.terminate_provider(pid)
+                terminated += 1
+            except Exception as e:
+                failed += 1
+                logger.warning(f"[mmx] 终止旧 MiniMax Code 实例 {pid} 失败: {e}")
+        if stale:
+            setattr(manager, _PROVIDER_HOT_FLAG, True)
+            if failed:
+                logger.info(
+                    f"[mmx] 已终止 {terminated} 个旧 MiniMax Code 供应商实例，"
+                    f"{failed} 个终止失败，重载后自动恢复"
+                )
+            else:
+                logger.info(
+                    f"[mmx] 已终止 {len(stale)} 个旧 MiniMax Code 供应商实例，重载后自动恢复"
+                )
+
+    async def _recover_provider_instances(self) -> None:
+        """热环境（插件重载或登录同步）下恢复 MiniMax Code 原生供应商实例。
+
+        终止旧模块残留实例，按仍启用且类型为 minimax_code 的配置条目补加载；
+        健康且属于当前模块的实例跳过；冷启动交给 AstrBot 原生加载避免双实例。
+        """
+        try:
+            from .mmx.llm_provider import PROVIDER_TYPE, MiniMaxCodeProvider
+        except ImportError:
+            return
+        try:
+            manager = self.context.provider_manager
+            config = self.context.get_config()
+            hot = getattr(manager, _PROVIDER_HOT_FLAG, False) or bool(
+                manager.provider_insts or manager.inst_map
             )
-            if entry is None or not entry.get("enable", True):
+        except Exception as e:
+            logger.warning(f"[mmx] 读取供应商配置失败，跳过 MiniMax Code 实例恢复: {e}")
+            return
+        if not hot:
+            logger.debug("[mmx] 冷启动：MiniMax Code 实例交由 AstrBot 原生加载")
+            return
+        retryable = False
+        source_types = {
+            source.get("id"): source.get("type")
+            for source in config.get("provider_sources", [])
+            if isinstance(source, dict)
+        }
+        entries = [
+            entry
+            for entry in config.get("provider", [])
+            if isinstance(entry, dict)
+            and source_types.get(entry.get("provider_source_id")) == PROVIDER_TYPE
+        ]
+        stale = [
+            inst
+            for inst in list(manager.provider_insts)
+            if inst is not self._llm_provider
+            and isinstance(getattr(inst, "provider_config", None), dict)
+            and inst.provider_config.get("type") == PROVIDER_TYPE
+            and not isinstance(inst, MiniMaxCodeProvider)
+        ]
+        terminated = 0
+        terminated_failed = 0
+        for inst in stale:
+            pid = str(inst.provider_config.get("id") or "")
+            try:
+                await manager.terminate_provider(pid)
+                terminated += 1
+            except Exception as e:
+                terminated_failed += 1
+                retryable = True
+                logger.warning(f"[mmx] 终止旧 MiniMax Code 实例 {pid} 失败: {e}")
+        loaded = 0
+        load_failed = 0
+        for entry in entries:
+            pid = str(entry.get("id") or "")
+            if not entry.get("enable", True):
                 continue
-            if entry_id in manager.inst_map:
-                # 已加载：区域由实例按登录态动态跟随，无需重载
+            if isinstance(manager.inst_map.get(pid), MiniMaxCodeProvider):
                 continue
             try:
                 await manager.load_provider(dict(entry))
             except Exception as e:
-                logger.warning(f"[mmx] 模型 {model} 即时加载失败（重启后生效）: {e}")
+                load_failed += 1
+                retryable = True
+                logger.warning(
+                    f"[mmx] 恢复 MiniMax Code 模型 {pid} 失败"
+                    f"（下次同步或重载插件可重试）: {e}"
+                )
+                continue
+            if pid not in manager.inst_map:
+                load_failed += 1
+                retryable = True
+                logger.warning(f"[mmx] 模型 {pid} 加载后未进入实例表（可能被 AstrBot 跳过）")
+                continue
+            loaded += 1
+        pending = terminated_failed + load_failed
+        if pending:
+            logger.warning(
+                f"[mmx] MiniMax Code 实例恢复结果：成功终止 {terminated} 个旧实例，"
+                f"成功加载 {loaded} 个模型，{pending} 项待重试失败"
+            )
+        elif stale or loaded:
+            logger.info(
+                f"[mmx] MiniMax Code 实例恢复完成：终止 {len(stale)} 个旧实例，"
+                f"加载 {loaded} 个模型"
+            )
+        else:
+            logger.debug("[mmx] MiniMax Code 实例均为最新，无需恢复")
+        # 有待恢复失败项时保留热标记，下次同步或显式恢复可重试
+        setattr(manager, _PROVIDER_HOT_FLAG, retryable)
 
     async def _auto_signin_loop(self) -> None:
         """自动签到：启动即巡检一次，此后每 30 分钟一次；上游按天幂等，本地仅省调用。"""

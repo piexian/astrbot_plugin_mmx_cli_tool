@@ -41,7 +41,7 @@
     "type": "string",
     "options": ["default", "low", "medium", "high", "xhigh", "max"],
     "default": "default",
-    "hint": "只是记录你在 MCode 工作台里选的档位，不会改变发给 MiniMax 的请求。"
+    "hint": "MiniMax-M3.1-Flash 按这个档位实际发送推理强度（请求里的 output_config.effort）；MiniMax-M3 只有思考开/关，不受档位影响。"
   },
   "allow_astrbot_temp_dir": {
     "description": "允许读取 AstrBot 临时目录",

@@ -166,6 +166,10 @@ AI 在对话中可以自动调用下面 17 个工具。
 > [!WARNING]
 > 卸载插件前，请先删除所有 MiniMax Code 类型的提供商源及其模型，否则 AstrBot 重启时会报找不到 `minimax_code` 适配器。
 
+插件重载不会使 MiniMax Code 模型失效：重载或重新登录后，插件会自动终止旧实例并按当前配置恢复（包括手动创建的源和自定义模型 ID）；冷启动仍由 AstrBot 正常加载。`auto_create_provider_source` 只控制是否自动写入提供商源配置，已手动添加的源不受影响。
+
+推理档位说明：MiniMax-M3.1-Flash 按 `thinking_effort` 发送 `output_config.effort`（默认 `default`）。想固定档位，可在提供商源模型的 `custom_extra_body` 里写 `{"output_config": {"effort": "high"}}`（优先级最高）；旧写法 `{"reasoning_effort": "high"}` 仍兼容，会按同档位发送且不再出现在请求里。MiniMax-M3 只有思考开/关：默认开（发送 `thinking: {"type": "adaptive"}`），在 `custom_extra_body` 里写 `{"thinking": {"type": "disabled"}}` 可关闭；档位对 M3 不生效。
+
 每个 AstrBot 会话对应各自的 MiniMax Code 会话；换另一个账号重新登录后，不会沿用旧会话。提供商源里填的 `custom_headers` 不会被发送。
 
 签到和积分：
@@ -183,7 +187,7 @@ AI 在对话中可以自动调用下面 17 个工具。
 
 | 面板 | 能做什么 |
 |------|----------|
-| 顶部状态栏 | 看当前区域、凭据、模型，并选择推理强度档位（保存到配置项 `thinking_effort`） |
+| 顶部状态栏 | 看当前区域、凭据、模型，并选择推理强度档位（对 MiniMax-M3.1-Flash 生效，保存到配置项 `thinking_effort`） |
 | 额度侧栏 | 查看额度和账户余额，多个 Key 会合并统计 |
 | 扫码登录 | 在页面里登录账号，效果和 `/mmx login` 一样，两边共用同一份登录状态 |
 | 无限画布 | 在画布上摆放图片并做批注，批注会交给视觉理解模型分析 |
@@ -208,7 +212,7 @@ AI 在对话中可以自动调用下面 17 个工具。
 | `timeout` | 整数 | `300` | 请求超时（秒），经常超时可以调大 |
 | `auto_create_provider_source` | 布尔 | `true` | 是否自动创建 MiniMax Code 提供商源；想手动添加就关掉 |
 | `auto_signin` | 布尔 | `false` | 想每天自动签到就打开，需先登录 |
-| `thinking_effort` | 字符串 | `default` | 工作台里的推理强度档位，可选 `default`、`low`、`medium`、`high`、`xhigh`、`max`，只是记录偏好，不影响请求 |
+| `thinking_effort` | 字符串 | `default` | 工作台里的推理强度档位，可选 `default`、`low`、`medium`、`high`、`xhigh`、`max`，对 MiniMax-M3.1-Flash 实际生效（发送 `output_config.effort`）；MiniMax-M3 只有思考开/关，不受档位影响，见「MiniMax Code 对话与签到」 |
 | `allow_astrbot_temp_dir` | 布尔 | `true` | 是否允许读取 AstrBot 临时目录；想更安全就关掉，代价见下面的「安全说明」 |
 | `video_poll_interval` | 整数 | `5` | 生成视频时查进度的间隔（秒） |
 | `video_timeout` | 整数 | `600` | 等待视频生成的最长时间（秒）；超时后只是不再等，视频仍在后台生成，会告诉你任务编号 |

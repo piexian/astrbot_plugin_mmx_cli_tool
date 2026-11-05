@@ -1,6 +1,12 @@
 # 更新日志
 
 
+## 0.7.3 - 2026-11-05
+
+- 修复插件重载后 MiniMax Code 供应商实例失效（残留旧实例读到空令牌而 401）：重载或重新登录时自动终止旧模块实例并按当前配置恢复，覆盖手动创建的源与自定义模型 ID；`auto_create_provider_source` 只控制配置写入，关闭后实例恢复同样生效；冷启动仍由 AstrBot 原生加载，不重复创建。
+- MiniMax Code 请求参数对齐桌面端 3.1.6：`thinking_effort` 对 MiniMax-M3.1-Flash 实际生效（发送 `output_config.effort`，默认 `default`，不再发送 `thinking`）；旧配置 `custom_extra_body` 的 `reasoning_effort` 自动映射为同档位，显式 `output_config.effort` 优先；MiniMax-M3 默认发送思考开启（`adaptive`），显式 `disabled` 可关闭，档位对 M3 不生效。
+- 实例终止与恢复过程记录关键日志（注销适配器、终止/加载实例数、失败原因），不输出令牌。
+
 ## 0.7.2 - 2026-11-03
 
 - MiniMax Code 请求区域改为实时跟随 `/mmx login` 的登录区域：手动新增的提供商源不再固定走国内站，切换区域无需重载；提供商源不再写入 `region`，旧配置中的该字段被忽略；未登录时兜底国内站。
