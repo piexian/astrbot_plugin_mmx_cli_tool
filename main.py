@@ -858,7 +858,7 @@ class Main(star.Star):
         """插件卸载/重载时终止并移除全部 MiniMax Code 类型实例。
 
         运行时直注册实例由 _unregister_llm_provider 处理，其他类型实例不动；
-        发现本类型实例时在 ProviderManager 上打热重载标记，供 initialize 恢复。
+        每次成功读取 ProviderManager 都打热重载标记，供 initialize 恢复（含零实例）。
         """
         try:
             from .mmx.llm_provider import PROVIDER_TYPE
@@ -885,8 +885,10 @@ class Main(star.Star):
             except Exception as e:
                 failed += 1
                 logger.warning(f"[mmx] 终止旧 MiniMax Code 实例 {pid} 失败: {e}")
+        # 热标记不依赖 stale：上次加载失败或实例已被移除时，重载后同样要按
+        # 配置补加载；真正冷启动由 initialize 时无任何实例的判据区分
+        setattr(manager, _PROVIDER_HOT_FLAG, True)
         if stale:
-            setattr(manager, _PROVIDER_HOT_FLAG, True)
             if failed:
                 logger.info(
                     f"[mmx] 已终止 {terminated} 个旧 MiniMax Code 供应商实例，"
@@ -900,8 +902,8 @@ class Main(star.Star):
     async def _recover_provider_instances(self) -> None:
         """热环境（插件重载或登录同步）下恢复 MiniMax Code 原生供应商实例。
 
-        终止旧模块残留实例，按仍启用且类型为 minimax_code 的配置条目补加载；
-        健康且属于当前模块的实例跳过；冷启动交给 AstrBot 原生加载避免双实例。
+        终止旧模块残留实例，按启用的 minimax_code 来源下仍启用的模型条目补加载
+        （来源禁用或配置格式异常时跳过）；健康实例跳过；冷启动交给 AstrBot 原生加载。
         """
         try:
             from .mmx.llm_provider import PROVIDER_TYPE, MiniMaxCodeProvider
@@ -920,16 +922,29 @@ class Main(star.Star):
             logger.debug("[mmx] 冷启动：MiniMax Code 实例交由 AstrBot 原生加载")
             return
         retryable = False
-        source_types = {
-            source.get("id"): source.get("type")
-            for source in config.get("provider_sources", [])
-            if isinstance(source, dict)
-        }
+        provider_sources = config.get("provider_sources")
+        provider_entries = config.get("provider")
+        if not isinstance(provider_sources, list) or not isinstance(
+            provider_entries, list
+        ):
+            logger.warning(
+                "[mmx] provider 配置格式异常（应为列表），跳过 MiniMax Code 实例恢复"
+            )
+            return
+        source_types = {}
+        disabled_sources = set()
+        for source in provider_sources:
+            if not isinstance(source, dict):
+                continue
+            source_types[source.get("id")] = source.get("type")
+            if source.get("enable", True) is False:
+                disabled_sources.add(source.get("id"))
         entries = [
             entry
-            for entry in config.get("provider", [])
+            for entry in provider_entries
             if isinstance(entry, dict)
             and source_types.get(entry.get("provider_source_id")) == PROVIDER_TYPE
+            and entry.get("provider_source_id") not in disabled_sources
         ]
         stale = [
             inst

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -20,6 +21,8 @@ from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
 from .endpoints import MATRIX_BASES
 from .errors import ErrorCategory, MiniMaxError
 
+
+logger = logging.getLogger(__name__)
 #: 供应商实例 ID（WebUI 会话/Agent 设置中按此选择）
 PROVIDER_ID = "mmx_minimax_code"
 PROVIDER_TYPE = "minimax_code"
@@ -312,11 +315,21 @@ class MiniMaxCodeProvider(ProviderAnthropic):
             legacy_effort = str(
                 extra_body.pop("reasoning_effort", "") or ""
             ).strip().lower()
-            if legacy_effort in _EFFORT_LEVELS:
-                self._legacy_effort = legacy_effort
+            if legacy_effort:
+                # 非法旧别名告警并固定 default：不透传，也不向工作台档位滑落
+                self._legacy_effort = self._validated_effort(
+                    legacy_effort, provider_config.get("id"), model_name
+                )
             output_config = extra_body.pop("output_config", None)
             if isinstance(output_config, dict):
                 self._explicit_output_config = dict(output_config)
+                if "effort" in self._explicit_output_config:
+                    # 非法显式档位告警并固定 default，其余键原样保留
+                    self._explicit_output_config["effort"] = self._validated_effort(
+                        self._explicit_output_config["effort"],
+                        provider_config.get("id"),
+                        model_name,
+                    )
             thinking = extra_body.pop("thinking", None)
             if isinstance(thinking, dict):
                 self._explicit_thinking = dict(thinking)
@@ -551,8 +564,23 @@ class MiniMaxCodeProvider(ProviderAnthropic):
 
     # ---- 请求参数（M3.1 effort 档位 / M3 thinking 开关） ----
 
+    @staticmethod
+    def _validated_effort(raw: Any, provider_id: Any, model: Any) -> str:
+        """显式档位校验：合法返回归一化小写；非法告警并回退推荐档位 default。"""
+        effort = str(raw or "").strip().lower()
+        if effort in _EFFORT_LEVELS:
+            return effort
+        logger.warning(
+            f"[mmx] Provider {provider_id} 模型 {model} 的推理档位类型无效"
+            f"（{type(raw).__name__}），已回退 default"
+        )
+        return "default"
+
     def _resolve_effort(self) -> str:
-        """M3.1 最终档位：显式 output_config > reasoning_effort 旧别名 > 工作台 > default。"""
+        """M3.1 最终档位：显式 output_config > reasoning_effort 旧别名 > 工作台 > default。
+
+        显式档位构造时已校验：非法值告警并固定 default，不向低优先级滑落。
+        """
         if self._explicit_output_config is not None and (
             "effort" in self._explicit_output_config
         ):
@@ -567,10 +595,15 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         model = str(self.get_model() or "").strip().lower()
         if model not in (_EFFORT_MODEL, _SWITCH_MODEL):
             return
-        if self.thinking_config:
-            # 显式 anth_thinking_config：保持 AstrBot 原生优先级
-            return
         if model == _EFFORT_MODEL:
+            if self.thinking_config:
+                # 显式 anth_thinking_config：先恢复非冲突显式字段再交基类，
+                # native thinking/effort 由基类应用并覆盖显式档位
+                if self._explicit_output_config is not None:
+                    payloads["output_config"] = dict(self._explicit_output_config)
+                elif self._legacy_effort:
+                    payloads["output_config"] = {"effort": self._legacy_effort}
+                return
             payloads.pop("thinking", None)
             if self._explicit_thinking is not None:
                 payloads["thinking"] = dict(self._explicit_thinking)
@@ -582,8 +615,12 @@ class MiniMaxCodeProvider(ProviderAnthropic):
             output_config["effort"] = self._resolve_effort()
             payloads["output_config"] = output_config
             return
-        # M3：二值开关，不吃工作台档位
+        # M3：二值开关，不吃工作台档位，也不发送档位字段
         payloads.pop("output_config", None)
+        if self.thinking_config:
+            # 显式 anth_thinking_config：native thinking 交基类应用；
+            # 显式 thinking/output_config 对 M3 均为冲突字段，不恢复
+            return
         if self._explicit_thinking is not None:
             payloads["thinking"] = dict(self._explicit_thinking)
         elif not isinstance(payloads.get("thinking"), dict):

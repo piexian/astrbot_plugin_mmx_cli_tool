@@ -749,13 +749,21 @@ class PayloadPreparationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("reasoning_effort", captured["extra_body"])
         self.assertNotIn("reasoning_effort", final)
 
-        # 无效别名不透传：回退工作台档位
-        provider = self._config_provider(
-            {"id": "legacy-invalid", "custom_extra_body": {"reasoning_effort": "ultra"}}
-        )
+        # 无效别名：告警并固定 default，不向工作台档位滑落
+        self.effort_holder["value"] = "high"
+        invalid_cfg = {
+            "id": "legacy-invalid",
+            "custom_extra_body": {"reasoning_effort": "ultra"},
+        }
+        with self.assertLogs("astrbot_plugin_mmx_cli_tool", level="WARNING") as logs:
+            provider = self._config_provider(invalid_cfg)
         final, captured = await self._captured_final(provider)
         self.assertEqual(final["output_config"], {"effort": "default"})
         self.assertNotIn("reasoning_effort", captured["extra_body"])
+        joined = "\n".join(logs.output)
+        self.assertIn("已回退 default", joined)
+        self.assertNotIn("ultra", joined)
+        self.assertNotIn("tok-", joined)
 
     async def test_explicit_output_config_wins_and_other_fields_pass_through(self):
         provider = self._config_provider(
@@ -888,6 +896,60 @@ class PayloadPreparationTests(unittest.IsolatedAsyncioTestCase):
         finals = await asyncio.gather(*(self._captured_final(p) for p in peers))
         efforts = sorted(item[0]["output_config"]["effort"] for item in finals)
         self.assertEqual(efforts, ["high", "low"])
+
+    async def test_invalid_explicit_effort_warns_and_pins_default(self):
+        """非法显式档位：告警并固定 default，不滑落到旧别名或工作台档位。"""
+        self.effort_holder["value"] = "xhigh"
+        invalid_cfg = {
+            "id": "invalid-effort",
+            "custom_extra_body": {
+                "output_config": {"effort": "ultra", "keep": 1},
+                "reasoning_effort": "max",
+            },
+        }
+        with self.assertLogs("astrbot_plugin_mmx_cli_tool", level="WARNING") as logs:
+            provider = self._config_provider(invalid_cfg)
+        final, captured = await self._captured_final(provider)
+        self.assertEqual(final["output_config"], {"keep": 1, "effort": "default"})
+        self.assertNotIn("reasoning_effort", captured["extra_body"])
+        joined = "\n".join(logs.output)
+        self.assertIn("invalid-effort", joined)
+        self.assertIn("已回退 default", joined)
+        self.assertNotIn("ultra", joined)
+        self.assertNotIn("tok-", joined)
+
+    async def test_anth_thinking_config_restores_explicit_fields(self):
+        """显式 thinking_config 组合：非冲突显式字段恢复，native thinking/effort 优先。"""
+        self.effort_holder["value"] = "max"  # 工作台档位在 native 分支不参与
+        provider = self._config_provider(
+            {
+                "id": "native-mix",
+                "anth_thinking_config": {"type": "adaptive", "effort": "high"},
+                "custom_extra_body": {
+                    "output_config": {"effort": "xhigh", "keep": 1},
+                    "thinking": {"type": "disabled"},
+                },
+            }
+        )
+        final, captured = await self._captured_final(provider)
+        self.assertEqual(final["thinking"], {"type": "adaptive"})
+        self.assertEqual(final["output_config"], {"keep": 1, "effort": "high"})
+        self.assertNotIn("thinking", captured["extra_body"])
+        final_stream, _ = await self._captured_final(provider, stream=True)
+        self.assertEqual(final_stream["thinking"], {"type": "adaptive"})
+        self.assertEqual(final_stream["output_config"], {"keep": 1, "effort": "high"})
+
+        # native 未定义 effort：显式档位（非冲突）保留，工作台仍不参与
+        provider2 = self._config_provider(
+            {
+                "id": "native-no-effort",
+                "anth_thinking_config": {"type": "adaptive"},
+                "custom_extra_body": {"output_config": {"effort": "low"}},
+            }
+        )
+        final2, _ = await self._captured_final(provider2)
+        self.assertEqual(final2["thinking"], {"type": "adaptive"})
+        self.assertEqual(final2["output_config"], {"effort": "low"})
 
 
 class AdapterRegistrationTests(unittest.TestCase):
@@ -1871,6 +1933,89 @@ class ProviderReloadRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("boom", joined)
                     self.assertIn(entry_bad["id"], manager.inst_map)
                     self.assertTrue(getattr(manager, main._PROVIDER_HOT_FLAG, False))
+
+    async def test_disabled_source_models_are_not_reloaded(self):
+        """来源禁用时其模型不补加载；其他启用来源不受影响，配置不改写。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    config["provider_sources"].append(self._source(enable=False))
+                    config["provider_sources"].append(self._source("other_active"))
+                    disabled_entries = [
+                        self._entry("MiniMax-M3.1-Flash"),
+                        self._entry("MiniMax-M3"),
+                    ]
+                    active_entry = self._entry("MyModel-A", "other_active")
+                    config["provider"].extend(disabled_entries + [active_entry])
+                    setattr(manager, main._PROVIDER_HOT_FLAG, True)
+
+                    plugin = main.Main(
+                        context,
+                        {"api_key": ["k"], "auto_create_provider_source": False},
+                    )
+                    self._save_login(plugin)
+                    await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+
+                    self.assertEqual(sorted(manager.inst_map), [active_entry["id"]])
+                    self.assertEqual(config.saved, 0)
+
+    async def test_terminate_without_instances_marks_hot_and_recovers(self):
+        """配置存在但零实例（如上次加载失败）：terminate 也打热标记，重载后恢复。"""
+        with provider_stubs() as (llm_provider, _):
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context(
+                        provider_module=llm_provider
+                    )
+                    config["provider_sources"].append(
+                        self._source(managed_by="astrbot_plugin_mmx_cli_tool")
+                    )
+                    entries = [
+                        self._entry("MiniMax-M3.1-Flash"),
+                        self._entry("MiniMax-M3"),
+                    ]
+                    config["provider"].extend(entries)
+                    plugin = main.Main(context, {"api_key": ["k"]})
+                    await plugin.initialize()  # 冷启动：无实例，不加载
+                    self.assertEqual(manager.provider_insts, [])
+
+                    await plugin.terminate()  # 零实例同样打热标记
+                    self.assertTrue(getattr(manager, main._PROVIDER_HOT_FLAG, False))
+
+                    plugin2 = main.Main(context, {"api_key": ["k"]})
+                    await plugin2.initialize()
+                    self.addAsyncCleanup(plugin2.terminate)
+                    self.assertEqual(
+                        sorted(manager.inst_map),
+                        sorted(entry["id"] for entry in entries),
+                    )
+
+    async def test_malformed_provider_config_skips_recovery(self):
+        """provider 配置非列表：告警并跳过恢复，不抛异常、不写配置。"""
+        with provider_stubs():
+            with tempfile.TemporaryDirectory() as tmp:
+                with plugin_modules(Path(tmp)) as (main, _):
+                    context, config, manager = make_fake_context()
+                    config["provider_sources"] = None
+                    setattr(manager, main._PROVIDER_HOT_FLAG, True)
+                    plugin = main.Main(
+                        context,
+                        {"api_key": ["k"], "auto_create_provider_source": False},
+                    )
+                    with self.assertLogs("mmx-test", level="WARNING") as logs:
+                        await plugin.initialize()
+                    self.addAsyncCleanup(plugin.terminate)
+                    self.assertTrue(
+                        any(
+                            "跳过 MiniMax Code 实例恢复" in line for line in logs.output
+                        )
+                    )
+                    self.assertEqual(manager.provider_insts, [])
+                    self.assertEqual(config.saved, 0)
 
 
 if __name__ == "__main__":
