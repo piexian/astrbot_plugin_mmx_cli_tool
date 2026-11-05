@@ -16,7 +16,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from support import plugin_modules
+from support import plugin_modules, test_logger
 
 
 class ProviderMetaStub:
@@ -184,10 +184,12 @@ def provider_stubs():
     anthropic_mod._base_client = anthropic_base_client
     names = (
         "astrbot",
+        "astrbot.api",
         "astrbot.core",
         "astrbot.core.provider",
     )
     modules = {name: ModuleType(name) for name in names}
+    modules["astrbot.api"].logger = test_logger
     modules.update(
         {
             "astrbot.core.provider.entities": entities,
@@ -755,7 +757,7 @@ class PayloadPreparationTests(unittest.IsolatedAsyncioTestCase):
             "id": "legacy-invalid",
             "custom_extra_body": {"reasoning_effort": "ultra"},
         }
-        with self.assertLogs("astrbot_plugin_mmx_cli_tool", level="WARNING") as logs:
+        with self.assertLogs("mmx-test", level="WARNING") as logs:
             provider = self._config_provider(invalid_cfg)
         final, captured = await self._captured_final(provider)
         self.assertEqual(final["output_config"], {"effort": "default"})
@@ -907,7 +909,7 @@ class PayloadPreparationTests(unittest.IsolatedAsyncioTestCase):
                 "reasoning_effort": "max",
             },
         }
-        with self.assertLogs("astrbot_plugin_mmx_cli_tool", level="WARNING") as logs:
+        with self.assertLogs("mmx-test", level="WARNING") as logs:
             provider = self._config_provider(invalid_cfg)
         final, captured = await self._captured_final(provider)
         self.assertEqual(final["output_config"], {"keep": 1, "effort": "default"})

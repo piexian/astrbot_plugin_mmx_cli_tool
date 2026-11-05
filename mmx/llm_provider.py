@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -15,6 +14,7 @@ from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlsplit
 
+from astrbot.api import logger
 from astrbot.core.provider.entities import ProviderMeta, ProviderType
 from astrbot.core.provider.sources.anthropic_source import ProviderAnthropic
 
@@ -22,7 +22,6 @@ from .endpoints import MATRIX_BASES
 from .errors import ErrorCategory, MiniMaxError
 
 
-logger = logging.getLogger(__name__)
 #: 供应商实例 ID（WebUI 会话/Agent 设置中按此选择）
 PROVIDER_ID = "mmx_minimax_code"
 PROVIDER_TYPE = "minimax_code"

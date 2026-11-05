@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import logging
 import sys
@@ -11,6 +12,55 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+def _dotted_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
+def validate_runtime_loggers(root: Path):
+    """禁止被测插件运行时代码绕过 AstrBot 自建 logger。"""
+    files = [root / "main.py"]
+    for directory in ("mmx", "tools"):
+        files.extend(sorted((root / directory).rglob("*.py")))
+
+    for path in files:
+        if not path.is_file():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            reason = ""
+            call_name = _dotted_name(node.func) if isinstance(node, ast.Call) else ""
+            if isinstance(node, ast.Import):
+                names = [
+                    alias.name
+                    for alias in node.names
+                    if alias.name.split(".")[0] in {"logging", "loguru"}
+                ]
+                if names:
+                    reason = f"导入 {', '.join(names)}"
+            elif isinstance(node, ast.ImportFrom) and (
+                (node.module or "").split(".")[0] in {"logging", "loguru"}
+            ):
+                reason = f"导入 {node.module}"
+            elif call_name.split(".")[-1] in {"getLogger", "GetLogger", "Logger"}:
+                reason = f"调用 {call_name}"
+
+            if reason:
+                relative = path.relative_to(root)
+                raise AssertionError(
+                    f"{relative}:{node.lineno} 禁止自建 logger（{reason}）；"
+                    "请使用 from astrbot.api import logger"
+                )
+
+
+validate_runtime_loggers(Path(__file__).resolve().parents[1])
+test_logger = logging.getLogger("mmx-test")
+
 
 
 class Tool:
@@ -205,7 +255,7 @@ def plugin_modules(root: Path):
     modules = {name: ModuleType(name) for name in names}
     api = modules["astrbot.api"]
     api.FunctionTool = Tool
-    api.logger = logging.getLogger("mmx-test")
+    api.logger = test_logger
     api.AstrBotConfig = dict
     api.star = SimpleNamespace(Star=Star, Context=object)
     modules["astrbot.api.event"].AstrMessageEvent = Event
