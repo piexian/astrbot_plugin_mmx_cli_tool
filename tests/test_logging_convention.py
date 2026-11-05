@@ -17,12 +17,12 @@ class LoggerConventionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "main.py").write_text(
-                "from astrbot.api import logger\nlogger.info('ok')\n",
+                "from astrbot.api import AstrBotConfig, logger\nlogger.info('ok')\n",
                 encoding="utf-8",
             )
             validate_runtime_loggers(root)
 
-    def test_rejects_custom_logger_factories(self):
+    def test_rejects_every_non_whitelisted_logger_source(self):
         cases = {
             "logging_module": "import logging\nlogger = logging.getLogger(__name__)",
             "logging_import": "from logging import getLogger\nlogger = getLogger(__name__)",
@@ -32,13 +32,22 @@ class LoggerConventionTests(unittest.TestCase):
                 "logger = LogManager.GetLogger('mmx')"
             ),
             "direct_logger": "logger = Logger('mmx')",
+            "custom_factory": "logger = make_custom_sink()",
+            "custom_log_name": "log = make_custom_sink()",
+            "other_module": "from other import logger",
+            "aliased_api": "from astrbot.api import logger as custom_logger",
+            "missing_import": "logger.warning('bad')",
+            "instance_logger": "self.logger = make_custom_sink()",
+            "unbound_factory": "import logging\nlogging.getLogger('x').warning('bad')",
         }
         for name, source in cases.items():
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / "mmx").mkdir()
                 (root / "mmx" / "bad.py").write_text(source, encoding="utf-8")
-                with self.assertRaisesRegex(AssertionError, "禁止自建 logger"):
+                with self.assertRaisesRegex(
+                    AssertionError, "只允许 from astrbot.api import logger"
+                ):
                     validate_runtime_loggers(root)
 
 

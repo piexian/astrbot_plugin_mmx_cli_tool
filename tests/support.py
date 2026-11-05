@@ -13,17 +13,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-def _dotted_name(node):
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted_name(node.value)
-        return f"{parent}.{node.attr}" if parent else node.attr
-    return ""
+
+def _is_logger_name(name: str) -> bool:
+    normalized = name.lower()
+    return normalized in {"log", "logger"} or normalized.endswith(("logger", "_log"))
 
 
 def validate_runtime_loggers(root: Path):
-    """禁止被测插件运行时代码绕过 AstrBot 自建 logger。"""
+    """运行时代码的 logger 只能来自唯一白名单入口。"""
     files = [root / "main.py"]
     for directory in ("mmx", "tools"):
         files.extend(sorted((root / directory).rglob("*.py")))
@@ -32,29 +29,49 @@ def validate_runtime_loggers(root: Path):
         if not path.is_file():
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            reason = ""
-            call_name = _dotted_name(node.func) if isinstance(node, ast.Call) else ""
-            if isinstance(node, ast.Import):
-                names = [
-                    alias.name
-                    for alias in node.names
-                    if alias.name.split(".")[0] in {"logging", "loguru"}
-                ]
-                if names:
-                    reason = f"导入 {', '.join(names)}"
-            elif isinstance(node, ast.ImportFrom) and (
-                (node.module or "").split(".")[0] in {"logging", "loguru"}
-            ):
-                reason = f"导入 {node.module}"
-            elif call_name.split(".")[-1] in {"getLogger", "GetLogger", "Logger"}:
-                reason = f"调用 {call_name}"
+        allowed = any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "astrbot.api"
+            and any(
+                alias.name == "logger" and alias.asname is None
+                for alias in node.names
+            )
+            for node in ast.walk(tree)
+        )
 
-            if reason:
+        for node in ast.walk(tree):
+            invalid = False
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    if not _is_logger_name(alias.name) and not _is_logger_name(
+                        alias.asname or ""
+                    ):
+                        continue
+                    if (
+                        isinstance(node, ast.ImportFrom)
+                        and node.module == "astrbot.api"
+                        and alias.name == "logger"
+                        and alias.asname is None
+                    ):
+                        continue
+                    invalid = True
+                    break
+            elif isinstance(node, ast.Name) and _is_logger_name(node.id):
+                invalid = isinstance(node.ctx, ast.Store) or not allowed
+            elif isinstance(node, ast.Attribute) and _is_logger_name(node.attr):
+                invalid = True
+            elif isinstance(node, ast.arg) and _is_logger_name(node.arg):
+                invalid = True
+            elif isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ) and _is_logger_name(node.name):
+                invalid = True
+
+            if invalid:
                 relative = path.relative_to(root)
                 raise AssertionError(
-                    f"{relative}:{node.lineno} 禁止自建 logger（{reason}）；"
-                    "请使用 from astrbot.api import logger"
+                    f"{relative}:{node.lineno} logger 入口不在白名单；"
+                    "只允许 from astrbot.api import logger"
                 )
 
 
