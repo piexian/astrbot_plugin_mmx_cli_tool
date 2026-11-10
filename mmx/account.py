@@ -346,7 +346,7 @@ class MiniMaxCodeAccount:
     async def remains(self, group_id: str = "") -> dict[str, Any]:
         """套餐余量（open platform，仅 Bearer + X-Group-Id，无签名）。
 
-        X-Group-Id 可为空，走默认个人分组；usage_count 实为剩余次数。
+        X-Group-Id 可为空，走默认个人分组；usage_count 实为剩余次数；query 带 business=Agent&device_platform=desktop（对齐桌面端 3.1.14）。
         """
         region, token = await self._creds_getter()
         if not token:
@@ -355,7 +355,8 @@ class MiniMaxCodeAccount:
         try:
             return await self._send(
                 "GET",
-                f"{origin}/v1/api/openplatform/coding_plan/remains",
+                f"{origin}/v1/api/openplatform/coding_plan/remains"
+                "?business=Agent&device_platform=desktop",
                 headers={
                     "Accept": "application/json",
                     "X-Group-Id": group_id.strip(),
@@ -374,7 +375,8 @@ class MiniMaxCodeAccount:
             origin = _OPEN_ORIGINS.get(region, _OPEN_ORIGINS["cn"])
             return await self._send(
                 "GET",
-                f"{origin}/v1/api/openplatform/coding_plan/remains",
+                f"{origin}/v1/api/openplatform/coding_plan/remains"
+                "?business=Agent&device_platform=desktop",
                 headers={
                     "Accept": "application/json",
                     "X-Group-Id": group_id.strip(),

@@ -311,7 +311,12 @@ class Main(star.Star):
             extra_allowed_dirs=self._extra_dirs,
         )
 
-        self._image = ImageAPI(self._client)
+        self._image = ImageAPI(
+            self._client,
+            self._matrix,
+            self._oauth_available,
+            self._default_image_model,
+        )
         self._video = VideoAPI(self._client)
         self._search = SearchAPI(self._client)
         self._vision = VisionAPI(self._client)
@@ -342,7 +347,6 @@ class Main(star.Star):
         self._tools = [
             GenerateImageTool(
                 self._image,
-                self._default_image_model,
                 _data_dir,
                 cache_dir=_cache_dir,
                 extra_allowed_dirs=_extra_dirs,
@@ -470,6 +474,22 @@ class Main(star.Star):
 
             self._terminate_task = asyncio.create_task(cleanup())
         await asyncio.shield(self._terminate_task)
+
+    async def _oauth_available(self) -> bool:
+        """生图路由谓词：刷新后仍有 OAuth 令牌才认为 Matrix 网关可用。"""
+        token = self._token_store.load()
+        if token and token.is_expired():
+            try:
+                refreshed = await self._oauth.refresh(
+                    token.refresh_token,
+                    token.region,
+                    login_epoch=token.login_epoch,
+                )
+            except OAuthError:
+                return False
+            self._token_store.save(refreshed)
+            token = refreshed
+        return token is not None
 
     async def _matrix_credentials(self) -> tuple[str, str]:
         """Matrix 凭据 (region, token)：优先 OAuth Token（临期自动刷新），回退静态 API Key。
@@ -1636,7 +1656,7 @@ class Main(star.Star):
 
     @mmx_group.command("image")
     async def mmx_image(self, event: AstrMessageEvent, *, prompt: str = ""):
-        """生成图片。用法: /mmx image <描述> [--aspect-ratio 16:9] [--seed 42]"""
+        """生成图片。用法: /mmx image <描述> [--aspect-ratio 16:9] [--resolution 2K] [--seed 42]"""
         raw_args = _command_tail(event, prompt)
         try:
             args = parse_image_command(raw_args)
@@ -1645,7 +1665,7 @@ class Main(star.Star):
             return
         if not raw_args:
             yield event.plain_result(
-                "用法: /mmx image <描述> [--aspect-ratio 16:9] [--seed 42]\n"
+                "用法: /mmx image <描述> [--aspect-ratio 16:9] [--resolution 2K] [--seed 42]\n"
                 "例如: /mmx image a cute cat --aigc-watermark"
             )
             return
@@ -1682,9 +1702,10 @@ class Main(star.Star):
             )
             result = await self._image.generate(
                 prompt=args.prompt,
-                model=args.model or self._default_image_model or None,
+                model=args.model or None,
                 n=args.n,
                 aspect_ratio=args.aspect_ratio,
+                resolution=args.resolution,
                 width=args.width,
                 height=args.height,
                 response_format=args.response_format,
@@ -1701,6 +1722,9 @@ class Main(star.Star):
             yield event.plain_result(f"图片生成失败: {e}")
             return
 
+        failed_items = (result.get("meta") or {}).get("failed_items") or []
+        if failed_items:
+            logger.warning(f"[mmx] 生图部分失败: {failed_items}")
         data = result.get("data", {})
         urls = data.get("image_urls", [])
         base64_images = data.get("image_base64", [])
