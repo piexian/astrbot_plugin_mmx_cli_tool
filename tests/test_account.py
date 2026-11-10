@@ -167,7 +167,8 @@ class AccountRequestTests(unittest.IsolatedAsyncioTestCase):
         # remains：open 域、仅 X-Group-Id，无签名与公共 query
         self.assertEqual(
             str(remains_req.url),
-            "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains",
+            "https://www.minimaxi.com/v1/api/openplatform/coding_plan/remains"
+            "?business=Agent&device_platform=desktop",
         )
         self.assertEqual(remains_req.headers.get("x-group-id"), "g-1")
         self.assertNotIn("yy", remains_req.headers)
