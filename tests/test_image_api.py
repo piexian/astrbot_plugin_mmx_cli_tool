@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -67,7 +68,7 @@ class ImageRouteTests(unittest.IsolatedAsyncioTestCase):
         seen = {}
 
         def handler(req: httpx.Request) -> httpx.Response:
-            seen["body"] = req.read().decode()
+            seen["body"] = json.loads(req.read().decode())
             return httpx.Response(
                 200, json={"data": {"image_urls": ["https://example.com/x.png"]}}
             )
@@ -76,7 +77,7 @@ class ImageRouteTests(unittest.IsolatedAsyncioTestCase):
         self._client = _open_client(handler)
         api = ImageAPI(self._client, matrix, lambda: True, "image-01")
         result = await api.generate("cat", model="image-01-live")
-        self.assertIn('"model":"image-01-live"', seen["body"])
+        self.assertEqual("image-01-live", seen["body"]["model"])
         self.assertEqual(["https://example.com/x.png"], result["data"]["image_urls"])
         self.assertEqual([], matrix.calls)
 
@@ -84,7 +85,7 @@ class ImageRouteTests(unittest.IsolatedAsyncioTestCase):
         seen = {}
 
         def handler(req: httpx.Request) -> httpx.Response:
-            seen["body"] = req.read().decode()
+            seen["body"] = json.loads(req.read().decode())
             return httpx.Response(
                 200, json={"data": {"image_urls": ["https://example.com/x.png"]}}
             )
@@ -93,7 +94,7 @@ class ImageRouteTests(unittest.IsolatedAsyncioTestCase):
         self._client = _open_client(handler)
         api = ImageAPI(self._client, matrix, lambda: False, "image-01")
         await api.generate("cat")
-        self.assertIn('"model":"image-01"', seen["body"])
+        self.assertEqual("image-01", seen["body"]["model"])
         self.assertEqual([], matrix.calls)
 
     async def test_open_only_seed_skips_matrix(self):
