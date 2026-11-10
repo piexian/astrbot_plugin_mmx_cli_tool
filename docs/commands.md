@@ -233,7 +233,7 @@
 | `--seed` | — | 整数 | 不写 | 随机种子，相同种子更容易得到相似的图 |
 | `--width` | — | 整数，512 到 2048，且是 8 的倍数 | 不写 | 自定义宽度，必须和 `--height` 一起写 |
 | `--height` | — | 整数，512 到 2048，且是 8 的倍数 | 不写 | 自定义高度，必须和 `--width` 一起写 |
-| `--prompt-optimizer` | `--promptOptimizer` | 开关 | 开启 | 让系统帮你优化描述；关闭写 `--prompt-optimizer=false` |
+| `--prompt-optimizer` | `--promptOptimizer` | 开关 | 开启 | 让系统帮你优化描述；关闭写 `--prompt-optimizer=false`。H3 模型上关闭时必须同时指定 `--aspect-ratio` 或 `--width/--height`（服务端要求），否则报错 |
 | `--aigc-watermark` | `--aigcWatermark` | 开关 | 关闭 | 给图片加「AI 生成」水印 |
 | `--subject-ref` | `--subjectRef` | 可省略值，写法见下 | 不用 | 角色参考，让人物保持一致 |
 | `--response-format` | `--responseFormat` | `url` 或 `base64` | `url` | 服务器返回图片的方式，一般不用改 |

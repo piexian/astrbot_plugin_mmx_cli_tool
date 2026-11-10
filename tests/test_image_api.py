@@ -321,6 +321,13 @@ class OpenH3RouteTests(unittest.IsolatedAsyncioTestCase):
             result["meta"]["failed_items"],
         )
 
+
+    async def test_h3_disable_enhanced_requires_explicit_size_or_ratio(self):
+        api, _, _ = self._make(
+            lambda req: httpx.Response(200, json={"data": []})
+        )
+        with self.assertRaisesRegex(MiniMaxError, "aspect-ratio"):
+            await api.generate("cat", prompt_optimizer=False)
     async def test_h3_rejects_seed_and_subject_reference(self):
         api, _, _ = self._make(
             lambda req: httpx.Response(200, json={"data": []})

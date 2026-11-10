@@ -178,6 +178,11 @@ class ImageAPI:
         aigc_watermark: bool,
     ) -> dict[str, Any]:
         """开放平台 H3 文生图（/v1/images/generations），超时 600s 对齐服务端上限。"""
+        if not prompt_optimizer and not (width and height) and not aspect_ratio:
+            raise MiniMaxError(
+                ErrorCategory.GENERAL,
+                "H3 关闭提示词优化时必须同时指定 --aspect-ratio 或 --width/--height",
+            )
         body: dict[str, Any] = {
             "model": model,
             "prompt": prompt,
