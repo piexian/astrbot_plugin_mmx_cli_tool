@@ -44,7 +44,7 @@ class GenerateImageTool(FunctionTool):
                         "Image aspect ratio, e.g. '1:1', '16:9', '9:16', '4:3'. Ignored if width and height are both set."
                     ),
                     "resolution": string_param(
-                        "Output resolution '1K', '2K' or '4K' (MiniMax Code login route, H3 Image). Omit to let the server default apply."
+                        "Output resolution '1K', '2K' or '4K' (MiniMax Code login route, H3 Image). Omit to let the server default apply; the request fails if it falls back to the open platform."
                     ),
                     "n": integer_param("Number of images to generate (1-9, default 1)"),
                     "seed": integer_param(
@@ -57,10 +57,10 @@ class GenerateImageTool(FunctionTool):
                         "Custom height in pixels (512-2048, multiple of 8). Only for image-01. Overrides aspectRatio."
                     ),
                     "promptOptimizer": boolean_param(
-                        "Automatically optimize the prompt for better results (default: true)"
+                        "Automatically optimize the prompt for better results (default: true). Setting false requires the open-platform route (image-01)."
                     ),
                     "aigcWatermark": boolean_param(
-                        "Embed AI-generated content watermark in the output image."
+                        "Embed AI-generated content watermark in the output image. Requires the open-platform route (image-01)."
                     ),
                     "responseFormat": string_param(
                         "Response format: url (default) or base64."

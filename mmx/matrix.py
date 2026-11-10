@@ -126,13 +126,14 @@ class MatrixAPI:
     ) -> dict[str, Any]:
         """文生图 batch；模型由服务端按桌面端配置选择（当前 MiniMax-H3-Image）。
 
-        返回原始负载（total_success/success_items/failed_items），由调用方归一化。
+        请求契约对齐桌面端 image-synthesize：每项用 output_file（slot_i.png），
+        可带 aspect_ratio/resolution；返回原始负载由调用方归一化。
         """
         requests = []
         for i, prompt in enumerate(prompts):
             item: dict[str, Any] = {
                 "prompt": prompt,
-                "output_file_path": f"mmx/image_{i}.png",
+                "output_file": f"slot_{i}.png",
             }
             if aspect_ratio:
                 item["aspect_ratio"] = aspect_ratio

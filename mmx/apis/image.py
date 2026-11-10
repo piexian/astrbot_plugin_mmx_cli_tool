@@ -1,9 +1,12 @@
 """MiniMax 图片生成 API。
 
-双路由：已登录 MiniMax Code（OAuth）时优先走 Matrix 桌面网关（image_synthesize，
-模型由服务端按桌面端配置选择，当前为 MiniMax-H3-Image，支持 resolution 1K/2K/4K）；
-否则回退开放平台 /v1/image_generation（image-01 系列）。显式指定 model、自定义宽高、
-seed、参考图或 response_format=base64 等开放平台专属参数时一律走开放平台。
+双路由：已登录 MiniMax Code（OAuth，经刷新校验）时优先走 Matrix 桌面网关
+（image_synthesize，模型由服务端按桌面端配置选择，当前为 MiniMax-H3-Image，
+支持 resolution 1K/2K/4K）；否则回退开放平台 /v1/image_generation（image-01 系列）。
+显式指定 model、自定义宽高、seed、参考图、response_format=base64、加水印或
+关闭提示词优化等开放平台专属诉求时一律走开放平台；resolution 在此路无法兑现，
+会直接报错而不是静默忽略。路由在提交生图请求前一次性决定，超时或部分成功
+不自动跨路由重试。
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +26,10 @@ from ..errors import ErrorCategory, MiniMaxError
 from ..matrix import MatrixAPI
 
 
+async def _matrix_disabled() -> bool:
+    return False
+
+
 class ImageAPI:
     """MiniMax 图片生成接口（Matrix 优先，开放平台回退）。"""
 
@@ -30,12 +37,13 @@ class ImageAPI:
         self,
         client: MiniMaxClient,
         matrix: MatrixAPI | None = None,
-        matrix_enabled: Callable[[], bool] | None = None,
+        matrix_enabled: Callable[[], Awaitable[bool]] | None = None,
         default_model: str = "",
     ) -> None:
         self._client = client
         self._matrix = matrix
-        self._matrix_enabled = matrix_enabled or (lambda: False)
+        # 异步谓词：每次生图前刷新校验 OAuth 可用性
+        self._matrix_enabled = matrix_enabled or _matrix_disabled
         # 开放平台回退默认（配置项 default_image_model）
         self._default_model = default_model
     async def generate(
@@ -54,7 +62,13 @@ class ImageAPI:
         subject_reference: list[dict[str, Any]] | None = None,
         seed: int | None = None,
     ) -> dict[str, Any]:
-        """生成图片；resolution 仅 Matrix 路由支持（1K/2K/4K）。"""
+        """生成图片；路由在提交请求前一次性决定，超时或部分成功不跨路由重试。"""
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise MiniMaxError(ErrorCategory.GENERAL, "prompt 不能为空")
+        if type(n) is not int or not 1 <= n <= 9:
+            raise MiniMaxError(ErrorCategory.GENERAL, "n 必须为 1-9 的整数")
+        if resolution is not None and resolution not in {"1K", "2K", "4K"}:
+            raise MiniMaxError(ErrorCategory.GENERAL, "resolution 只支持 1K、2K 或 4K")
         open_only = (
             bool(model)
             or width is not None
@@ -62,10 +76,18 @@ class ImageAPI:
             or seed is not None
             or subject_reference is not None
             or response_format != "url"
+            or aigc_watermark
+            or not prompt_optimizer
         )
-        if self._matrix is not None and self._matrix_enabled() and not open_only:
+        if self._matrix is not None and not open_only and await self._matrix_enabled():
             return await self._generate_matrix(
                 prompt, n=n, aspect_ratio=aspect_ratio, resolution=resolution
+            )
+        if resolution is not None:
+            raise MiniMaxError(
+                ErrorCategory.GENERAL,
+                "resolution 仅在已登录 MiniMax Code 的 H3 Image 路由可用；"
+                "请去掉 --resolution 或先 /mmx login",
             )
         return await self._generate_open(
             prompt,
@@ -89,7 +111,7 @@ class ImageAPI:
         aspect_ratio: str | None,
         resolution: str | None,
     ) -> dict[str, Any]:
-        """Matrix 网关生图，响应归一化为开放平台的 data.image_urls 结构。"""
+        """Matrix 网关生图，响应归一化为 data.image_urls 并保留元数据。"""
         assert self._matrix is not None
         data = await self._matrix.image_synthesize(
             [prompt] * n, aspect_ratio=aspect_ratio, resolution=resolution
@@ -97,10 +119,19 @@ class ImageAPI:
         items = data.get("success_items")
         entries = [e for e in items if isinstance(e, dict)] if isinstance(items, list) else []
         urls = [e["output_url"] for e in entries if e.get("output_url")]
-        if urls:
-            return {"data": {"image_urls": urls, "image_base64": []}}
         failed = data.get("failed_items")
         failures = [e for e in failed if isinstance(e, dict)] if isinstance(failed, list) else []
+        result = {
+            "data": {"image_urls": urls, "image_base64": []},
+            "meta": {
+                "route": "matrix",
+                "total_requested": data.get("total_requested", n),
+                "total_success": data.get("total_success", len(urls)),
+                "failed_items": failures,
+            },
+        }
+        if urls:
+            return result
         reason = next(
             (str(e["error_msg"]) for e in failures if e.get("error_msg")),
             "服务端未返回生成结果",
@@ -144,12 +175,14 @@ class ImageAPI:
         if seed is not None:
             body["seed"] = seed
 
-        return await self._client.request_json(
+        result = await self._client.request_json(
             "POST",
             image_endpoint(self._client.base_url),
             body=body,
             model=effective_model or "",
         )
+        result["meta"] = {"route": "open"}
+        return result
     async def save(
         self,
         response: dict[str, Any],

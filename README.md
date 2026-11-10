@@ -72,7 +72,8 @@ AI 在对话中可以自动调用下面 17 个工具。
 ### 图片
 画图。可以加 `--aspect-ratio 16:9` 指定比例，用 `--subject-ref` 参考某张图里的人物。
 已登录 MiniMax Code 时走桌面网关的 H3 Image（可加 `--resolution 2K` 选 1K/2K/4K，消耗账号图片额度）；
-仅用 API Key 时走开放平台 image-01 系列，`--resolution` 不适用。
+仅用 API Key 时走开放平台 image-01 系列，此时 `--resolution` 会报错；指定 `--model`、
+自定义宽高、`--seed`、加水印或关闭提示词优化也会切到开放平台。路由在提交请求前决定，不自动换路重试。
 
 ```
 /mmx image 一只戴帽子的猫，水彩风格 --aspect-ratio 1:1
