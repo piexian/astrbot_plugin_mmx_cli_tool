@@ -21,9 +21,12 @@ from typing import Any
 import httpx
 
 from ..client import MiniMaxClient
-from ..endpoints import image_endpoint
+from ..endpoints import h3_image_generations_endpoint, image_endpoint
 from ..errors import ErrorCategory, MiniMaxError
 from ..matrix import MatrixAPI
+
+
+_H3_MODELS = {"MiniMax-H3-Image", "MiniMax-H3-Image-Highspeed"}
 
 
 async def _matrix_disabled() -> bool:
@@ -83,11 +86,33 @@ class ImageAPI:
             return await self._generate_matrix(
                 prompt, n=n, aspect_ratio=aspect_ratio, resolution=resolution
             )
+        effective_model = model or self._default_model or None
+        if effective_model in _H3_MODELS:
+            if seed is not None:
+                raise MiniMaxError(
+                    ErrorCategory.GENERAL, "seed 仅 image-01 系列模型支持"
+                )
+            if subject_reference is not None:
+                raise MiniMaxError(
+                    ErrorCategory.GENERAL, "参考图（subject_reference）仅 image-01 系列模型支持"
+                )
+            return await self._generate_h3(
+                prompt,
+                model=effective_model,
+                n=n,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                width=width,
+                height=height,
+                response_format=response_format,
+                prompt_optimizer=prompt_optimizer,
+                aigc_watermark=aigc_watermark,
+            )
         if resolution is not None:
             raise MiniMaxError(
                 ErrorCategory.GENERAL,
-                "resolution 仅在已登录 MiniMax Code 的 H3 Image 路由可用；"
-                "请去掉 --resolution 或先 /mmx login",
+                "resolution 需要 MiniMax Code 登录（H3 Image）或默认/指定 H3 模型；"
+                "请去掉 --resolution、/mmx login，或将 default_image_model 设为 MiniMax-H3-Image",
             )
         return await self._generate_open(
             prompt,
@@ -136,6 +161,72 @@ class ImageAPI:
             (str(e["error_msg"]) for e in failures if e.get("error_msg")),
             "服务端未返回生成结果",
         )
+        raise MiniMaxError(ErrorCategory.GENERAL, f"图片生成失败: {reason}")
+
+    async def _generate_h3(
+        self,
+        prompt: str,
+        *,
+        model: str,
+        n: int,
+        aspect_ratio: str | None,
+        resolution: str | None,
+        width: int | None,
+        height: int | None,
+        response_format: str,
+        prompt_optimizer: bool,
+        aigc_watermark: bool,
+    ) -> dict[str, Any]:
+        """开放平台 H3 文生图（/v1/images/generations），超时 600s 对齐服务端上限。"""
+        body: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "n": n,
+            "response_format": "b64_json" if response_format == "base64" else "url",
+        }
+        if not prompt_optimizer:
+            body["disable_prompt_enhanced"] = True
+        if aigc_watermark:
+            body["aigc_watermark"] = True
+        if width and height:
+            body["size"] = f"{width}x{height}"
+        elif aspect_ratio:
+            body["aspect_ratio"] = aspect_ratio
+        if resolution:
+            body["area"] = resolution
+        payload = await self._client.request_json(
+            "POST",
+            h3_image_generations_endpoint(self._client.base_url),
+            body=body,
+            model=model,
+            timeout=600,
+        )
+        items = payload.get("data")
+        entries = [e for e in items if isinstance(e, dict)] if isinstance(items, list) else []
+        urls = [e["url"] for e in entries if e.get("url")]
+        b64_images = [e["b64_json"] for e in entries if e.get("b64_json")]
+        failures = [
+            {
+                "code": (e.get("error") or {}).get("code"),
+                "error_msg": (e.get("error") or {}).get("message", "生成失败"),
+            }
+            for e in entries
+            if e.get("error")
+        ]
+        if urls or b64_images:
+            usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+            return {
+                "data": {"image_urls": urls, "image_base64": b64_images},
+                "meta": {
+                    "route": "open",
+                    "model": model,
+                    "total_success": usage.get("generated_images", len(urls) + len(b64_images)),
+                    "failed_items": failures,
+                    "usage": usage or None,
+                    "request_id": payload.get("request_id"),
+                },
+            }
+        reason = next((f["error_msg"] for f in failures if f["error_msg"]), "服务端未返回生成结果")
         raise MiniMaxError(ErrorCategory.GENERAL, f"图片生成失败: {reason}")
 
     async def _generate_open(

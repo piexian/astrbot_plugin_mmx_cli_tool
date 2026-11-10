@@ -57,11 +57,11 @@ delete_file(file_id) -> dict
 
 | 方法 | 可选参数（未标默认值的参数缺省为 None） |
 |---|---|
-| generate_image | model, n=1, aspect_ratio, resolution（1K/2K/4K，仅 MiniMax Code 登录路由；落到开放平台会报错）, width, height, response_format="url", prompt_optimizer=True, aigc_watermark=False, subject_reference, seed |
+| generate_image | model, n=1, aspect_ratio, resolution（1K/2K/4K，H3 路由可用——登录或 model/default_image_model 为 MiniMax-H3-Image(-Highspeed)；落到 image-01 会报错）, width, height, response_format="url", prompt_optimizer=True, aigc_watermark=False, subject_reference, seed |
 | generate_video | model, first_frame_image, last_frame_image, subject_reference, callback_url, reference_images, reference_videos, reference_audios, duration, ratio |
 | synthesize_speech | model, voice（配置默认或 English_expressive_narrator）, speed, volume, pitch, emotion, text_normalization=False, latex_read=False, audio_format="mp3", sample_rate=32000, bitrate=128000, channels=1, language, subtitles=False, pronunciation |
 
-图片与语音合成返回原始 API 字典，不自动保存。生图双路由在提交请求前一次性决定（登录态与参数详见 commands.md 的 /mmx image），结果附 `meta.route`（matrix/open）与 matrix 路由的成功/失败计数，部分失败不跨路由重试；显式 model、自定义宽高、seed、参考图、response_format=base64、加水印或关闭提示词优化固定走开放平台。视频创建只提交一次、返回原始响应；查询/等待复用既有 API，MiniMax-H3 查询归一化 `task` 字段，等待完成时增加 `video_url`。`wait_video_task` 缺省读取配置轮询间隔和超时，不重新创建。`download_video` 返回 `{ok: True, file_path: ...}`；H3 可传空 file_id 和已查询到的 video_url。
+图片与语音合成返回原始 API 字典，不自动保存。生图双路由在提交请求前一次性决定（登录态与参数详见 commands.md 的 /mmx image），结果附 `meta.route`（matrix/open）与成功/失败计数（含 H3 的 usage/request_id），部分失败不跨路由重试；显式 model、自定义宽高、response_format=base64、加水印或关闭提示词优化固定走开放平台，其中 H3 模型走 `/v1/images/generations`（resolution 映射为 area、base64 映射为 b64_json、宽x高映射为 size、关优化映射为 disable_prompt_enhanced）；seed 与参考图仅 image-01 系列支持。视频创建只提交一次、返回原始响应；查询/等待复用既有 API，MiniMax-H3 查询归一化 `task` 字段，等待完成时增加 `video_url`。`wait_video_task` 缺省读取配置轮询间隔和超时，不重新创建。`download_video` 返回 `{ok: True, file_path: ...}`；H3 可传空 file_id 和已查询到的 video_url。
 
 搜索、视觉、音色、文件方法返回原始响应。`get_quota` 查询配置中的所有 Key，返回 `{"accounts": [{"index": 1, "data": 原始额度响应}, ...]}`，不返回 Key；失败不吞成空成功。同步业务保留原异常和上游错误码，不自动重试计费请求。
 

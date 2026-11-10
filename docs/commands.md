@@ -219,16 +219,16 @@
 
 **用法**：`/mmx image <描述> [参数]`
 
-按文字描述生成图片，生成后发送到当前聊天。路由在提交请求前一次性决定：已登录 MiniMax Code 走桌面网关 H3 Image；显式指定 `--model`、自定义宽高、`--seed`、参考图、加水印或关闭提示词优化时走开放平台 image-01。超时或部分成功不自动换路重试，部分失败会在日志中记录。
+按文字描述生成图片，生成后发送到当前聊天。路由在提交请求前一次性决定：已登录 MiniMax Code 走桌面网关 H3 Image；显式指定 `--model`、自定义宽高、`--seed`、参考图、加水印或关闭提示词优化时走开放平台。`default_image_model` 或 `--model` 为 `MiniMax-H3-Image` / `MiniMax-H3-Image-Highspeed` 时走开放平台 H3 文生图（`/v1/images/generations`，`--resolution` 映射为 `area`）。超时或部分成功不自动换路重试，部分失败会在日志中记录；`seed` 与参考图仅 image-01 系列支持，H3 模型传入会直接报错。
 
 **参数**
 
 | 参数 | 别名 | 取值/类型 | 默认 | 说明 |
 |------|------|------|------|------|
 | `--prompt` | — | 文本 | — | 描述的显式写法。写了它，命令后面直接写的描述会被忽略 |
-| `--model` | — | 文本 | 不写，按登录态自动路由 | 显式指定图片模型（如 `image-01`、`image-01-live`）将强制走开放平台；不写时 MiniMax Code 登录走 H3 Image，API Key 模式用配置项 `default_image_model` |
+| `--model` | — | 文本 | 不写，按登录态自动路由 | 显式指定图片模型将强制走开放平台；不写时 MiniMax Code 登录走 H3 Image，API Key 模式用配置项 `default_image_model`（`image-01` 系列走 `/v1/image_generation`，`MiniMax-H3-Image` / `MiniMax-H3-Image-Highspeed` 走 `/v1/images/generations`） |
 | `--aspect-ratio` | `--aspectRatio` | 文本 | 不写，不传给服务器 | 图片比例，如 `1:1`、`16:9` |
-| `--resolution` | — | `1K`、`2K`、`4K` | 不写，服务端默认 | 仅 MiniMax Code 登录（H3 Image 路由）可用；请求落到开放平台时报错 |
+| `--resolution` | — | `1K`、`2K`、`4K` | 不写，服务端默认 | H3 Image 路由（登录或 H3 模型）可用，映射为 H3 的 `area`；落到 image-01 时报错 |
 | `--n` | — | 整数 1 到 9 | `1` | 一次生成几张。注意：指令只会发送第一张 |
 | `--seed` | — | 整数 | 不写 | 随机种子，相同种子更容易得到相似的图 |
 | `--width` | — | 整数，512 到 2048，且是 8 的倍数 | 不写 | 自定义宽度，必须和 `--height` 一起写 |

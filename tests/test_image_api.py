@@ -222,5 +222,138 @@ class MatrixContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(600, calls[0]["timeout"])
 
 
+
+class OpenH3RouteTests(unittest.IsolatedAsyncioTestCase):
+    """开放平台 H3 路由（/v1/images/generations）测试。"""
+
+    async def asyncTearDown(self):
+        await self._client._client.aclose()
+
+    def _make(self, handler, default_model="MiniMax-H3-Image"):
+        seen: dict = {}
+        calls: list[dict] = []
+
+        def wrapped(req: httpx.Request) -> httpx.Response:
+            seen["url"] = str(req.url)
+            seen["body"] = json.loads(req.read().decode())
+            return handler(req)
+
+        self._client = _open_client(wrapped)
+        original = self._client.request
+
+        async def spy(*args, **kwargs):
+            calls.append(kwargs)
+            return await original(*args, **kwargs)
+
+        self._client.request = spy
+        api = ImageAPI(self._client, _FakeMatrix(), _enabled(False), default_model)
+        return api, seen, calls
+
+    async def test_h3_body_maps_params_and_timeout(self):
+        api, seen, calls = self._make(
+            lambda req: httpx.Response(
+                200,
+                json={
+                    "data": [{"url": "https://example.com/h3.png", "size": "1024x1024"}],
+                    "usage": {"generated_images": 1},
+                    "request_id": "req-1",
+                },
+            )
+        )
+        result = await api.generate(
+            "cat",
+            n=2,
+            aspect_ratio="1:1",
+            resolution="2K",
+            aigc_watermark=True,
+        )
+        body = seen["body"]
+        self.assertIn("/v1/images/generations", seen["url"])
+        self.assertEqual("MiniMax-H3-Image", body["model"])
+        self.assertEqual(2, body["n"])
+        self.assertEqual("1:1", body["aspect_ratio"])
+        self.assertEqual("2K", body["area"])
+        self.assertTrue(body["aigc_watermark"])
+        self.assertNotIn("size", body)
+        self.assertEqual(600, calls[0]["timeout"])
+        self.assertEqual(["https://example.com/h3.png"], result["data"]["image_urls"])
+        self.assertEqual("open", result["meta"]["route"])
+        self.assertEqual(1, result["meta"]["total_success"])
+        self.assertEqual("req-1", result["meta"]["request_id"])
+
+    async def test_h3_custom_size_and_disable_enhanced_and_base64(self):
+        api, seen, _ = self._make(
+            lambda req: httpx.Response(
+                200, json={"data": [{"b64_json": "aGk="}]}
+            )
+        )
+        result = await api.generate(
+            "cat",
+            width=1024,
+            height=768,
+            response_format="base64",
+            prompt_optimizer=False,
+        )
+        body = seen["body"]
+        self.assertEqual("1024x768", body["size"])
+        self.assertNotIn("aspect_ratio", body)
+        self.assertEqual("b64_json", body["response_format"])
+        self.assertTrue(body["disable_prompt_enhanced"])
+        self.assertEqual(["aGk="], result["data"]["image_base64"])
+
+    async def test_h3_partial_failure_reported(self):
+        api, _, _ = self._make(
+            lambda req: httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"url": "https://example.com/a.png"},
+                        {"error": {"code": "1027", "message": "content safety"}},
+                    ],
+                    "usage": {"generated_images": 1},
+                },
+            )
+        )
+        result = await api.generate("cat", n=2)
+        self.assertEqual(["https://example.com/a.png"], result["data"]["image_urls"])
+        self.assertEqual(
+            [{"code": "1027", "error_msg": "content safety"}],
+            result["meta"]["failed_items"],
+        )
+
+    async def test_h3_rejects_seed_and_subject_reference(self):
+        api, _, _ = self._make(
+            lambda req: httpx.Response(200, json={"data": []})
+        )
+        with self.assertRaisesRegex(MiniMaxError, "seed"):
+            await api.generate("cat", seed=42)
+        with self.assertRaisesRegex(MiniMaxError, "subject_reference"):
+            await api.generate("cat", subject_reference=[{"type": "character"}])
+
+    async def test_h3_all_failed_raises(self):
+        api, _, _ = self._make(
+            lambda req: httpx.Response(
+                200,
+                json={
+                    "data": [{"error": {"code": "1027", "message": "content safety"}}],
+                    "usage": {"generated_images": 0},
+                },
+            )
+        )
+        with self.assertRaisesRegex(MiniMaxError, "content safety"):
+            await api.generate("cat")
+
+    async def test_explicit_h3_model_overrides_image01_default(self):
+        api, seen, _ = self._make(
+            lambda req: httpx.Response(
+                200, json={"data": [{"url": "https://example.com/h3.png"}]}
+            ),
+            default_model="image-01",
+        )
+        await api.generate("cat", model="MiniMax-H3-Image-Highspeed", resolution="1K")
+        self.assertIn("/v1/images/generations", seen["url"])
+        self.assertEqual("MiniMax-H3-Image-Highspeed", seen["body"]["model"])
+        self.assertEqual("1K", seen["body"]["area"])
+
 if __name__ == "__main__":
     unittest.main()

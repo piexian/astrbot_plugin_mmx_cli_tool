@@ -32,6 +32,11 @@ def image_endpoint(base: str) -> str:
     return f"{base}/v1/image_generation"
 
 
+def h3_image_generations_endpoint(base: str) -> str:
+    """H3 Image 文生图端点（/v1/images/generations）。"""
+    return f"{base}/v1/images/generations"
+
+
 def video_gen_endpoint(base: str) -> str:
     """视频生成端点（V1 legacy）。"""
     return f"{base}/v1/video_generation"

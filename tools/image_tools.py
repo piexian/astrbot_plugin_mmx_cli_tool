@@ -44,7 +44,7 @@ class GenerateImageTool(FunctionTool):
                         "Image aspect ratio, e.g. '1:1', '16:9', '9:16', '4:3'. Ignored if width and height are both set."
                     ),
                     "resolution": string_param(
-                        "Output resolution '1K', '2K' or '4K' (MiniMax Code login route, H3 Image). Omit to let the server default apply; the request fails if it falls back to the open platform."
+                        "Output resolution '1K', '2K' or '4K' (MiniMax Code login route, H3 Image). Omit to let the server default apply; it maps to the H3 area parameter on both H3 routes; the request fails if it lands on image-01."
                     ),
                     "n": integer_param("Number of images to generate (1-9, default 1)"),
                     "seed": integer_param(
@@ -66,7 +66,7 @@ class GenerateImageTool(FunctionTool):
                         "Response format: url (default) or base64."
                     ),
                     "model": string_param(
-                        "Model override: image-01 or image-01-live. Omit to use the plugin routing: MiniMax Code login generates with H3 Image (Matrix gateway), API-key mode uses the configured default_image_model."
+                        "Model override. image-01/image-01-live use the legacy endpoint; MiniMax-H3-Image/MiniMax-H3-Image-Highspeed use /v1/images/generations (H3, supports resolution). Omit to use plugin routing: MiniMax Code login generates with H3 Image (Matrix gateway), API-key mode uses the configured default_image_model."
                     ),
                     "subjectRef": string_param(
                         "Subject reference for character consistency. Format: image URL/plugin-data or AstrBot temp path, or type=character,image=path-or-url."
