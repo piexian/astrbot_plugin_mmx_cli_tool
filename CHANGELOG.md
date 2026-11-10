@@ -1,6 +1,14 @@
 # 更新日志
 
 
+## 0.7.5 - 2026-11-11
+
+- 图片生成支持 MiniMax-H3-Image 双路由：已登录 MiniMax Code 时自动走桌面网关（服务端按桌面端配置使用 H3 Image，消耗账号图片额度），`--resolution 1K/2K/4K` 选择输出规格。
+- API Key 模式也能用 H3：把 `default_image_model` 设为 `MiniMax-H3-Image`（或高速版 `MiniMax-H3-Image-Highspeed`），或 `/mmx image --model` 指定，即走开放平台 H3 文生图（`/v1/images/generations`），`--resolution` 映射为 H3 的 `area` 同样生效。
+- 路由在提交请求前一次性决定，不自动换路重试：显式 `--model`、自定义宽高、加水印或关闭提示词优化固定走开放平台；`seed` 与 `--subject-ref` 参考图仅 image-01 系列支持，H3 模型上传入会直接报错；H3 关闭提示词优化时必须同时指定比例或尺寸（服务端约束）。
+- 生成结果附带 `meta` 元数据（路由、成功/失败计数、usage、request_id），多张部分失败时仍会发送成功的图片并在日志记录失败明细。
+- 套餐余量接口对齐桌面端 3.1.14：查询附带 `business=Agent&device_platform=desktop`。
+
 ## 0.7.4 - 2026-11-05
 
 - 为logger导入添加测试桩
