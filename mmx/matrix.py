@@ -18,6 +18,7 @@ from .errors import ErrorCategory, MiniMaxError
 _TOOL_TIMEOUTS: dict[str, float] = {
     "images_search_and_download": 600,
     "image_reverse_search": 600,
+    "image_synthesize": 600,
     "batch_text_to_music": 600,
     "batch_text_to_audio": 600,
     "get_upload_url": 120,
@@ -115,6 +116,30 @@ class MatrixAPI:
         data = await self._call("image_reverse_search", {"image_url": image_url})
         items = data.get("data")
         return items if isinstance(items, list) else []
+
+    async def image_synthesize(
+        self,
+        prompts: list[str],
+        *,
+        aspect_ratio: str | None = None,
+        resolution: str | None = None,
+    ) -> dict[str, Any]:
+        """文生图 batch；模型由服务端按桌面端配置选择（当前 MiniMax-H3-Image）。
+
+        返回原始负载（total_success/success_items/failed_items），由调用方归一化。
+        """
+        requests = []
+        for i, prompt in enumerate(prompts):
+            item: dict[str, Any] = {
+                "prompt": prompt,
+                "output_file_path": f"mmx/image_{i}.png",
+            }
+            if aspect_ratio:
+                item["aspect_ratio"] = aspect_ratio
+            if resolution:
+                item["resolution"] = resolution
+            requests.append(item)
+        return await self._call("image_synthesize", {"requests": requests})
 
     async def batch_text_to_music(
         self,

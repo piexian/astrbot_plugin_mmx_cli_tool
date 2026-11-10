@@ -18,6 +18,7 @@ class ImageCommandArgs:
     prompt: str
     model: str | None = None
     aspect_ratio: str | None = None
+    resolution: str | None = None
     n: int = 1
     seed: int | None = None
     width: int | None = None
@@ -98,6 +99,7 @@ def parse_image_command(raw: str) -> ImageCommandArgs:
             "--model": "model",
             "--aspect-ratio": "aspect_ratio",
             "--aspectRatio": "aspect_ratio",
+            "--resolution": "resolution",
             "--n": "n",
             "--seed": "seed",
             "--width": "width",
@@ -132,6 +134,8 @@ def parse_image_command(raw: str) -> ImageCommandArgs:
             raise DirectCommandError(f"--{name} 必须在 512-2048 之间且为 8 的倍数")
     if args.response_format not in {"url", "base64"}:
         raise DirectCommandError("--response-format 只支持 url 或 base64")
+    if args.resolution is not None and args.resolution not in {"1K", "2K", "4K"}:
+        raise DirectCommandError("--resolution 只支持 1K、2K 或 4K（MiniMax Code 登录生图）")
     return args
 
 
@@ -451,7 +455,7 @@ def _coerce_numbers(values: dict[str, object], names: tuple[str, ...]) -> None:
 
 def _image_usage() -> str:
     return (
-        "用法: /mmx image <描述> [--aspect-ratio 16:9] [--seed 42] "
+        "用法: /mmx image <描述> [--aspect-ratio 16:9] [--resolution 2K] [--seed 42] "
         "[--width 1024 --height 1024] [--aigc-watermark]"
     )
 

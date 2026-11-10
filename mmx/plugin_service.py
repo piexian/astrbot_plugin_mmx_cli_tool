@@ -195,9 +195,8 @@ class MiniMaxService:
         refs = options.pop("subject_reference", None)
         if refs and subject_ref:
             raise ValueError("subject_ref 与 subject_reference 不能同时使用")
-        options["model"] = options.get("model") or p._default_image_model or None
         _options(p._image.generate, options, prompt=prompt, subject_reference=None)
-        _optional_texts(options, ("model", "aspect_ratio"))
+        _optional_texts(options, ("model", "aspect_ratio", "resolution"))
         if subject_ref is not None:
             _text(subject_ref, "subject_ref")
         if options.get("seed") is not None and type(options["seed"]) is not int:
@@ -215,6 +214,8 @@ class MiniMaxService:
                 raise ValueError("尺寸必须为 512-2048 且为 8 的倍数")
         if options.get("response_format", "url") not in ("url", "base64"):
             raise ValueError("response_format 必须为 url 或 base64")
+        if options.get("resolution") not in (None, "1K", "2K", "4K"):
+            raise ValueError("resolution 必须为 1K、2K 或 4K")
         for name in ("prompt_optimizer", "aigc_watermark"):
             if name in options and type(options[name]) is not bool:
                 raise ValueError(f"{name} 必须为布尔值")

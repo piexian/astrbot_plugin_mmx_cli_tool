@@ -70,8 +70,9 @@ AI 在对话中可以自动调用下面 17 个工具。
 在聊天里发送 `/mmx` 开头的指令，不用经过 AI。标注「管理员」的只有管理员能用，标注「需登录」的要先 `/mmx login`。每条指令的全部参数、取值范围和示例见 [完整指令与参数说明](docs/commands.md)。
 
 ### 图片
-
 画图。可以加 `--aspect-ratio 16:9` 指定比例，用 `--subject-ref` 参考某张图里的人物。
+已登录 MiniMax Code 时走桌面网关的 H3 Image（可加 `--resolution 2K` 选 1K/2K/4K，消耗账号图片额度）；
+仅用 API Key 时走开放平台 image-01 系列，`--resolution` 不适用。
 
 ```
 /mmx image 一只戴帽子的猫，水彩风格 --aspect-ratio 1:1
@@ -211,7 +212,7 @@ AI 在对话中可以自动调用下面 17 个工具。
 | `allow_astrbot_temp_dir` | 布尔 | `true` | 是否允许读取 AstrBot 临时目录；想更安全就关掉，代价见下面的「安全说明」 |
 | `video_poll_interval` | 整数 | `5` | 生成视频时查进度的间隔（秒） |
 | `video_timeout` | 整数 | `600` | 等待视频生成的最长时间（秒）；超时后只是不再等，视频仍在后台生成，会告诉你任务编号 |
-| `default_image_model` | 字符串 | `image-01` | 想换默认图片模型时 |
+| `default_image_model` | 字符串 | `image-01` | 开放平台回退默认图片模型；MiniMax Code 登录后图片生成自动走桌面网关 H3 Image，此配置仅对 API Key 模式生效 |
 | `default_video_model` | 字符串 | `MiniMax-Hailuo-2.3` | 想换默认视频模型时 |
 | `default_video_sef_model` | 字符串 | `MiniMax-Hailuo-02` | 想换首尾帧视频用的模型时 |
 | `default_video_subject_model` | 字符串 | `S2V-01` | 想换角色参考视频用的模型时 |

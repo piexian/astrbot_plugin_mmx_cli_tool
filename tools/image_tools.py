@@ -23,7 +23,6 @@ class GenerateImageTool(FunctionTool):
     def __init__(
         self,
         api: ImageAPI,
-        default_model: str = "",
         data_dir: str = ".",
         cache_dir: str | None = None,
         extra_allowed_dirs: list[str] | None = None,
@@ -43,6 +42,9 @@ class GenerateImageTool(FunctionTool):
                     ),
                     "aspectRatio": string_param(
                         "Image aspect ratio, e.g. '1:1', '16:9', '9:16', '4:3'. Ignored if width and height are both set."
+                    ),
+                    "resolution": string_param(
+                        "Output resolution '1K', '2K' or '4K' (MiniMax Code login route, H3 Image). Omit to let the server default apply."
                     ),
                     "n": integer_param("Number of images to generate (1-9, default 1)"),
                     "seed": integer_param(
@@ -64,7 +66,7 @@ class GenerateImageTool(FunctionTool):
                         "Response format: url (default) or base64."
                     ),
                     "model": string_param(
-                        "Model override: image-01 or image-01-live. Omit to use the plugin default_image_model configuration."
+                        "Model override: image-01 or image-01-live. Omit to use the plugin routing: MiniMax Code login generates with H3 Image (Matrix gateway), API-key mode uses the configured default_image_model."
                     ),
                     "subjectRef": string_param(
                         "Subject reference for character consistency. Format: image URL/plugin-data or AstrBot temp path, or type=character,image=path-or-url."
@@ -74,7 +76,6 @@ class GenerateImageTool(FunctionTool):
             ),
         )
         self._api = api
-        self._default_model = default_model
         self._data_dir = data_dir
         self._cache_dir = cache_dir or data_dir
         self._extra_allowed_dirs = extra_allowed_dirs
@@ -110,9 +111,10 @@ class GenerateImageTool(FunctionTool):
         try:
             result = await self._api.generate(
                 prompt=prompt,
-                model=kwargs.get("model") or self._default_model or None,
+                model=kwargs.get("model") or None,
                 n=kwargs.get("n", 1),
                 aspect_ratio=aspect_ratio,
+                resolution=kwargs.get("resolution"),
                 width=kwargs.get("width"),
                 height=kwargs.get("height"),
                 prompt_optimizer=kwargs.get("promptOptimizer", True),
