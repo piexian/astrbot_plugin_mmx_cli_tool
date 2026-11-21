@@ -1,0 +1,145 @@
+name: Release
+
+# master 检测到 metadata.yaml 新版本时自动校验 CHANGELOG、打包插件 ZIP、创建标签并发布 GitHub Release。
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "metadata.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: 自动打标签并发布
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+
+      - name: 读取版本并检查是否已发布
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RAW_VER=$(awk -F': *' '$1 == "version" { gsub(/["'\''[:space:]]/, "", $2); print $2; exit }' metadata.yaml)
+          if [[ ! "$RAW_VER" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::metadata.yaml 中的 version 格式无效：${RAW_VER:-<空>}"
+            exit 1
+          fi
+          VERSION="${RAW_VER#v}"
+          TAG="v${VERSION}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} 已存在，跳过自动发布。"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 提取对应版本更新日志
+        if: steps.ver.outputs.should_release == 'true'
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          awk -v ver="${VERSION}" '
+            function is_target(line,    a, b, rest) {
+              a = "## " ver
+              b = "## [" ver "]"
+              if (index(line, b) == 1) return 1
+              if (index(line, a) == 1) {
+                rest = substr(line, length(a) + 1, 1)
+                if (rest == "" || rest == " " || rest == "-") return 1
+              }
+              return 0
+            }
+            is_target($0) { found = 1; print; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > section.md
+          awk -v ver="${VERSION}" '
+            function is_target(line,    a, b, rest) {
+              a = "## " ver
+              b = "## [" ver "]"
+              if (index(line, b) == 1) return 1
+              if (index(line, a) == 1) {
+                rest = substr(line, length(a) + 1, 1)
+                if (rest == "" || rest == " " || rest == "-") return 1
+              }
+              return 0
+            }
+            is_target($0) { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > section-body.md
+          if ! test -s section.md || ! grep -q '[^[:space:]]' section-body.md; then
+            echo "::error::CHANGELOG.md 缺少 ${VERSION} 一节或内容为空"
+            exit 1
+          fi
+
+      - name: 打包插件 ZIP
+        if: steps.ver.outputs.should_release == 'true'
+        run: |
+          STAGE=astrbot_plugin_mmx_cli_tool
+          rm -rf "$STAGE" "${STAGE}-${{ steps.ver.outputs.tag }}.zip"
+          mkdir -p "$STAGE"
+          cp -r .astrbot-plugin mmx tools views "$STAGE"/
+          find "$STAGE" -type d -name '__pycache__' -exec rm -rf {} +
+          find "$STAGE" -type f -name '*.pyc' -delete
+          cp CHANGELOG.md LICENSE README.md _conf_schema.json logo.png main.py metadata.yaml requirements.txt "$STAGE"/
+          zip -qr "${STAGE}-${{ steps.ver.outputs.tag }}.zip" "$STAGE"
+          test -s "${STAGE}-${{ steps.ver.outputs.tag }}.zip"
+
+      - name: 创建并推送版本标签
+        if: steps.ver.outputs.should_release == 'true'
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          TARGET_SHA="${GITHUB_SHA}"
+          REMOTE_SHA=$(git ls-remote origin "refs/tags/${TAG}^{}" "refs/tags/${TAG}" | awk 'NR==1 { first=$1 } /\^\{\}$/ { peeled=$1 } END { print (peeled != "" ? peeled : first) }')
+          if [ -z "$REMOTE_SHA" ]; then
+            git tag "${TAG}" "${TARGET_SHA}"
+            git push origin "refs/tags/${TAG}"
+          elif [ "$REMOTE_SHA" != "$TARGET_SHA" ]; then
+            echo "::error::远程标签 ${TAG} 已存在且指向 ${REMOTE_SHA}，与当前提交 ${TARGET_SHA} 不一致"
+            exit 1
+          else
+            echo "标签 ${TAG} 已指向当前提交 ${TARGET_SHA}，继续发布。"
+          fi
+
+      - name: 生成 PR 与贡献者说明
+        if: steps.ver.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="${{ steps.ver.outputs.tag }}" \
+            --jq '.body' > whats-new.md
+
+      - name: 组装 Release 正文
+        if: steps.ver.outputs.should_release == 'true'
+        run: |
+          {
+            cat section.md
+            if grep -q '[^[:space:]]' whats-new.md; then
+              printf '\n'
+              cat whats-new.md
+            fi
+          } > body.md
+
+      - name: 发布 GitHub Release
+        if: steps.ver.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            "astrbot_plugin_mmx_cli_tool-${{ steps.ver.outputs.tag }}.zip" \
+            --title "${{ steps.ver.outputs.tag }}" \
+            --notes-file body.md \
+            --verify-tag
