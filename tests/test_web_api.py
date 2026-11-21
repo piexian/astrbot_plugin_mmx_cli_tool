@@ -282,7 +282,175 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["credit_split"], {"base": "0", "bonus": "8224"})
         self.assertTrue(payload["signin"]["today_claimed"])
         self.assertEqual(payload["signin"]["today_day_no"], 2)
+        self.assertEqual(len(payload["signin"]["days"]), 3)
+        self.assertTrue(payload["signin"]["days"][1]["is_today"])
+        self.assertTrue(payload["signin"]["days"][1]["claimed"])
+        self.assertFalse(payload["signin"]["days"][2]["claimed"])
         self.assertTrue(payload["fallback_enabled"])
+
+    async def test_account_signin_claims_and_requires_login(self):
+        unauth = await self.call("account/signin")
+        self.assertEqual(unauth.status_code, 503)
+
+        self.plugin._token_store.save(
+            OAuthToken(
+                access_token="a",
+                refresh_token="r",
+                expires_at=time.time() + 3600,
+                region="cn",
+            )
+        )
+        self.plugin._account.signin_claim = AsyncMock(
+            return_value={"day_no": 3, "points": 1500, "claim_id": "clm_3"}
+        )
+        claimed = await self.call("account/signin")
+        self.assertTrue(claimed["ok"])
+        self.assertEqual(claimed["day_no"], 3)
+        self.assertEqual(claimed["points"], 1500)
+        self.assertEqual(claimed["claim_id"], "clm_3")
+
+    async def test_account_usage_returns_all_credit_details_and_normalized_models(self):
+        """account/usage 返回全部积分明细（不截断前 5 条）、避免科学计数法并规范化模型余量。"""
+        from astrbot_plugin_mmx_cli_tool.mmx.account import AccountIdentity
+
+        self.plugin._token_store.save(
+            OAuthToken(
+                access_token="a",
+                refresh_token="r",
+                expires_at=time.time() + 3600,
+                region="cn",
+            )
+        )
+        self.plugin._account.identity = AsyncMock(
+            return_value=AccountIdentity(
+                real_user_id="rid",
+                user_name="tester",
+                email="t@example.com",
+                group_id="g",
+                credit_balance="1200000",
+            )
+        )
+        now_ms = int(time.time() * 1000)
+        batches = [
+            {
+                "credit_type": 1 if idx == 0 else 2,
+                "title": f"批次 #{idx + 1}",
+                "granted_amount": "200000",
+                "remaining_amount": "150000" if idx == 0 else "150000",
+                "consumed_amount": "50000",
+                "granted_at_ms": now_ms - 86_400_000,
+                "expire_at_ms": now_ms + (idx + 1) * 86_400_000,
+            }
+            for idx in range(8)
+        ]
+        self.plugin._account.credit_details = AsyncMock(return_value={"details": batches})
+        self.plugin._account.remains = AsyncMock(
+            return_value={"model_remains": [TEXT_QUOTA_ITEM]}
+        )
+        self.plugin._account.signin_status = AsyncMock(return_value={"days": []})
+        self.plugin._account.credit_pool = AsyncMock(
+            return_value={"token_plan_credit_fallback_enabled": False}
+        )
+
+        payload = await self.call("account/usage")
+        self.assertEqual(len(payload["credit_details"]), 8)
+        self.assertEqual(payload["credit_details_count"], 8)
+        self.assertEqual(payload["credit_details"][0]["category"], "base")
+        self.assertEqual(payload["credit_details"][0]["label"], "批次 #1")
+        self.assertEqual(payload["credit_details"][1]["category"], "bonus")
+        # 150000 * 8 = 1200000，不能变成 1.2e+06
+        self.assertEqual(payload["credit_total_remaining"], "1200000")
+        self.assertEqual(
+            payload["credit_split"], {"base": "150000", "bonus": "1050000"}
+        )
+        self.assertIn("interval_5h", payload)
+        self.assertNotIn("weekly_video", payload)
+        self.assertEqual(payload["model_remains"][0]["remaining"], 75)
+        self.assertEqual(payload["model_remains"][0]["total"], 100)
+        self.assertEqual(payload["model_remains"][0]["remaining_percent"], 75.0)
+
+    async def test_account_usage_without_token_returns_guarded_503(self):
+        response = await self.call("account/usage")
+        self.assertEqual(response.status_code, 503)
+
+    async def test_runtime_logs_config_http_capture_and_redaction(self):
+        """工作台可在不改配置的情况下实时调节插件日志与 HTTP 日志采集并脱敏敏感信息。"""
+        import httpx
+
+        # 1. 初始拉取配置与快照
+        snap = await self.call("logs")
+        self.assertTrue(snap["config"]["plugin_enabled"])
+        self.assertTrue(snap["config"]["http_enabled"])
+        self.assertFalse(snap["config"]["http_include_headers"])
+        self.assertFalse(snap["config"]["http_include_body"])
+
+        # 2. 实时开启 headers/body 采集与 DEBUG 级别（不修改 plugin._config）
+        before_cfg = dict(self.plugin._config)
+        web_request.reset(
+            body={
+                "plugin_level": "DEBUG",
+                "http_include_headers": True,
+                "http_include_body": True,
+                "http_only_errors": False,
+                "max_entries": 200,
+            }
+        )
+        updated = await self.call("logs/config")
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["config"]["plugin_level"], "DEBUG")
+        self.assertTrue(updated["config"]["http_include_headers"])
+        self.assertTrue(updated["config"]["http_include_body"])
+        self.assertEqual(self.plugin._config, before_cfg)
+
+        # 3. 发起一次插件 HTTP 请求，验证捕获与敏感头/字段脱敏
+        def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"access_token": "secret-access-token-9999", "ok": True},
+            )
+
+        orig = self.plugin._client._client
+        self.plugin._client._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        try:
+            await self.plugin._client.request(
+                "POST",
+                "/v1/test?api_key=sk-secret-123456&page=1",
+                body={"prompt": "hi", "api_key": "sk-secret-123456"},
+                headers={"X-Signature": "sig-secret-value-1234"},
+            )
+        finally:
+            await self.plugin._client._client.aclose()
+            self.plugin._client._client = orig
+
+        web_request.reset(query={"category": "http"})
+        http_snap = await self.call("logs")
+        self.assertGreaterEqual(len(http_snap["entries"]), 1)
+        http_entry = http_snap["entries"][0]
+        self.assertEqual(http_entry["category"], "http")
+        http_meta = http_entry["http"]
+        self.assertEqual(http_meta["status_code"], 200)
+        self.assertNotIn("sk-secret-123456", http_meta["url"])
+        self.assertIn("page=1", http_meta["url"])
+        self.assertNotIn("sk-test-key", http_meta["request_headers"].get("authorization", ""))
+        self.assertNotIn("sig-secret-value-1234", http_meta["request_headers"].get("x-signature", ""))
+        self.assertNotIn("sk-secret-123456", http_meta.get("request_body", ""))
+        self.assertNotIn("secret-access-token-9999", http_meta.get("response_body", ""))
+
+        # 4. 非法级别被拒绝
+        web_request.reset(body={"plugin_level": "TRACE"})
+        bad = await self.call("logs/config")
+        self.assertEqual(bad.status_code, 400)
+
+        # 5. 清空仅 HTTP 分类
+        web_request.reset(body={"category": "http"})
+        cleared = await self.call("logs/clear")
+        self.assertTrue(cleared["ok"])
+        self.assertGreaterEqual(cleared["cleared"], 1)
+        web_request.reset(query={"category": "http"})
+        after_clear = await self.call("logs")
+        self.assertEqual(after_clear["entries"], [])
 
     async def test_oauth_ui_login_initializes_provider_source(self):
         """工作台 UI 登录成功后必须同步提供商源（与 /mmx login 一致）。"""
@@ -1356,6 +1524,28 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
 
         web_request.reset(body={"prompt": "abc"})
         self.assertEqual((await self.call("tools/music")).status_code, 400)
+
+        # 生成的音乐与音效会自动持久化到 plugin_data/audio_history.json，并支持查询与删除
+        history = await self.call("tools/audio-history")
+        self.assertEqual(
+            [item["id"] for item in history["items"]], [sfx["id"], music["id"]]
+        )
+        # 删除临时目录中的缓存文件后，历史记录里的 local_path 自动置空避免悬空引用
+        (self.plugin._cache_dir / sfx["local_path"]).unlink()
+        refreshed = await self.call("tools/audio-history")
+        self.assertIsNone(refreshed["items"][0]["local_path"])
+        self.assertEqual(refreshed["items"][1]["local_path"], music["local_path"])
+
+        web_request.reset(body={"id": sfx["id"]})
+        deleted = await self.call("tools/audio-history/delete")
+        self.assertTrue(deleted["ok"])
+        self.assertEqual(deleted["removed"], 1)
+        self.assertEqual([item["id"] for item in deleted["items"]], [music["id"]])
+
+        web_request.reset(body={"clear": True})
+        cleared = await self.call("tools/audio-history/delete")
+        self.assertTrue(cleared["ok"])
+        self.assertEqual(cleared["items"], [])
 
     async def test_auth_error_from_matrix_surfaces_login_hint(self):
 

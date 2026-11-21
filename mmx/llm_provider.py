@@ -125,6 +125,13 @@ _module_models_fetcher: Callable[[], Awaitable[list[str]]] | None = None
 _module_credentials_getter: Callable[[], tuple[str, str]] | None = None
 _module_region_getter: Callable[[], str] | None = None
 _module_effort_getter: Callable[[], str] = _default_effort
+_module_http_observer: Callable[..., Any] | None = None
+
+
+def set_http_observer(observer: Callable[..., Any] | None) -> None:
+    """绑定/解绑 MiniMax Code Provider 运行时 HTTP 日志观察器。"""
+    global _module_http_observer
+    _module_http_observer = observer
 
 #: 云端模型列表的模块级缓存（WebUI 每次点击都会新建临时实例，缓存必须模块级）
 _MODELS_CACHE_TTL = 300.0
@@ -156,12 +163,14 @@ def clear_token_source() -> None:
     global _module_token_getter, _module_token_refresher
     global _module_models_fetcher, _models_cache, _models_cache_at, _models_cache_region
     global _module_credentials_getter, _module_region_getter, _module_effort_getter
+    global _module_http_observer
     _module_token_getter = _empty_token_getter
     _module_token_refresher = None
     _module_models_fetcher = None
     _module_credentials_getter = None
     _module_region_getter = None
     _module_effort_getter = _default_effort
+    _module_http_observer = None
     _models_cache = []
     _models_cache_at = 0.0
     _models_cache_region = ""
@@ -365,6 +374,9 @@ class MiniMaxCodeProvider(ProviderAnthropic):
         http_client.event_hooks.setdefault("request", []).append(
             self._rewrite_outgoing_headers
         )
+        http_client.event_hooks.setdefault("response", []).append(
+            self._observe_incoming_response
+        )
         self.client = AsyncAnthropic(
             auth_token=self._token_getter() or "unset",
             timeout=self.timeout,
@@ -506,6 +518,47 @@ class MiniMaxCodeProvider(ProviderAnthropic):
                 del request.headers[name]
         for name, value in headers.items():
             request.headers[name] = value
+        request.extensions["mmx_started_at"] = time.perf_counter()
+        if isinstance(payload, dict):
+            request.extensions["mmx_model"] = str(payload.get("model") or "")
+            request.extensions["mmx_stream"] = bool(payload.get("stream"))
+
+    async def _observe_incoming_response(self, response: Any) -> None:
+        """向插件运行时日志观察器上报本次 LLM HTTP 响应。"""
+        observer = _module_http_observer
+        if observer is None:
+            return
+        try:
+            req = response.request
+            started = req.extensions.get("mmx_started_at")
+            latency_ms = (
+                int((time.perf_counter() - started) * 1000)
+                if isinstance(started, (int, float))
+                else None
+            )
+            is_stream = bool(req.extensions.get("mmx_stream")) or "text/event-stream" in str(
+                response.headers.get("content-type", "")
+            ).lower()
+            model = str(req.extensions.get("mmx_model") or self.get_model() or "")
+            observer(
+                client="llm_provider",
+                method=str(req.method or "POST"),
+                url=str(req.url),
+                status_code=int(response.status_code),
+                latency_ms=latency_ms,
+                ok=bool(response.is_success),
+                stream=is_stream,
+                model=model,
+                request_headers=req.headers,
+                response_headers=response.headers,
+                request_body=getattr(req, "content", None),
+                request_content_type=str(req.headers.get("content-type", "")),
+                response_body=None,
+                response_content_type=str(response.headers.get("content-type", "")),
+                error="" if response.is_success else f"HTTP {response.status_code}",
+            )
+        except Exception:  # noqa: BLE001 - 观测钩子不得影响正常 LLM 调用
+            return
 
     async def _retry_on_auth_error(self) -> bool:
         """仅在同一次登录内刷新并重试一次。"""

@@ -198,6 +198,41 @@ class AccountRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("invalid params", str(ctx.exception))
         self.assertIs(ctx.exception.category, ErrorCategory.GENERAL)
 
+    async def test_credit_details_paginates_all_pages(self):
+        captured = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            q = dict(request.url.params)
+            page = int(q.get("page_number", "1"))
+            if page == 1:
+                return json_response(
+                    {
+                        "total_count": 3,
+                        "details": [
+                            {"credit_type": 2, "remaining_amount": "400"},
+                            {"credit_type": 2, "remaining_amount": "300"},
+                        ],
+                        "base_resp": OK,
+                    }
+                )
+            return json_response(
+                {
+                    "total_count": 3,
+                    "details": [{"credit_type": 1, "remaining_amount": "1000"}],
+                    "base_resp": OK,
+                }
+            )
+
+        account, close = make_account(handler)
+        self.addAsyncCleanup(close)
+        res = await account.credit_details(page_size=2)
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0].url.params.get("page_number"), "1")
+        self.assertEqual(captured[1].url.params.get("page_number"), "2")
+        self.assertEqual(res["total_count"], 3)
+        self.assertEqual(len(res["details"]), 3)
+
 
 class IdentityTests(unittest.IsolatedAsyncioTestCase):
     def make_handler(self, user_info, workspaces=None):

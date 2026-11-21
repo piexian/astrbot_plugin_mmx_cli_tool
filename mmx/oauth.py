@@ -155,10 +155,16 @@ class OAuthClient:
         *,
         timeout: float = 30,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        http_observer: Callable[..., Any] | None = None,
     ) -> None:
         self._http = http or httpx.AsyncClient(timeout=httpx.Timeout(timeout))
         self._owns_http = http is None
         self._sleep = sleep or asyncio.sleep
+        self._http_observer = http_observer
+
+    def set_http_observer(self, observer: Callable[..., Any] | None) -> None:
+        """绑定/解绑 OAuth HTTP 日志观察器。"""
+        self._http_observer = observer
 
     async def close(self) -> None:
         if self._owns_http:
@@ -166,25 +172,73 @@ class OAuthClient:
 
     async def _post_form(self, url: str, values: dict[str, str]) -> tuple[bool, int, dict[str, Any]]:
         """POST 表单，返回 (ok, status, body)；body 带 error 字段时 ok=False。"""
+        req_headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        observer = self._http_observer
+        started = time.perf_counter()
         try:
             res = await self._http.post(
                 url,
                 data=values,
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
+                headers=req_headers,
             )
         except httpx.HTTPError as exc:
+            if observer is not None:
+                observer(
+                    client="oauth",
+                    method="POST",
+                    url=url,
+                    status_code=None,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    ok=False,
+                    request_headers=req_headers,
+                    request_body=values,
+                    request_content_type="application/x-www-form-urlencoded",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
             raise OAuthError("network_error", f"OAuth 网络请求失败: {exc}") from exc
+        latency_ms = int((time.perf_counter() - started) * 1000)
         try:
             body = res.json()
         except ValueError as exc:
+            if observer is not None:
+                observer(
+                    client="oauth",
+                    method="POST",
+                    url=url,
+                    status_code=res.status_code,
+                    latency_ms=latency_ms,
+                    ok=False,
+                    request_headers=req_headers,
+                    response_headers=res.headers,
+                    request_body=values,
+                    response_body=res.content,
+                    response_content_type=res.headers.get("content-type", ""),
+                    error="invalid_json_response",
+                )
             raise OAuthError("invalid_json_response") from exc
         if not isinstance(body, dict):
             raise OAuthError("invalid_json_response")
         error = _read_str(body, "error")
-        return (res.is_success and not error), res.status_code, body
+        ok = res.is_success and not error
+        if observer is not None:
+            observer(
+                client="oauth",
+                method="POST",
+                url=url,
+                status_code=res.status_code,
+                latency_ms=latency_ms,
+                ok=ok,
+                request_headers=req_headers,
+                response_headers=res.headers,
+                request_body=values,
+                response_body=body,
+                response_content_type=res.headers.get("content-type", ""),
+                error=error,
+            )
+        return ok, res.status_code, body
 
     async def start_device_authorization(self, region: str = "cn") -> DeviceAuthInfo:
         """发起设备授权，返回验证码与授权链接。"""

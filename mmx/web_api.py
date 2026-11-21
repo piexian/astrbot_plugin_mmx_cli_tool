@@ -30,9 +30,11 @@ from .plugin_service import ServiceError
 from .quota_usage import (
     is_video_quota_model,
     merge_quota_models,
+    normalize_model_quota,
     normalize_quota_models,
     quota_window_label,
 )
+from .runtime_logs import RuntimeLogHub
 from .utils import resolve_data_path
 
 PLUGIN_NAME = "astrbot_plugin_mmx_cli_tool"
@@ -48,6 +50,7 @@ SSE_KEEPALIVE_SECONDS = 20
 MAX_SEARCH_ITEMS = 5
 MAX_REVERSE_MATCHES = 10
 MAX_ITERATE_NODES = 5
+MAX_AUDIO_HISTORY = 50
 MAX_UPLOAD_IMAGE_BYTES = 20 * 1024 * 1024
 LOGIN_SESSION_GRACE_SECONDS = 60.0
 
@@ -58,6 +61,16 @@ def _now_ms() -> int:
 
 def _text(value: object, limit: int = 2000) -> str:
     return str(value if value is not None else "").strip()[:limit]
+
+
+def _format_credit_amount(value: float) -> str:
+    """将积分数值格式化为不含科学计数法的紧凑文本（兼容整数与小数）。"""
+    if not math.isfinite(value):
+        return "0"
+    rounded = round(value, 4)
+    if rounded == 0:
+        return "0"
+    return f"{rounded:.4f}".rstrip("0").rstrip(".")
 
 
 def _int_arg(value: object, *, default: int, low: int, high: int) -> int:
@@ -145,7 +158,7 @@ def _error_status(exc: BaseException) -> tuple[int, str]:
 
 @dataclass
 class TerminalEvent:
-    """SSE 推送的终端日志条目，字段与前端 TerminalLogEntry 一致。"""
+    """SSE 推送的终端日志条目，字段与前端 PluginLogEntry 一致。"""
 
     id: str
     ts_ms: int
@@ -154,11 +167,13 @@ class TerminalEvent:
     command: str
     detail: str = ""
     latency_ms: int | None = None
+    category: str = "event"
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "id": self.id,
             "ts_ms": self.ts_ms,
+            "category": self.category,
             "source": self.source,
             "level": self.level,
             "command": self.command,
@@ -172,17 +187,31 @@ class TerminalEvent:
 class EventHub:
     """终端事件的发布订阅中心（有界历史 + 每连接队列）。"""
 
-    def __init__(self, history: int = EVENT_HISTORY) -> None:
-        self._history: deque[TerminalEvent] = deque(maxlen=history)
-        self._subscribers: set[asyncio.Queue[TerminalEvent]] = set()
+    def __init__(
+        self,
+        history: int = EVENT_HISTORY,
+        *,
+        on_publish: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        self._history: deque[dict[str, Any]] = deque(maxlen=history)
+        self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._on_publish = on_publish
 
-    def subscribe(self) -> asyncio.Queue[TerminalEvent]:
-        queue: asyncio.Queue[TerminalEvent] = asyncio.Queue(maxsize=EVENT_QUEUE_SIZE)
+    def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=EVENT_QUEUE_SIZE)
         self._subscribers.add(queue)
         return queue
 
-    def unsubscribe(self, queue: asyncio.Queue[TerminalEvent]) -> None:
+    def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         self._subscribers.discard(queue)
+
+    def broadcast(self, entry: dict[str, Any]) -> None:
+        """向所有在线 SSE 订阅者广播一条结构化日志/事件。"""
+        for queue in tuple(self._subscribers):
+            try:
+                queue.put_nowait(entry)
+            except asyncio.QueueFull:
+                continue
 
     def publish(
         self,
@@ -202,16 +231,18 @@ class EventHub:
             detail=_text(detail, 2000),
             latency_ms=latency_ms,
         )
-        self._history.append(entry)
-        for queue in tuple(self._subscribers):
+        payload = entry.to_dict()
+        self._history.append(payload)
+        if self._on_publish is not None:
             try:
-                queue.put_nowait(entry)
-            except asyncio.QueueFull:
-                continue
+                self._on_publish(payload)
+            except Exception:  # noqa: BLE001
+                pass
+        self.broadcast(payload)
         return entry
 
     def history(self) -> list[dict[str, Any]]:
-        return [entry.to_dict() for entry in self._history]
+        return list(self._history)
 
     @property
     def subscriber_count(self) -> int:
@@ -243,6 +274,12 @@ class MCodeWebAPI:
             "_handle_account_usage",
             ["GET"],
             "MCode 工作台：账户积分与套餐余量",
+        ),
+        (
+            "account/signin",
+            "_handle_account_signin",
+            ["POST"],
+            "MCode 工作台：领取当日签到积分",
         ),
         ("oauth/start", "_handle_oauth_start", ["POST"], "MCode 工作台：发起设备授权"),
         ("oauth/poll", "_handle_oauth_poll", ["GET"], "MCode 工作台：查询授权进度"),
@@ -298,17 +335,43 @@ class MCodeWebAPI:
         ("tools/music", "_handle_music", ["POST"], "MCode 工作台：AI 音乐生成"),
         ("tools/sfx", "_handle_sfx", ["POST"], "MCode 工作台：AI 音效生成"),
         (
+            "tools/audio-history",
+            "_handle_audio_history",
+            ["GET"],
+            "MCode 工作台：读取持久化 AI 音乐与音效历史",
+        ),
+        (
+            "tools/audio-history/delete",
+            "_handle_audio_history_delete",
+            ["POST"],
+            "MCode 工作台：删除或清空 AI 音频生成历史",
+        ),
+        (
             "tools/download-temp",
             "_handle_download_temp",
             ["GET"],
             "MCode 工作台：下载临时媒体",
         ),
         ("events", "_handle_events", ["GET"], "MCode 工作台：终端事件流"),
+        ("logs", "_handle_logs", ["GET"], "MCode 工作台：插件运行日志与 HTTP 日志"),
+        (
+            "logs/config",
+            "_handle_logs_config",
+            ["POST"],
+            "MCode 工作台：实时调节本插件日志与 HTTP 采集参数",
+        ),
+        (
+            "logs/clear",
+            "_handle_logs_clear",
+            ["POST"],
+            "MCode 工作台：清空本插件内存日志缓冲",
+        ),
     )
 
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
-        self._events = EventHub()
+        self._runtime_logs = RuntimeLogHub(on_entry=self._on_runtime_entry)
+        self._events = EventHub(on_publish=self._runtime_logs.record_event)
         self._canvas = CanvasStore(
             Path(plugin._plugin_data_dir) / "canvas",
             file_exists=lambda path: (
@@ -319,14 +382,38 @@ class MCodeWebAPI:
         self._registered: list[tuple[str, tuple[str, ...]]] = []
         self._closed = False
 
+    def _on_runtime_entry(self, entry: dict[str, Any]) -> None:
+        if not self._closed:
+            self._events.broadcast(entry)
+
     @property
     def events(self) -> EventHub:
         return self._events
 
+    @property
+    def runtime_logs(self) -> RuntimeLogHub:
+        return self._runtime_logs
+
     # ---------------------------------------------------------------- 生命周期
+
+    def _bind_http_observers(self, observer: Callable[..., Any] | None) -> None:
+        plugin = self._plugin
+        for attr in ("_client", "_oauth", "_matrix_media"):
+            target = getattr(plugin, attr, None)
+            setter = getattr(target, "set_http_observer", None)
+            if callable(setter):
+                setter(observer)
+        try:
+            from . import llm_provider as _llm_provider
+
+            _llm_provider.set_http_observer(observer)
+        except Exception:  # noqa: BLE001 - llm_provider 可选
+            pass
 
     def register(self) -> None:
         """批量注册路由；宿主不支持 register_web_api 时降级为仅聊天指令。"""
+        self._runtime_logs.attach()
+        self._bind_http_observers(self._runtime_logs.record_http)
         context = self._plugin.context
         register = getattr(context, "register_web_api", None)
         if not callable(register):
@@ -343,6 +430,8 @@ class MCodeWebAPI:
     async def close(self) -> None:
         """注销本实例路由并停止后台轮询与 SSE 连接。"""
         self._closed = True
+        self._bind_http_observers(None)
+        self._runtime_logs.detach()
         context = self._plugin.context
         registered = getattr(context, "registered_web_apis", None)
         if isinstance(registered, list) and self._registered:
@@ -555,10 +644,42 @@ class MCodeWebAPI:
             "total": totals if totals is not None else 0,
             "used": used if used is not None else 0,
             "remaining": remaining if remaining is not None else 0,
+            "has_counts": totals is not None,
             "remaining_percent": percent,
             "status": status,
             "reset_at_ms": reset_at_ms,
         }
+
+    @staticmethod
+    def _has_usable_windows(windows: list[dict[str, Any]]) -> bool:
+        return any(
+            not window.get("unavailable")
+            and (
+                window.get("unlimited")
+                or window.get("total") is not None
+                or window.get("remaining_percent") is not None
+            )
+            for window in windows
+        )
+
+    @classmethod
+    def _balance_breakdown(cls, balance: dict[str, Any] | None) -> dict[str, str] | None:
+        if not balance:
+            return None
+        fields = (
+            ("available", "available_amount"),
+            ("cash", "cash_balance"),
+            ("voucher", "voucher_balance"),
+            ("credit", "credit_balance"),
+            ("owed", "owed_amount"),
+            ("consumed", "consumed_amount"),
+        )
+        result: dict[str, str] = {}
+        for out_key, src_key in fields:
+            if balance.get(src_key) not in (None, ""):
+                _, text = cls._amount(balance, src_key)
+                result[out_key] = text
+        return result or None
 
     async def _quota_payload(self) -> dict[str, Any]:
         plugin = self._plugin
@@ -609,11 +730,15 @@ class MCodeWebAPI:
                 else "账户余额 · 按量计费"
             ),
             "region": region,
+            "has_plan_quota": bool(merged),
+            "has_interval": self._has_usable_windows(interval_windows),
+            "has_weekly_video": self._has_usable_windows(video_windows),
             "interval_5h": self._bucket(
                 interval_windows, fallback_label="当前周期额度"
             ),
             "weekly_video": self._bucket(video_windows, fallback_label="周额度"),
             "credit_fallback": self._credit_fallback(balance),
+            "balance_breakdown": self._balance_breakdown(balance),
             "updated_at_ms": _now_ms(),
             "keys": {"total": len(keys), "failed": failures},
         }
@@ -668,7 +793,66 @@ class MCodeWebAPI:
             ),
         )
 
-    async def _handle_account_usage(self) -> Any:
+    @staticmethod
+    def _format_model_remain(raw: dict[str, Any]) -> dict[str, Any]:
+        """整理单个模型的余量信息，兼容旧 usage_count 与完整双周期窗口字段。"""
+        name = _text(raw.get("model_name"), 48)
+        is_video = is_video_quota_model(name)
+        normalized = normalize_model_quota(raw)
+        primary = normalized["weekly"] if is_video else normalized["current"]
+        secondary = normalized["current"] if is_video else normalized["weekly"]
+        window = primary
+        if (
+            window.get("remaining") is None
+            and window.get("remaining_percent") is None
+            and not window.get("unlimited")
+            and (
+                secondary.get("remaining") is not None
+                or secondary.get("remaining_percent") is not None
+                or secondary.get("unlimited")
+            )
+        ):
+            window = secondary
+
+        usage_count = raw.get("usage_count")
+        remaining = window.get("remaining")
+        if remaining is None and isinstance(usage_count, int):
+            remaining = usage_count
+
+        remains_time = window.get("remains_time")
+        end_time = window.get("end_time")
+        now_ms = _now_ms()
+        reset_at_ms = (
+            now_ms + remains_time
+            if isinstance(remains_time, int) and remains_time > 0
+            else (
+                end_time
+                if isinstance(end_time, int) and end_time > now_ms
+                else None
+            )
+        )
+        label = quota_window_label(window)
+        if label == "当前周期额度" and is_video:
+            label = "周额度"
+        return {
+            "model_name": name,
+            "usage_count": usage_count,
+            "is_video": is_video,
+            "remaining": remaining,
+            "total": window.get("total"),
+            "used": window.get("used"),
+            "remaining_percent": (
+                round(float(window["remaining_percent"]), 1)
+                if isinstance(window.get("remaining_percent"), (int, float))
+                else None
+            ),
+            "unlimited": bool(window.get("unlimited")),
+            "unavailable": bool(window.get("unavailable")),
+            "window_label": label,
+            "reset_at_ms": reset_at_ms,
+        }
+
+    async def _account_usage_payload(self) -> dict[str, Any]:
         """OAuth 账户的真实积分/套餐余量/签到数据；单项子查询失败仅缺对应块。"""
         plugin = self._plugin
         token = plugin._token_store.load()
@@ -693,17 +877,54 @@ class MCodeWebAPI:
         credit_base = 0.0
         credit_bonus = 0.0
         total_remaining = 0.0
+        formatted_details: list[dict[str, Any]] = []
         for item in detail_items:
+            raw_type = item.get("credit_type")
+            is_base = raw_type == 1 or str(raw_type) == "1"
             try:
                 amount = float(item.get("remaining_amount") or 0)
             except (TypeError, ValueError):
-                continue
-            total_remaining += amount
-            if item.get("credit_type") == 1:
-                credit_base += amount
+                amount = 0.0
             else:
-                credit_bonus += amount
+                total_remaining += amount
+                if is_base:
+                    credit_base += amount
+                else:
+                    credit_bonus += amount
+            label = _text(
+                item.get("title")
+                or item.get("name")
+                or item.get("credit_name")
+                or item.get("source")
+                or item.get("description"),
+                64,
+            )
+            granted_at = (
+                item.get("granted_at_ms")
+                or item.get("created_at_ms")
+                or item.get("effective_at_ms")
+            )
+            formatted_details.append(
+                {
+                    "credit_type": raw_type,
+                    "category": "base" if is_base else "bonus",
+                    "label": label,
+                    "granted_amount": _text(item.get("granted_amount"), 24),
+                    "remaining_amount": _text(item.get("remaining_amount"), 24),
+                    "consumed_amount": _text(item.get("consumed_amount"), 24),
+                    "granted_at_ms": granted_at,
+                    "expire_at_ms": item.get("expire_at_ms"),
+                    "status": item.get("status"),
+                }
+            )
         days = [d for d in _ok(signin).get("days") or [] if isinstance(d, dict)]
+        days.sort(
+            key=lambda item: (
+                item.get("day_no")
+                if isinstance(item.get("day_no"), (int, float))
+                else 9999
+            )
+        )
         today = next((d for d in days if d.get("is_today")), None)
         fallback = _ok(pool).get("token_plan_credit_fallback_enabled")
         models = [
@@ -717,59 +938,109 @@ class MCodeWebAPI:
             },
             "credit_balance": identity.credit_balance or "",
             "credit_split": (
-                {"base": f"{credit_base:g}", "bonus": f"{credit_bonus:g}"}
+                {
+                    "base": _format_credit_amount(credit_base),
+                    "bonus": _format_credit_amount(credit_bonus),
+                }
                 if detail_items
                 else None
             ),
             "fallback_enabled": None if fallback is None else bool(fallback),
-            "credit_details": [
-                {
-                    "granted_amount": _text(item.get("granted_amount"), 16),
-                    "remaining_amount": _text(item.get("remaining_amount"), 16),
-                    "expire_at_ms": item.get("expire_at_ms"),
-                }
-                for item in detail_items[:5]
-            ],
-            "credit_total_remaining": f"{total_remaining:g}",
-            "model_remains": [
-                {
-                    "model_name": _text(m.get("model_name"), 48),
-                    "usage_count": m.get("usage_count"),
-                }
-                for m in models[:6]
-            ],
+            "credit_details": formatted_details,
+            "credit_details_count": len(formatted_details),
+            "credit_total_remaining": _format_credit_amount(total_remaining),
+            "model_remains": [self._format_model_remain(m) for m in models],
             "signin": {
+                "scene": _ok(signin).get("scene"),
                 "days_total": len(days),
                 "today_day_no": today.get("day_no") if today else None,
                 "today_points": today.get("points") if today else None,
                 # 实测签到状态：1=未领取（未来/待领取），3=已领取（含今天已签）
                 "today_claimed": None if today is None else today.get("status") == 3,
+                "days": [
+                    {
+                        "day_no": d.get("day_no"),
+                        "points": d.get("points"),
+                        "bonus_points": d.get("bonus_points") or 0,
+                        "status": d.get("status"),
+                        "is_today": bool(d.get("is_today")),
+                        "claimed": d.get("status") == 3,
+                    }
+                    for d in days
+                ],
             },
             "updated_at_ms": _now_ms(),
         }
-        # Token Plan（OA）用量窗口：与 API Key 模式共用窗口解析
+        # Token Plan（OA）用量窗口：与 API Key 模式共用窗口解析；仅在存在有效窗口时下发
         remains_models = _ok(remains).get("model_remains")
         if remains_models:
             merged = merge_quota_models(normalize_quota_models(remains_models))
             if merged:
-                payload["plan_name"] = "Coding Plan 用量"
-                payload["interval_5h"] = self._bucket(
-                    [
-                        item["current"]
-                        for name, item in merged.items()
-                        if not is_video_quota_model(name)
-                    ],
-                    fallback_label="当前周期额度",
-                )
-                payload["weekly_video"] = self._bucket(
-                    [
-                        item["weekly"]
-                        for name, item in merged.items()
-                        if is_video_quota_model(name)
-                    ],
-                    fallback_label="周额度",
-                )
+                interval_windows = [
+                    item["current"]
+                    for name, item in merged.items()
+                    if not is_video_quota_model(name)
+                ]
+                video_windows = [
+                    item["weekly"]
+                    for name, item in merged.items()
+                    if is_video_quota_model(name)
+                ]
+                if self._has_usable_windows(interval_windows) or self._has_usable_windows(
+                    video_windows
+                ):
+                    payload["plan_name"] = "Coding Plan 用量"
+                if self._has_usable_windows(interval_windows):
+                    payload["interval_5h"] = self._bucket(
+                        interval_windows,
+                        fallback_label="当前周期额度",
+                    )
+                if self._has_usable_windows(video_windows):
+                    payload["weekly_video"] = self._bucket(
+                        video_windows,
+                        fallback_label="周额度",
+                    )
         return payload
+
+    async def _handle_account_usage(self) -> Any:
+        return await self._guarded(
+            "account",
+            "Account.usage",
+            self._account_usage_payload,
+            summarize=lambda payload: (
+                f"账户积分合计 {payload.get('credit_total_remaining') or payload.get('credit_balance') or '—'} PTS"
+                f" · 明细 {payload.get('credit_details_count', 0)} 条"
+            ),
+        )
+
+    async def _account_signin_payload(self) -> dict[str, Any]:
+        plugin = self._plugin
+        token = plugin._token_store.load()
+        if not token:
+            raise BridgeError("未登录 MiniMax 账号，无法领取签到积分", 503)
+        result = await plugin._account.signin_claim()
+        return {
+            "ok": True,
+            "claimed": True,
+            "day_no": result.get("day_no"),
+            "points": result.get("points"),
+            "claim_id": _text(result.get("claim_id"), 64),
+        }
+
+    async def _handle_account_signin(self) -> Any:
+        return await self._guarded(
+            "account",
+            "Account.signin",
+            self._account_signin_payload,
+            summarize=lambda payload: (
+                f"当日签到已领取 · 第 {payload.get('day_no') or '?'} 天"
+                + (
+                    f" (+{payload['points']} PTS)"
+                    if payload.get("points") is not None
+                    else ""
+                )
+            ),
+        )
 
     # ---------------------------------------------------------------- OAuth
 
@@ -1222,6 +1493,48 @@ class MCodeWebAPI:
             except OSError:
                 pass
 
+    def _audio_history_path(self) -> Path:
+        return Path(self._plugin._plugin_data_dir) / "audio_history.json"
+
+    def _load_audio_history(self) -> list[dict[str, Any]]:
+        path = self._audio_history_path()
+        if not path.is_file():
+            return []
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(raw, list):
+            return []
+        items: list[dict[str, Any]] = []
+        for entry in raw[:MAX_AUDIO_HISTORY]:
+            if not isinstance(entry, dict) or not entry.get("id"):
+                continue
+            item = dict(entry)
+            local_path = _text(item.get("local_path"), 256)
+            if local_path and self._locate_file(local_path) is None:
+                item["local_path"] = None
+            items.append(item)
+        return items
+
+    def _save_audio_history(self, items: list[dict[str, Any]]) -> None:
+        path = self._audio_history_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(items[:MAX_AUDIO_HISTORY], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except OSError as exc:
+            logger.warning(f"[mmx-web] 持久化音频历史失败: {exc}")
+
+    def _record_audio_history(self, track: dict[str, Any]) -> None:
+        existing = self._load_audio_history()
+        filtered = [item for item in existing if item.get("id") != track.get("id")]
+        self._save_audio_history([track, *filtered][:MAX_AUDIO_HISTORY])
+
     async def _audio_payload(self, *, kind: str) -> dict[str, Any]:
         plugin = self._plugin
         body = await self._body()
@@ -1252,7 +1565,7 @@ class MCodeWebAPI:
             local_path = Path(saved).name
         except Exception as exc:  # noqa: BLE001 - 下载失败仍回传远程地址
             logger.warning(f"[mmx-web] 音频下载失败 {output_url}: {exc}")
-        return {
+        track = {
             "id": track_id,
             "kind": kind,
             "prompt": prompt,
@@ -1264,6 +1577,25 @@ class MCodeWebAPI:
             "duration_hint": _text(data.get("duration_hint"), 64)
             or ("AI 编曲合成" if kind == "music" else "AI 拟音音效"),
         }
+        self._record_audio_history(track)
+        return track
+
+    async def _audio_history_payload(self) -> dict[str, Any]:
+        return {"items": self._load_audio_history()}
+
+    async def _audio_history_delete_payload(self) -> dict[str, Any]:
+        body = await self._body()
+        if body.get("clear") is True:
+            before = len(self._load_audio_history())
+            self._save_audio_history([])
+            return {"ok": True, "removed": before, "items": []}
+        track_id = _text(body.get("id"), 128)
+        if not track_id:
+            raise BridgeError("缺少 id 参数或 clear=true")
+        existing = self._load_audio_history()
+        kept = [item for item in existing if item.get("id") != track_id]
+        self._save_audio_history(kept)
+        return {"ok": True, "removed": len(existing) - len(kept), "items": kept}
 
     async def _handle_image_search(self) -> Any:
         return await self._guarded(
@@ -1312,6 +1644,21 @@ class MCodeWebAPI:
             ),
         )
 
+    async def _handle_audio_history(self) -> Any:
+        return await self._guarded(
+            "matrix_mcp",
+            "Media.audioHistory",
+            self._audio_history_payload,
+        )
+
+    async def _handle_audio_history_delete(self) -> Any:
+        return await self._guarded(
+            "matrix_mcp",
+            "Media.audioHistory.delete",
+            self._audio_history_delete_payload,
+            summarize=lambda payload: f"已删除 {payload['removed']} 条音频历史记录",
+        )
+
     async def _handle_download_temp(self) -> Any:
         return await self._guarded(
             "matrix_mcp",
@@ -1319,7 +1666,39 @@ class MCodeWebAPI:
             lambda: _await_sync(self._serve_file, request.query.get("path")),
         )
 
-    # ---------------------------------------------------------------- SSE
+    # ---------------------------------------------------------------- 插件日志与 SSE
+
+    async def _handle_logs(self) -> Any:
+        if self._closed:
+            return error_response("插件已卸载或正在关闭", status_code=503)
+        category = _text(request.query.get("category"), 16).lower() or "all"
+        level = _text(request.query.get("level"), 16).lower() or "all"
+        limit = _int_arg(request.query.get("limit"), default=300, low=1, high=2000)
+        return self._runtime_logs.snapshot(
+            category=category, level=level, limit=limit
+        )
+
+    async def _handle_logs_config(self) -> Any:
+        if self._closed:
+            return error_response("插件已卸载或正在关闭", status_code=503)
+        body = await self._body()
+        if "plugin_level" in body:
+            raw_level = _text(body.get("plugin_level"), 16).upper()
+            if raw_level not in ("DEBUG", "INFO", "WARN", "WARNING", "ERROR"):
+                return error_response(
+                    "plugin_level 必须是 DEBUG / INFO / WARNING / ERROR 之一",
+                    status_code=400,
+                )
+        updated = self._runtime_logs.update_settings(body)
+        return {"ok": True, "config": updated}
+
+    async def _handle_logs_clear(self) -> Any:
+        if self._closed:
+            return error_response("插件已卸载或正在关闭", status_code=503)
+        body = await self._body()
+        category = _text(body.get("category"), 16).lower() or "all"
+        cleared = self._runtime_logs.clear(category=category)
+        return {"ok": True, "cleared": cleared, "category": category}
 
     async def _handle_events(self) -> Any:
         if self._closed:
@@ -1337,7 +1716,7 @@ class MCodeWebAPI:
                     except TimeoutError:
                         yield ": keepalive\n\n"
                         continue
-                    yield f"data: {json.dumps(entry.to_dict(), ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
             except asyncio.CancelledError:
                 raise
             finally:

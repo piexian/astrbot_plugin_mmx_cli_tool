@@ -31,18 +31,6 @@ interface AstrBotPluginViewSDK {
   unsubscribeSSE(subscriptionId: string): Promise<any>;
 }
 
-/**
- * Bridge endpoints with no backend counterpart: the plugin exposes no team-plan
- * data source, so these always fall back to the bundled demo payload. Every other
- * endpoint must surface backend errors instead of silently rendering fake data.
- */
-const DEMO_ONLY_ENDPOINTS = new Set(['plans/current', 'plans/approve']);
-
-function isDemoOnlyEndpoint(endpoint: string): boolean {
-  const path = endpoint.split('?')[0].replace(/^\//, '');
-  return DEMO_ONLY_ENDPOINTS.has(path);
-}
-
 /** `bridgeReported` is set only when the bridge has already toasted this error. */
 export interface BridgeError extends Error {
   bridgeReported?: boolean;
@@ -52,11 +40,11 @@ export interface BridgeError extends Error {
  * Shared SDK failure policy: real endpoints of an online backend toast once and
  * rethrow; otherwise the error is rethrown untoasted unless a fallback exists.
  */
-function handleSdkFailure(endpoint: string, err: unknown, hasFallback: boolean): void {
+function handleSdkFailure(err: unknown, hasFallback: boolean): void {
   const message =
     err instanceof Error ? err.message : typeof err === 'string' ? err : '未知错误';
   const error: BridgeError = new Error(message);
-  if (backendOnline.value && !isDemoOnlyEndpoint(endpoint)) {
+  if (backendOnline.value) {
     pushToast(error.message, 'warn');
     error.bridgeReported = true;
     throw error;
@@ -76,7 +64,26 @@ export interface ToastNotice {
   text: string;
 }
 
-const isDark = ref(document.documentElement.getAttribute('data-theme') === 'dark');
+const systemMedia =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-color-scheme: dark)')
+    : null;
+
+const hostThemeLocked = ref(false);
+const isDark = ref(systemMedia ? systemMedia.matches : document.documentElement.getAttribute('data-theme') === 'dark');
+document.documentElement.setAttribute('data-theme', isDark.value ? 'dark' : 'light');
+
+if (systemMedia) {
+  const onSystemThemeChange = (e: MediaQueryListEvent) => {
+    if (!hostThemeLocked.value) {
+      setThemeMode(e.matches);
+    }
+  };
+  if (typeof systemMedia.addEventListener === 'function') {
+    systemMedia.addEventListener('change', onSystemThemeChange);
+  }
+}
+
 const locale = ref('zh-CN');
 const bridgeConnected = ref(false);
 export const backendOnline = ref(false);
@@ -166,6 +173,7 @@ export function initBridge(attempt = 0): void {
   sdk.onContext((ctx) => {
     bridgeConnected.value = true;
     if (typeof ctx?.isDark === 'boolean') {
+      hostThemeLocked.value = true;
       setThemeMode(ctx.isDark);
     }
     if (typeof ctx?.locale === 'string' && ctx.locale) {
@@ -178,6 +186,7 @@ export function initBridge(attempt = 0): void {
     .then((ctx) => {
       bridgeConnected.value = true;
       if (typeof ctx?.isDark === 'boolean') {
+        hostThemeLocked.value = true;
         setThemeMode(ctx.isDark);
       }
       if (typeof ctx?.locale === 'string' && ctx.locale) {
@@ -185,7 +194,7 @@ export function initBridge(attempt = 0): void {
       }
     })
     .catch(() => {
-      // Standalone mode
+      // Standalone mode: continue following system prefers-color-scheme
     });
 }
 
@@ -201,7 +210,7 @@ export async function bridgeGet<T>(
       backendOnline.value = true;
       return res;
     } catch (err) {
-      handleSdkFailure(endpoint, err, Boolean(fallback));
+      handleSdkFailure(err, Boolean(fallback));
     }
   }
   if (fallback) {
@@ -222,7 +231,7 @@ export async function bridgePost<T>(
       backendOnline.value = true;
       return res;
     } catch (err) {
-      handleSdkFailure(endpoint, err, Boolean(fallback));
+      handleSdkFailure(err, Boolean(fallback));
     }
   }
   if (fallback) {
@@ -243,7 +252,7 @@ export async function bridgeUpload<T>(
       backendOnline.value = true;
       return res;
     } catch (err) {
-      handleSdkFailure(endpoint, err, Boolean(fallback));
+      handleSdkFailure(err, Boolean(fallback));
     }
   }
   if (fallback) {

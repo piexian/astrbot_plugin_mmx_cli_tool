@@ -11,8 +11,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -85,10 +88,21 @@ def sanitize_filename(name: str) -> str:
 class MatrixMediaClient:
     """Matrix 媒体上传与下载。"""
 
-    def __init__(self, api: MatrixAPI, http: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        api: MatrixAPI,
+        http: httpx.AsyncClient | None = None,
+        *,
+        http_observer: Callable[..., Any] | None = None,
+    ) -> None:
         self._api = api
         self._http = http or httpx.AsyncClient(timeout=httpx.Timeout(300), follow_redirects=True)
         self._owns_http = http is None
+        self._http_observer = http_observer
+
+    def set_http_observer(self, observer: Callable[..., Any] | None) -> None:
+        """绑定/解绑媒体传输 HTTP 日志观察器。"""
+        self._http_observer = observer
 
     async def close(self) -> None:
         if self._owns_http:
@@ -132,14 +146,42 @@ class MatrixMediaClient:
                         break
                     yield chunk
 
+        observer = self._http_observer
+        started = time.perf_counter()
+        req_headers = {"Content-Type": content_type, "Content-Length": str(size)}
         try:
             res = await self._http.put(
                 put_url,
                 content=_read_chunks(),
-                headers={"Content-Type": content_type, "Content-Length": str(size)},
+                headers=req_headers,
             )
         except httpx.HTTPError as exc:
+            if observer is not None:
+                observer(
+                    client="media_transfer",
+                    method="PUT",
+                    url=put_url,
+                    status_code=None,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    ok=False,
+                    request_headers=req_headers,
+                    request_body=f"[binary {content_type} {size} B]",
+                    error=f"OSS 直传失败: {exc}",
+                )
             raise MediaTransferError("upload_failed", f"OSS 直传失败: {exc}") from exc
+        if observer is not None:
+            observer(
+                client="media_transfer",
+                method="PUT",
+                url=put_url,
+                status_code=res.status_code,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                ok=res.is_success,
+                request_headers=req_headers,
+                response_headers=res.headers,
+                request_body=f"[binary {content_type} {size} B]",
+                error="" if res.is_success else f"HTTP {res.status_code}",
+            )
         if not res.is_success:
             raise MediaTransferError("upload_failed", f"OSS 直传失败: HTTP {res.status_code}")
         return UploadResult(
@@ -166,8 +208,15 @@ class MatrixMediaClient:
                 "path_not_allowed", f"下载目标必须位于允许目录内: {allowed_dir}"
             )
         started = False
+        observer = self._http_observer
+        t0 = time.perf_counter()
+        written = 0
+        res_status: int | None = None
+        res_headers: Any = None
         try:
             async with self._http.stream("GET", url, timeout=httpx.Timeout(timeout)) as res:
+                res_status = res.status_code
+                res_headers = res.headers
                 if not res.is_success:
                     raise MediaTransferError(
                         "download_failed", f"下载失败: HTTP {res.status_code}"
@@ -179,7 +228,6 @@ class MatrixMediaClient:
                         f"文件超过下载上限 {max_bytes // 1024 // 1024} MiB",
                     )
                 await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-                written = 0
                 with target.open("wb") as fp:
                     started = True
                     async for chunk in res.aiter_bytes(1024 * 256):
@@ -190,12 +238,48 @@ class MatrixMediaClient:
                                 f"文件超过下载上限 {max_bytes // 1024 // 1024} MiB",
                             )
                         await asyncio.to_thread(fp.write, chunk)
-        except MediaTransferError:
+        except MediaTransferError as exc:
             if started:
                 await asyncio.to_thread(target.unlink, missing_ok=True)
+            if observer is not None:
+                observer(
+                    client="media_transfer",
+                    method="GET",
+                    url=url,
+                    status_code=res_status,
+                    latency_ms=int((time.perf_counter() - t0) * 1000),
+                    ok=False,
+                    stream=True,
+                    response_headers=res_headers,
+                    error=str(exc),
+                )
             raise
         except (httpx.HTTPError, OSError) as exc:
             if started:
                 await asyncio.to_thread(target.unlink, missing_ok=True)
+            if observer is not None:
+                observer(
+                    client="media_transfer",
+                    method="GET",
+                    url=url,
+                    status_code=res_status,
+                    latency_ms=int((time.perf_counter() - t0) * 1000),
+                    ok=False,
+                    stream=True,
+                    response_headers=res_headers,
+                    error=f"下载失败: {exc}",
+                )
             raise MediaTransferError("download_failed", f"下载失败: {exc}") from exc
+        if observer is not None:
+            observer(
+                client="media_transfer",
+                method="GET",
+                url=url,
+                status_code=res_status,
+                latency_ms=int((time.perf_counter() - t0) * 1000),
+                ok=True,
+                stream=True,
+                response_headers=res_headers,
+                response_body=f"[downloaded {written} B -> {target.name}]",
+            )
         return target

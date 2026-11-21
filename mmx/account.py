@@ -217,6 +217,7 @@ class MiniMaxCodeAccount:
         *,
         body: dict[str, Any] | None = None,
         with_query: bool = True,
+        extra_query: list[tuple[str, str]] | None = None,
         extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """带签名请求；with_query 控制是否拼接公共 query（open backend 接口不带）。"""
@@ -225,7 +226,15 @@ class MiniMaxCodeAccount:
             raise MiniMaxError(ErrorCategory.AUTH, LOGIN_HINT)
         try:
             return await self._signed_request_once(
-                method, origin, path, region, token, body, with_query, extra_headers
+                method,
+                origin,
+                path,
+                region,
+                token,
+                body,
+                with_query,
+                extra_query,
+                extra_headers,
             )
         except MiniMaxError as exc:
             if exc.category is not ErrorCategory.AUTH or not self._token_refresher:
@@ -241,7 +250,15 @@ class MiniMaxCodeAccount:
             elif origin in _OPEN_ORIGINS.values():
                 origin = _OPEN_ORIGINS.get(region, origin)
             return await self._signed_request_once(
-                method, origin, path, region, token, body, with_query, extra_headers
+                method,
+                origin,
+                path,
+                region,
+                token,
+                body,
+                with_query,
+                extra_query,
+                extra_headers,
             )
 
     async def _signed_request_once(
@@ -253,10 +270,18 @@ class MiniMaxCodeAccount:
         token: str,
         body: dict[str, Any] | None,
         with_query: bool,
+        extra_query: list[tuple[str, str]] | None,
         extra_headers: dict[str, str] | None,
     ) -> dict[str, Any]:
         if with_query:
-            query = urlencode(self._common_query(region))
+            params = list(self._common_query(region))
+            if extra_query:
+                params.extend(extra_query)
+            query = urlencode(sorted(params))
+            path_with_query = f"{path}?{query}"
+            url = f"{origin}{path_with_query}"
+        elif extra_query:
+            query = urlencode(sorted(extra_query))
             path_with_query = f"{path}?{query}"
             url = f"{origin}{path_with_query}"
         else:
@@ -401,13 +426,44 @@ class MiniMaxCodeAccount:
             raise MiniMaxError(ErrorCategory.GENERAL, "账户接口未返回开放平台 API Key")
         return api_key.strip()
 
-    async def credit_details(self) -> dict[str, Any]:
-        """积分明细（credits 明细列表）。"""
+    async def credit_details(
+        self, *, page_size: int = 100, max_pages: int = 10
+    ) -> dict[str, Any]:
+        """积分明细（自动按 page_number/page_size 分页拉全全部批次）。"""
         region, _ = await self._creds_getter()
         origin = _MATRIX_ORIGINS.get(region, _MATRIX_ORIGINS["cn"])
-        return await self._signed_request(
-            "GET", origin, "/minimax-cloud/api/v1/credit/details"
-        )
+        all_items: list[dict[str, Any]] = []
+        last_payload: dict[str, Any] = {}
+        total_count = 0
+        for page in range(1, max_pages + 1):
+            payload = await self._signed_request(
+                "GET",
+                origin,
+                "/minimax-cloud/api/v1/credit/details",
+                extra_query=[
+                    ("page_number", str(page)),
+                    ("page_size", str(page_size)),
+                ],
+            )
+            last_payload = payload
+            batch = [
+                item
+                for item in (payload.get("details") or [])
+                if isinstance(item, dict)
+            ]
+            all_items.extend(batch)
+            raw_total = payload.get("total_count")
+            if isinstance(raw_total, int) and raw_total > 0:
+                total_count = raw_total
+            if not batch or (total_count and len(all_items) >= total_count):
+                break
+            if not total_count and len(batch) < page_size:
+                break
+        merged = dict(last_payload)
+        merged["details"] = all_items
+        if total_count:
+            merged["total_count"] = total_count
+        return merged
 
     async def signin_status(self) -> dict[str, Any]:
         """签到状态（days 列表，含 is_today 与 status）。"""

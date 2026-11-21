@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef } from 'vue';
+import { computed, onMounted, ref, shallowRef } from 'vue';
 import type { ImageSearchItem, MusicTrackItem, ReverseImageMatchItem } from '../types/mcode';
 import {
   bridgeDownload,
+  bridgeGet,
   bridgePost,
   bridgeUpload,
   copyToClipboard,
@@ -12,15 +13,26 @@ import {
 } from '../composables/useBridge';
 import { useCanvas } from '../composables/useCanvas';
 import { usePersistedRef } from '../composables/usePersistedRef';
+import { useSlidingIndicator } from '../composables/useSlidingIndicator';
+import { usePersistedTextareaSize } from '../composables/usePersistedTextareaSize';
 
 const emit = defineEmits<{
-  (e: 'switch-tab', tab: 'canvas' | 'playground' | 'plan'): void;
+  (e: 'switch-tab', tab: 'canvas' | 'playground' | 'logs'): void;
 }>();
 
 const { documentState, addFileNodeToCanvas } = useCanvas();
 const { backendOnline } = useBridge();
 
 const activeSubTab = ref<'search' | 'reverse' | 'music'>('search');
+const subtabBarRef = ref<HTMLElement | null>(null);
+const { indicatorStyle: subtabIndicatorStyle } = useSlidingIndicator(subtabBarRef, activeSubTab);
+
+const audioKind = ref<'music' | 'sfx'>('music');
+const audioModeRef = ref<HTMLElement | null>(null);
+const { indicatorStyle: audioModeIndicatorStyle } = useSlidingIndicator(audioModeRef, [
+  audioKind,
+  activeSubTab,
+]);
 
 /**
  * Result list with an offline-preview side (demo seed + offline fallback results) and a
@@ -303,13 +315,29 @@ async function handleReverseFileSelect(e: Event): Promise<void> {
 /* =========================================================================
  * Sub-Tab 3: AI Music & Sound Effects (batch_text_to_music / batch_text_to_audio)
  * ========================================================================= */
-const audioKind = ref<'music' | 'sfx'>('music');
-const musicPrompt = ref('温暖的独立民谣原声吉他与轻柔钢琴，午后阳光氛围，舒缓治愈');
-const musicLyrics = ref('[Verse]\n暖风吹过羊皮纸的页角\n一行行代码在光影里跳动\n[Chorus]\n我们在无垠的画布上勾勒未来');
-const musicFormat = ref<'mp3' | 'wav'>('mp3');
+const musicPrompt = usePersistedRef(
+  'mcode:playground:music-prompt',
+  '温暖的独立民谣原声吉他与轻柔钢琴，午后阳光氛围，舒缓治愈',
+);
+const musicLyrics = usePersistedRef(
+  'mcode:playground:music-lyrics',
+  '[Verse]\n暖风吹过羊皮纸的页角\n一行行代码在光影里跳动\n[Chorus]\n我们在无垠的画布上勾勒未来',
+);
+const musicFormat = usePersistedRef<'mp3' | 'wav'>('mcode:playground:music-format', 'mp3');
+const musicLyricsRef = ref<HTMLTextAreaElement | null>(null);
+const audioHistoryOpen = usePersistedRef('mcode:playground:audio-history-open', true);
+const audioHistoryFilter = ref<'all' | 'music' | 'sfx'>('all');
 const isGeneratingAudio = ref(false);
+const isLoadingAudioHistory = ref(false);
 
-const { items: generatedTracks, replace: setGeneratedTracks } = useResultList<MusicTrackItem>([
+usePersistedTextareaSize(musicLyricsRef, 'mcode:playground:music-lyrics-height', {
+  defaultHeight: 164,
+  minHeight: 88,
+  maxHeight: 340,
+  maxViewportRatio: 0.36,
+});
+
+const DEMO_AUDIO_SEED: MusicTrackItem[] = [
   {
     id: 'track_demo_01',
     kind: 'music',
@@ -320,7 +348,52 @@ const { items: generatedTracks, replace: setGeneratedTracks } = useResultList<Mu
     created_at_ms: Date.now() - 120000,
     duration_hint: '00:03 (预览和弦)',
   },
-]);
+];
+
+const demoAudioHistory = usePersistedRef<MusicTrackItem[]>(
+  'mcode:playground:audio-demo-history',
+  DEMO_AUDIO_SEED,
+);
+const liveAudioHistory = shallowRef<MusicTrackItem[]>([]);
+
+const generatedTracks = computed(() =>
+  backendOnline.value ? liveAudioHistory.value : demoAudioHistory.value,
+);
+
+const filteredTracks = computed(() => {
+  if (audioHistoryFilter.value === 'all') return generatedTracks.value;
+  return generatedTracks.value.filter((t) => t.kind === audioHistoryFilter.value);
+});
+
+function setGeneratedTracks(next: MusicTrackItem[]): void {
+  if (backendOnline.value) {
+    liveAudioHistory.value = next;
+  } else {
+    demoAudioHistory.value = next.slice(0, 30);
+  }
+}
+
+async function loadAudioHistory(): Promise<void> {
+  isLoadingAudioHistory.value = true;
+  try {
+    const res = await bridgeGet<{ items: MusicTrackItem[] }>(
+      'tools/audio-history',
+      undefined,
+      () => ({ items: demoAudioHistory.value }),
+    );
+    if (res && Array.isArray(res.items)) {
+      if (backendOnline.value) {
+        liveAudioHistory.value = res.items;
+      } else if (!demoAudioHistory.value.length && res.items.length) {
+        demoAudioHistory.value = res.items;
+      }
+    }
+  } catch {
+    // Keep existing list on transient error
+  } finally {
+    isLoadingAudioHistory.value = false;
+  }
+}
 
 async function handleGenerateAudio(): Promise<void> {
   if (musicPrompt.value.trim().length < 4) {
@@ -349,8 +422,9 @@ async function handleGenerateAudio(): Promise<void> {
         duration_hint: audioKind.value === 'music' ? 'AI 编曲合成' : 'AI 拟音音效',
       }),
     );
-    setGeneratedTracks([res, ...generatedTracks.value]);
-    pushToast(audioKind.value === 'music' ? 'AI 音乐生成完成' : 'AI 音效生成完成', 'ok');
+    setGeneratedTracks([res, ...generatedTracks.value.filter((item) => item.id !== res.id)]);
+    audioHistoryOpen.value = true;
+    pushToast(audioKind.value === 'music' ? 'AI 音乐生成完成，已写入记录' : 'AI 音效生成完成，已写入记录', 'ok');
   } catch (err) {
     reportError(err, audioKind.value === 'music' ? 'AI 音乐生成失败' : 'AI 音效生成失败');
   } finally {
@@ -358,19 +432,69 @@ async function handleGenerateAudio(): Promise<void> {
   }
 }
 
+async function handleDeleteTrack(trackId: string): Promise<void> {
+  try {
+    const res = await bridgePost<{ ok: boolean; items: MusicTrackItem[] }>(
+      'tools/audio-history/delete',
+      { id: trackId },
+      () => ({ ok: true, items: generatedTracks.value.filter((t) => t.id !== trackId) }),
+    );
+    setGeneratedTracks(Array.isArray(res?.items) ? res.items : generatedTracks.value.filter((t) => t.id !== trackId));
+    pushToast('已删除该条生成记录', 'info', 1800);
+  } catch (err) {
+    reportError(err, '删除生成记录失败');
+  }
+}
+
+async function handleClearAudioHistory(): Promise<void> {
+  if (!generatedTracks.value.length) return;
+  try {
+    await bridgePost('tools/audio-history/delete', { clear: true }, () => ({ ok: true, items: [] }));
+    setGeneratedTracks([]);
+    pushToast('已清空音频生成记录', 'info', 2000);
+  } catch (err) {
+    reportError(err, '清空生成记录失败');
+  }
+}
+
+function reuseTrackPreset(track: MusicTrackItem): void {
+  audioKind.value = track.kind;
+  musicPrompt.value = track.prompt;
+  if (track.kind === 'music' && track.lyrics !== undefined) {
+    musicLyrics.value = track.lyrics;
+  }
+  musicFormat.value = track.format;
+  pushToast('已回填该记录的创作参数', 'ok', 1800);
+}
+
+function formatTrackTime(ms: number): string {
+  if (!ms || !Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${m}-${day} ${hh}:${mm}`;
+}
+
 async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
   await placeOnCanvas(track.local_path, 'audio', track.output_url);
 }
+
+onMounted(() => {
+  loadAudioHistory();
+});
 </script>
 
 <template>
   <div class="playground-root">
-    <!-- Top Sub-navigation -->
+    <!-- Top Sub-navigation (Centered Tab Bar with Sliding Indicator) -->
     <header class="playground-header">
-      <div>
-        <h2 class="serif-heading pg-title">多模态 Matrix 工具试验台</h2>
+      <div class="header-title-slot">
+        <h2 class="serif-heading pg-title">多模态试验台</h2>
       </div>
-      <div class="subtab-bar">
+      <div ref="subtabBarRef" class="subtab-bar sliding-track" role="tablist" aria-label="多模态功能切换">
+        <span class="sliding-pill" :style="subtabIndicatorStyle()" aria-hidden="true"></span>
         <button
           type="button"
           class="subtab-btn"
@@ -396,11 +520,13 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
           AI 音乐与音效创作
         </button>
       </div>
+      <div class="header-right-spacer" aria-hidden="true"></div>
     </header>
 
     <div class="playground-body">
+      <Transition name="subtab-fade" mode="out-in">
       <!-- 1. Image Search & Download -->
-      <section v-if="activeSubTab === 'search'" class="pg-panel">
+      <section v-if="activeSubTab === 'search'" key="search" class="pg-panel">
         <div class="control-bar-card">
           <div class="field-grow">
             <label class="field-label">检索关键词</label>
@@ -478,7 +604,7 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
       </section>
 
       <!-- 2. Reverse Image Search (Sandbox-Safe Source Cards) -->
-      <section v-else-if="activeSubTab === 'reverse'" class="pg-panel">
+      <section v-else-if="activeSubTab === 'reverse'" key="reverse" class="pg-panel">
         <div class="control-bar-card">
           <div class="field-grow">
             <label class="field-label">选择画布已有图片或输入路径</label>
@@ -550,141 +676,293 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
         <div v-if="!reverseMatches.length" class="pg-empty">暂无溯源结果：选择画布图片或上传本地图片后开始以图搜图</div>
       </section>
 
-      <!-- 3. AI Music & Sound Effects Studio -->
-      <section v-else class="pg-panel">
-        <div class="music-composer-card">
-          <div class="composer-row">
-            <div class="mode-toggle">
-              <button
-                type="button"
-                class="seg-btn"
-                :class="{ active: audioKind === 'music' }"
-                @click="audioKind = 'music'"
-              >
-                AI 编曲音乐
-              </button>
-              <button
-                type="button"
-                class="seg-btn"
-                :class="{ active: audioKind === 'sfx' }"
-                @click="audioKind = 'sfx'"
-              >
-                AI 拟音音效
-              </button>
-            </div>
-            <div class="format-select">
-              <span class="field-label" style="margin: 0">输出格式：</span>
-              <select v-model="musicFormat" class="input-control" style="width: 96px">
-                <option value="mp3">MP3</option>
-                <option value="wav">WAV</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label class="field-label">
-              {{ audioKind === 'music' ? '曲风、配器与情绪描述' : '音效场景描述' }}
-            </label>
-            <input
-              v-model="musicPrompt"
-              type="text"
-              class="input-control"
-              placeholder="例如：温暖的独立民谣吉他，雨夜咖啡馆爵士钢琴..."
-            />
-          </div>
-
-          <div v-if="audioKind === 'music'">
-            <label class="field-label">歌词结构 (可选，支持 [Verse] / [Chorus] 标记)</label>
-            <textarea
-              v-model="musicLyrics"
-              rows="6"
-              class="input-control mono-num"
-              placeholder="[Verse] 输入自定义歌词，留空则生成纯音乐伴奏..."
-            ></textarea>
-          </div>
-
-          <div class="composer-footer">
-            <span class="hint-text">生成音频将自动落盘至 get_shared_temp_dir() 白名单目录</span>
-            <button
-              type="button"
-              class="btn btn-primary"
-              :disabled="isGeneratingAudio"
-              @click="handleGenerateAudio"
-            >
-              {{ isGeneratingAudio ? 'Matrix 音频合成中...' : audioKind === 'music' ? '生成 AI 音乐' : '生成 AI 音效' }}
-            </button>
-          </div>
-        </div>
-
-        <!-- Generated Audio Deck List -->
-        <div class="track-list">
-          <div v-for="track in generatedTracks" :key="track.id" class="track-card">
-            <div class="track-info">
-              <div class="track-head">
-                <span class="pill-badge accent mono-num">
-                  {{ track.kind === 'music' ? 'MUSIC' : 'SFX' }} · {{ track.format.toUpperCase() }}
-                </span>
-                <span class="track-prompt">{{ track.prompt }}</span>
+      <!-- 3. AI Music & Sound Effects Studio (Left Composer + Right Collapsible Persistent History) -->
+      <section v-else key="music" class="music-studio-shell">
+        <div class="music-composer-col">
+          <div class="music-composer-card">
+            <div class="composer-row">
+              <div ref="audioModeRef" class="mode-toggle sliding-track">
+                <span class="sliding-pill" :style="audioModeIndicatorStyle()" aria-hidden="true"></span>
+                <button
+                  type="button"
+                  class="seg-btn"
+                  :class="{ active: audioKind === 'music' }"
+                  @click="audioKind = 'music'"
+                >
+                  AI 编曲音乐
+                </button>
+                <button
+                  type="button"
+                  class="seg-btn"
+                  :class="{ active: audioKind === 'sfx' }"
+                  @click="audioKind = 'sfx'"
+                >
+                  AI 拟音音效
+                </button>
               </div>
-              <div v-if="track.lyrics" class="track-lyrics mono-num">{{ track.lyrics }}</div>
+
+              <div class="composer-right-controls">
+                <div class="format-select">
+                  <span class="field-label" style="margin: 0">格式</span>
+                  <select v-model="musicFormat" class="input-control" style="width: 86px">
+                    <option value="mp3">MP3</option>
+                    <option value="wav">WAV</option>
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  class="btn history-toggle-btn"
+                  :class="{ 'btn-soft': !audioHistoryOpen && generatedTracks.length > 0 }"
+                  :title="audioHistoryOpen ? '收起右侧生成记录列表' : '展开右侧生成记录列表'"
+                  @click="audioHistoryOpen = !audioHistoryOpen"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2.5" />
+                    <line x1="15" y1="3" x2="15" y2="21" />
+                  </svg>
+                  <span>{{ audioHistoryOpen ? '收起记录' : `生成记录 (${generatedTracks.length})` }}</span>
+                </button>
+              </div>
             </div>
 
-            <div class="track-player-row">
-              <audio :src="track.output_url" controls class="track-audio"></audio>
+            <div class="composer-fields-scroll">
+              <div class="composer-field-block">
+                <label class="field-label">
+                  {{ audioKind === 'music' ? '曲风、配器与情绪描述' : '音效场景描述' }}
+                </label>
+                <input
+                  v-model="musicPrompt"
+                  type="text"
+                  class="input-control"
+                  placeholder="例如：温暖的独立民谣吉他，雨夜咖啡馆爵士钢琴..."
+                />
+              </div>
+
+              <div v-if="audioKind === 'music'" class="composer-field-block">
+                <div class="lyrics-label-row">
+                  <label class="field-label" style="margin: 0">
+                    歌词结构 (可选，支持 [Verse] / [Chorus] 标记)
+                  </label>
+                  <span class="resize-hint">可拖拽右下角调整高度（自动记忆）</span>
+                </div>
+                <textarea
+                  ref="musicLyricsRef"
+                  v-model="musicLyrics"
+                  class="input-control mono-num lyrics-textarea"
+                  placeholder="[Verse] 输入自定义歌词，留空则生成纯音乐伴奏..."
+                ></textarea>
+              </div>
+            </div>
+
+            <div class="composer-footer">
+              <span class="hint-text">生成音频会自动落盘并持久化至右侧生成记录列表</span>
               <button
                 type="button"
-                class="btn"
-                :disabled="!track.local_path"
-                :title="track.local_path ? undefined : NOT_CACHED_HINT"
-                @click="sendAudioToCanvas(track)"
+                class="btn btn-primary"
+                :disabled="isGeneratingAudio"
+                @click="handleGenerateAudio"
               >
-                置入画布
-              </button>
-              <button
-                type="button"
-                class="btn"
-                @click="
-                  bridgeDownload(
-                    'tools/download-temp',
-                    { path: track.local_path },
-                    `${track.id}.${track.format}`,
-                    track.output_url,
-                  )
-                "
-              >
-                下载音频
+                {{ isGeneratingAudio ? 'Matrix 音频合成中...' : audioKind === 'music' ? '生成 AI 音乐' : '生成 AI 音效' }}
               </button>
             </div>
           </div>
         </div>
-        <div v-if="!generatedTracks.length" class="pg-empty">暂无生成记录：输入描述词后点击上方按钮生成</div>
+
+        <!-- Right Collapsible Persistent Audio History List -->
+        <Transition name="history-slide">
+          <aside v-if="audioHistoryOpen" class="music-history-aside" aria-label="AI 音频生成历史">
+            <div class="history-header">
+              <div class="history-title-wrap">
+                <span class="history-title">生成记录</span>
+                <span class="pill-badge mono-num">{{ generatedTracks.length }}</span>
+              </div>
+              <div class="history-header-actions">
+                <button
+                  type="button"
+                  class="btn-ghost history-icon-btn"
+                  title="刷新持久化记录"
+                  :disabled="isLoadingAudioHistory"
+                  @click="loadAudioHistory"
+                >
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    :class="{ 'is-spinning': isLoadingAudioHistory }"
+                  >
+                    <path d="M21 2v6h-6" />
+                    <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                    <path d="M3 22v-6h6" />
+                    <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+                  </svg>
+                </button>
+                <button
+                  v-if="generatedTracks.length"
+                  type="button"
+                  class="btn-ghost history-text-btn"
+                  @click="handleClearAudioHistory"
+                >
+                  清空
+                </button>
+                <button
+                  type="button"
+                  class="btn-ghost history-icon-btn"
+                  title="收起记录面板"
+                  aria-label="收起记录面板"
+                  @click="audioHistoryOpen = false"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="history-filter-bar">
+              <button
+                type="button"
+                class="mini-filter-chip"
+                :class="{ active: audioHistoryFilter === 'all' }"
+                @click="audioHistoryFilter = 'all'"
+              >
+                全部
+              </button>
+              <button
+                type="button"
+                class="mini-filter-chip"
+                :class="{ active: audioHistoryFilter === 'music' }"
+                @click="audioHistoryFilter = 'music'"
+              >
+                音乐
+              </button>
+              <button
+                type="button"
+                class="mini-filter-chip"
+                :class="{ active: audioHistoryFilter === 'sfx' }"
+                @click="audioHistoryFilter = 'sfx'"
+              >
+                音效
+              </button>
+            </div>
+
+            <div class="history-list-scroll">
+              <div v-if="filteredTracks.length" class="track-list">
+                <article v-for="track in filteredTracks" :key="track.id" class="track-card">
+                  <div class="track-card-top">
+                    <span class="pill-badge accent mono-num">
+                      {{ track.kind === 'music' ? 'MUSIC' : 'SFX' }} · {{ track.format.toUpperCase() }}
+                    </span>
+                    <span class="track-time mono-num">{{ formatTrackTime(track.created_at_ms) }}</span>
+                  </div>
+
+                  <div class="track-prompt" :title="track.prompt">{{ track.prompt }}</div>
+                  <div v-if="track.lyrics" class="track-lyrics mono-num">{{ track.lyrics }}</div>
+
+                  <audio :src="track.output_url" controls class="track-audio"></audio>
+
+                  <div class="track-actions-row">
+                    <button
+                      type="button"
+                      class="btn btn-mini"
+                      @click="reuseTrackPreset(track)"
+                    >
+                      复用参数
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-mini"
+                      :disabled="!track.local_path"
+                      :title="track.local_path ? undefined : NOT_CACHED_HINT"
+                      @click="sendAudioToCanvas(track)"
+                    >
+                      置入画布
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-mini"
+                      @click="
+                        bridgeDownload(
+                          'tools/download-temp',
+                          { path: track.local_path },
+                          `${track.id}.${track.format}`,
+                          track.output_url,
+                        )
+                      "
+                    >
+                      下载
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-ghost track-del-btn"
+                      title="删除此记录"
+                      aria-label="删除此记录"
+                      @click="handleDeleteTrack(track.id)"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6" />
+                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                        <path d="M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
+                  </div>
+                </article>
+              </div>
+
+              <div v-else class="history-empty">
+                {{
+                  generatedTracks.length
+                    ? '当前分类暂无记录'
+                    : '暂无持久化生成记录，点击左侧生成按钮即可自动保存至此列表'
+                }}
+              </div>
+            </div>
+          </aside>
+        </Transition>
       </section>
+      </Transition>
     </div>
 
-    <!-- Inline Image Lightbox Modal -->
-    <div v-if="lightboxItem" class="lightbox-backdrop" @click="lightboxItem = null">
-      <div class="lightbox-dialog" @click.stop>
-        <img :src="lightboxItem.image_url" :alt="lightboxItem.title" class="lightbox-img" />
-        <div class="lightbox-bar">
-          <div>
-            <div class="lightbox-title">{{ lightboxItem.title }}</div>
-            <div class="lightbox-sub mono-num">{{ lightboxItem.local_path || '未缓存到本地' }}</div>
-          </div>
-          <div style="display: flex; gap: 8px">
+    <!-- Inline Image Lightbox Modal (Top-right X only) -->
+    <Teleport to="body">
+      <Transition name="modal-fade">
+        <div v-if="lightboxItem" class="lightbox-backdrop" @click="lightboxItem = null">
+          <div class="lightbox-dialog" @click.stop>
             <button
               type="button"
-              class="btn btn-primary"
-              :disabled="!lightboxItem.local_path"
-              :title="lightboxItem.local_path ? undefined : NOT_CACHED_HINT"
-              @click="sendImageToCanvas(lightboxItem); lightboxItem = null"
+              class="lightbox-close-btn"
+              title="关闭预览"
+              aria-label="关闭预览"
+              @click="lightboxItem = null"
             >
-              置入无限画布
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
             </button>
-            <button type="button" class="btn" @click="lightboxItem = null">关闭</button>
+            <img :src="lightboxItem.image_url" :alt="lightboxItem.title" class="lightbox-img" />
+            <div class="lightbox-bar">
+              <div>
+                <div class="lightbox-title">{{ lightboxItem.title }}</div>
+                <div class="lightbox-sub mono-num">{{ lightboxItem.local_path || '未缓存到本地' }}</div>
+              </div>
+              <button
+                type="button"
+                class="btn btn-primary"
+                :disabled="!lightboxItem.local_path"
+                :title="lightboxItem.local_path ? undefined : NOT_CACHED_HINT"
+                @click="sendImageToCanvas(lightboxItem); lightboxItem = null"
+              >
+                置入无限画布
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -698,14 +976,21 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
 }
 
 .playground-header {
-  padding: 16px 22px;
+  padding: 14px 22px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-hairline);
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 16px;
-  flex-wrap: wrap;
+}
+
+.header-title-slot {
+  min-width: 0;
+}
+
+.header-right-spacer {
+  min-width: 0;
 }
 
 .pg-title {
@@ -713,30 +998,64 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
   font-size: 18px;
 }
 
-
 .subtab-bar {
   display: inline-flex;
+  align-items: center;
+  justify-self: center;
   padding: 3px;
   border-radius: var(--radius-sm);
   background: var(--bg-surface-muted);
   border: 1px solid var(--border-hairline);
+  gap: 2px;
 }
 
 .subtab-btn {
-  padding: 5px 12px;
-  border-radius: 4px;
+  padding: 6px 14px;
+  border-radius: 6px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
+  transition: color 160ms var(--ease-out), transform 120ms var(--ease-out);
+}
+
+.subtab-btn:hover {
+  color: var(--text-primary);
+}
+
+.subtab-btn:active {
+  transform: scale(0.97);
 }
 
 .subtab-btn.active {
-  background: var(--bg-surface);
   color: var(--accent);
-  box-shadow: var(--shadow-card);
+  font-weight: 600;
+}
+
+@media (max-width: 860px) {
+  .playground-header {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .header-right-spacer {
+    display: none;
+  }
+
+  .subtab-bar {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .subtab-bar::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 .playground-body {
@@ -935,6 +1254,27 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
   white-space: nowrap;
 }
 
+.music-studio-shell {
+  max-width: 1240px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0 auto;
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.music-composer-col {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .music-composer-card {
   background: var(--bg-surface);
   border: 1px solid var(--border-hairline);
@@ -944,57 +1284,224 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
   flex-direction: column;
   gap: 12px;
   box-shadow: var(--shadow-card);
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.composer-fields-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 2px;
+}
+
+.composer-field-block {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.lyrics-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.resize-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.lyrics-textarea {
+  width: 100%;
+  max-width: 100%;
+  min-height: 88px;
+  max-height: min(36vh, 340px);
+  resize: vertical;
+  overflow-y: auto;
 }
 
 .composer-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.composer-right-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.history-toggle-btn {
+  padding: 5px 10px;
+  font-size: 12px;
 }
 
 .mode-toggle {
   display: inline-flex;
-  padding: 2px;
+  padding: 3px;
   border-radius: var(--radius-sm);
   background: var(--bg-surface-muted);
   border: 1px solid var(--border-hairline);
+  gap: 2px;
 }
 
 .seg-btn {
-  padding: 5px 10px;
-  border-radius: 4px;
+  padding: 5px 11px;
+  border-radius: 6px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  transition: color 160ms var(--ease-out), transform 120ms var(--ease-out);
+}
+
+.seg-btn:hover {
+  color: var(--text-primary);
+}
+
+.seg-btn:active {
+  transform: scale(0.97);
 }
 
 .seg-btn.active {
-  background: var(--bg-surface);
   color: var(--accent);
-  box-shadow: var(--shadow-card);
+  font-weight: 600;
 }
 
 .format-select {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .composer-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-top: 4px;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-hairline);
 }
 
 .hint-text {
   font-size: 11.5px;
   color: var(--text-tertiary);
+}
+
+/* Right Collapsible History Sidebar */
+.music-history-aside {
+  width: 356px;
+  min-width: 320px;
+  max-width: 42%;
+  max-height: 100%;
+  min-height: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.history-header {
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border-hairline);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.history-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.history-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.history-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.history-icon-btn {
+  padding: 5px;
+  border-radius: var(--radius-xs);
+  border: none;
+  cursor: pointer;
+}
+
+.history-text-btn {
+  padding: 4px 7px;
+  font-size: 11.5px;
+  border: none;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+
+.history-filter-bar {
+  padding: 8px 14px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-hairline);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mini-filter-chip {
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-hairline);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 140ms var(--ease-out);
+}
+
+.mini-filter-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.mini-filter-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.history-list-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
 }
 
 .track-list {
@@ -1004,64 +1511,178 @@ async function sendAudioToCanvas(track: MusicTrackItem): Promise<void> {
 }
 
 .track-card {
-  background: var(--bg-surface);
+  background: var(--bg-canvas);
   border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-md);
-  padding: 14px 16px;
-  box-shadow: var(--shadow-card);
+  border-radius: var(--radius-sm);
+  padding: 11px 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+  transition: border-color 140ms var(--ease-out);
 }
 
-.track-head {
+.track-card:hover {
+  border-color: var(--border-strong);
+}
+
+.track-card-top {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.track-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
 }
 
 .track-prompt {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
+  color: var(--text-primary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .track-lyrics {
-  margin-top: 6px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-secondary);
   white-space: pre-line;
-}
-
-.track-player-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .track-audio {
-  flex: 1;
-  height: 36px;
+  width: 100%;
+  height: 34px;
+}
+
+.track-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.btn-mini {
+  padding: 4px 8px;
+  font-size: 11.5px;
+}
+
+.track-del-btn {
+  margin-left: auto;
+  padding: 4px 6px;
+  border-radius: var(--radius-xs);
+  border: none;
+  cursor: pointer;
+  color: var(--text-tertiary);
+}
+
+.track-del-btn:hover {
+  color: var(--status-danger);
+  background: var(--status-danger-bg);
+}
+
+.history-empty {
+  padding: 36px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.6;
+}
+
+.history-slide-enter-active,
+.history-slide-leave-active {
+  transition: opacity 180ms var(--ease-out), transform 200ms var(--ease-out);
+}
+
+.history-slide-enter-from,
+.history-slide-leave-to {
+  opacity: 0;
+  transform: translateX(12px);
+}
+
+@media (max-width: 980px) {
+  .music-studio-shell {
+    flex-direction: column;
+    height: auto;
+    overflow: visible;
+  }
+
+  .music-composer-col,
+  .music-composer-card {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .music-history-aside {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    max-height: 440px;
+  }
 }
 
 .lightbox-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(18, 18, 16, 0.72);
+  background: var(--bg-backdrop);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 200;
-  padding: 28px;
+  z-index: 260;
+  padding: 24px;
 }
 
 .lightbox-dialog {
+  position: relative;
   max-width: 820px;
   width: 100%;
   background: var(--bg-surface);
   border-radius: var(--radius-lg);
-  border: 1px solid var(--border-hairline);
+  border: 1px solid var(--border-strong);
   overflow: hidden;
-  box-shadow: var(--shadow-float);
+  box-shadow: var(--shadow-modal);
+  transition: transform 200ms var(--ease-out), opacity 170ms var(--ease-out);
+}
+
+.modal-fade-enter-from .lightbox-dialog,
+.modal-fade-leave-to .lightbox-dialog {
+  opacity: 0;
+  transform: scale(0.96) translateY(8px);
+}
+
+.lightbox-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: background-color 140ms var(--ease-out), transform 120ms var(--ease-out);
+}
+
+.lightbox-close-btn:hover {
+  background: var(--bg-surface-hover);
+}
+
+.lightbox-close-btn:active {
+  transform: scale(0.93);
 }
 
 .lightbox-img {

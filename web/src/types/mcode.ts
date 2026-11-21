@@ -1,10 +1,6 @@
 /**
- * MiniMax Code (MCode 3.1.4) + AstrBot Plugin Page Type Contracts.
- * Aligns 1:1 with:
- * - @mavis/local-runtime-v2/src/service/canvas/contracts.ts (CanvasDocumentV1 / CanvasOperationV1)
- * - @mavis/oauth-core (Device Authorization + PKCE)
- * - @mavis/agent-tools Matrix MCP tools (images_search_and_download, image_reverse_search, batch_text_to_music, batch_text_to_audio)
- * - M-Plan 2.0 dual-cycle quota (/backend/account/token_plan/remains_percent & usage_summary)
+ * MiniMax Code + AstrBot Plugin Page Type Contracts.
+ * Aligns 1:1 with mmx/web_api.py & mmx/runtime_logs.py.
  */
 
 export type ServiceRegion = 'cn' | 'global';
@@ -30,15 +26,28 @@ export interface QuotaBucket {
   total: number;
   used: number;
   remaining: number;
+  has_counts?: boolean;
   remaining_percent: number;
   /** 1 = normal, 2 = exhausted, 3 = unlimited */
   status: 1 | 2 | 3;
   reset_at_ms: number;
 }
 
+export interface AccountBalanceBreakdown {
+  available?: string;
+  cash?: string;
+  voucher?: string;
+  credit?: string;
+  owed?: string;
+  consumed?: string;
+}
+
 export interface MPlanQuotaResponse {
   plan_name: string;
   region: ServiceRegion;
+  has_plan_quota?: boolean;
+  has_interval?: boolean;
+  has_weekly_video?: boolean;
   interval_5h: QuotaBucket;
   weekly_video: QuotaBucket;
   credit_fallback: {
@@ -47,19 +56,55 @@ export interface MPlanQuotaResponse {
     balance: string;
     consumed_today: string;
   };
+  balance_breakdown?: AccountBalanceBreakdown | null;
+  keys?: {
+    total: number;
+    failed: number;
+  };
   updated_at_ms: number;
 }
 
-
 export interface AccountCreditDetailItem {
+  credit_type?: number | string | null;
+  category?: 'base' | 'bonus';
+  label?: string;
   granted_amount?: string;
   remaining_amount?: string;
-  expire_at_ms?: number;
+  consumed_amount?: string;
+  granted_at_ms?: number | null;
+  expire_at_ms?: number | null;
+  status?: number | string | null;
 }
 
 export interface AccountModelRemainItem {
   model_name?: string;
-  usage_count?: number;
+  usage_count?: number | null;
+  is_video?: boolean;
+  remaining?: number | null;
+  total?: number | null;
+  used?: number | null;
+  remaining_percent?: number | null;
+  unlimited?: boolean;
+  unavailable?: boolean;
+  window_label?: string;
+  reset_at_ms?: number | null;
+}
+
+export interface AccountSigninDayItem {
+  day_no: number | null;
+  points: number | null;
+  bonus_points?: number | null;
+  status: number | null;
+  is_today: boolean;
+  claimed: boolean;
+}
+
+export interface AccountSigninClaimResponse {
+  ok: boolean;
+  claimed: boolean;
+  day_no?: number | null;
+  points?: number | null;
+  claim_id?: string;
 }
 
 export interface AccountUsageResponse {
@@ -68,19 +113,23 @@ export interface AccountUsageResponse {
   credit_split: { base: string; bonus: string } | null;
   fallback_enabled: boolean | null;
   credit_details: AccountCreditDetailItem[];
+  credit_details_count?: number;
   credit_total_remaining: string;
   model_remains: AccountModelRemainItem[];
   signin: {
+    scene?: number | null;
     days_total: number;
     today_day_no: number | null;
     today_points: number | null;
     today_claimed: boolean | null;
+    days?: AccountSigninDayItem[];
   } | null;
   plan_name?: string;
   interval_5h?: QuotaBucket;
   weekly_video?: QuotaBucket;
   updated_at_ms: number;
 }
+
 export interface OAuthDeviceStartResponse {
   session_id: string;
   region: ServiceRegion;
@@ -243,34 +292,60 @@ export interface MusicTrackItem {
 }
 
 /* =========================================================================
- * Team Plan & Live SSE Terminal Stream
+ * Plugin Runtime Logs & Plugin HTTP Logs
  * ========================================================================= */
 
-export interface TeamPlanTaskItem {
-  id: string;
-  title: string;
-  owner: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'blocked';
-  target_files: string[];
-  summary: string;
+export type PluginLogLevel = 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
+
+export interface RuntimeLogConfig {
+  plugin_enabled: boolean;
+  plugin_level: PluginLogLevel;
+  http_enabled: boolean;
+  http_include_headers: boolean;
+  http_include_body: boolean;
+  http_body_max_chars: number;
+  http_only_errors: boolean;
+  max_entries: number;
 }
 
-export interface TeamPlanState {
-  plan_id: string;
-  title: string;
-  model: string;
-  status: 'review_required' | 'approved' | 'executing' | 'completed';
-  updated_at_ms: number;
-  overview: string;
-  tasks: TeamPlanTaskItem[];
+export interface HttpLogDetail {
+  client: string;
+  method: string;
+  url: string;
+  host: string;
+  path: string;
+  status_code: number | null;
+  ok: boolean;
+  stream: boolean;
+  model?: string;
+  error?: string;
+  request_headers?: Record<string, string>;
+  response_headers?: Record<string, string>;
+  request_body?: string;
+  response_body?: string;
 }
 
-export interface TerminalLogEntry {
+export interface PluginLogEntry {
   id: string;
   ts_ms: number;
-  source: 'matrix_mcp' | 'oauth' | 'canvas' | 'plan' | 'llm';
-  level: 'info' | 'ok' | 'warn' | 'error';
+  category?: 'plugin' | 'http' | 'event';
+  source: string;
+  level: 'debug' | 'info' | 'ok' | 'warn' | 'error';
   command: string;
   detail: string;
   latency_ms?: number;
+  module?: string;
+  http?: HttpLogDetail;
+}
+
+export interface PluginLogsResponse {
+  entries: PluginLogEntry[];
+  config: RuntimeLogConfig;
+  stats: {
+    all: number;
+    plugin: number;
+    http: number;
+    event: number;
+    errors: number;
+  };
 }

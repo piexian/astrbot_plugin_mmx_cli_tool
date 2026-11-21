@@ -14,7 +14,16 @@ import { bridgeGet, bridgePost, pushToast } from './useBridge';
  * Generates clean inline SVG data URLs for default demo nodes so the canvas
  * renders crisp visuals offline with zero external network dependencies.
  */
+function escapeSvgText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function createPosterSvgDataUrl(title: string, subtitle: string, accentHex: string): string {
+  const safeTitle = escapeSvgText(title);
+  const safeSubtitle = escapeSvgText(subtitle);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 640 400">
     <defs>
       <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
@@ -28,8 +37,8 @@ function createPosterSvgDataUrl(title: string, subtitle: string, accentHex: stri
     <circle cx="465" cy="215" r="54" fill="#262624" opacity="0.06"/>
     <rect x="56" y="62" width="96" height="24" rx="12" fill="${accentHex}" opacity="0.16"/>
     <text x="104" y="78" font-family="Georgia, serif" font-size="11" fill="${accentHex}" text-anchor="middle" font-weight="bold">MCODE CANVAS</text>
-    <text x="56" y="138" font-family="Georgia, serif" font-size="28" fill="#262624" font-weight="600">${title}</text>
-    <text x="56" y="174" font-family="sans-serif" font-size="14" fill="#6b6a63">${subtitle}</text>
+    <text x="56" y="138" font-family="Georgia, serif" font-size="28" fill="#262624" font-weight="600">${safeTitle}</text>
+    <text x="56" y="174" font-family="sans-serif" font-size="14" fill="#6b6a63">${safeSubtitle}</text>
     <line x1="56" y1="210" x2="340" y2="210" stroke="#e5e4dd" stroke-width="1"/>
     <rect x="56" y="236" width="160" height="86" rx="8" fill="#fbfbf9" stroke="#e5e4dd"/>
     <text x="72" y="266" font-family="monospace" font-size="12" fill="#262624">Res: 2048 × 1280</text>

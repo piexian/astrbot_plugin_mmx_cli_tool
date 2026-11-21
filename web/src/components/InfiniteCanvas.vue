@@ -3,6 +3,8 @@ import { ref, reactive } from 'vue';
 import type { CanvasFileNodeV1, CanvasIterateResponse } from '../types/mcode';
 import { useCanvas } from '../composables/useCanvas';
 import { bridgeDownload, copyToClipboard, reportError, useBridge } from '../composables/useBridge';
+import { useSlidingIndicator } from '../composables/useSlidingIndicator';
+import { usePersistedTextareaSize } from '../composables/usePersistedTextareaSize';
 
 const {
   documentState,
@@ -24,9 +26,20 @@ const {
 } = useCanvas();
 const { backendOnline } = useBridge();
 
+const modeSegmentedRef = ref<HTMLElement | null>(null);
+const { indicatorStyle: modeIndicatorStyle } = useSlidingIndicator(modeSegmentedRef, interactionMode);
+
 const inspectorOpen = ref(true);
 const extraPrompt = ref('');
+const extraPromptRef = ref<HTMLTextAreaElement | null>(null);
 const lastIterateResponse = ref<CanvasIterateResponse | null>(null);
+
+usePersistedTextareaSize(extraPromptRef, 'mcode:canvas:extra-prompt-height', {
+  defaultHeight: 68,
+  minHeight: 52,
+  maxHeight: 168,
+  maxViewportRatio: 0.22,
+});
 
 // Panning state
 const isPanning = ref(false);
@@ -307,7 +320,8 @@ async function handleTriggerIteration(): Promise<void> {
     <!-- Top Canvas Control Bar (Claude Artifact Bar style) -->
     <header class="canvas-toolbar">
       <div class="toolbar-left">
-        <div class="mode-segmented">
+        <div ref="modeSegmentedRef" class="mode-segmented sliding-track">
+          <span class="sliding-pill" :style="modeIndicatorStyle()" aria-hidden="true"></span>
           <button
             type="button"
             class="seg-btn"
@@ -605,9 +619,10 @@ async function handleTriggerIteration(): Promise<void> {
         <div class="inspector-footer">
           <div class="inspector-title">附加全局迭代要求</div>
           <textarea
+            ref="extraPromptRef"
             v-model="extraPrompt"
             rows="2"
-            class="input-control"
+            class="input-control inspector-textarea"
             placeholder="可选：补充整体风格或光影指令..."
           ></textarea>
           <button
@@ -668,10 +683,11 @@ async function handleTriggerIteration(): Promise<void> {
 
 .mode-segmented {
   display: inline-flex;
-  padding: 2px;
+  padding: 3px;
   border-radius: var(--radius-sm);
   background: var(--bg-surface-muted);
   border: 1px solid var(--border-hairline);
+  gap: 2px;
 }
 
 .seg-btn {
@@ -679,19 +695,27 @@ async function handleTriggerIteration(): Promise<void> {
   align-items: center;
   gap: 5px;
   padding: 4px 10px;
-  border-radius: 4px;
+  border-radius: 6px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  transition: color 160ms var(--ease-out), transform 120ms var(--ease-out);
+}
+
+.seg-btn:hover {
+  color: var(--text-primary);
+}
+
+.seg-btn:active {
+  transform: scale(0.97);
 }
 
 .seg-btn.active {
-  background: var(--bg-surface);
   color: var(--accent);
-  box-shadow: var(--shadow-card);
+  font-weight: 600;
 }
 
 .zoom-controls {
@@ -999,6 +1023,8 @@ async function handleTriggerIteration(): Promise<void> {
 .canvas-inspector {
   width: 290px;
   min-width: 290px;
+  min-height: 0;
+  overflow: hidden;
   background: var(--bg-surface);
   border-left: 1px solid var(--border-hairline);
   display: flex;
@@ -1090,6 +1116,16 @@ async function handleTriggerIteration(): Promise<void> {
 .inspector-footer {
   padding: 12px 14px;
   background: var(--bg-surface-muted);
+  flex-shrink: 0;
+  max-height: 52%;
+  overflow-y: auto;
+}
+
+.inspector-textarea {
+  min-height: 52px;
+  max-height: min(22vh, 168px);
+  max-width: 100%;
+  resize: vertical;
 }
 
 .submitted-preview {

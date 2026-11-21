@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 from collections.abc import Callable, Awaitable
 from typing import Any
@@ -29,6 +30,7 @@ class MiniMaxClient:
         region: str = "cn",
         timeout: float = 300,
         proxy: str | None = None,
+        http_observer: Callable[..., Any] | None = None,
     ) -> None:
         self._api_key = api_key
         self._key_getter = key_getter
@@ -39,6 +41,11 @@ class MiniMaxClient:
             proxy=proxy or None,
         )
         self._streams: set[httpx.Response] = set()
+        self._http_observer = http_observer
+
+    def set_http_observer(self, observer: Callable[..., Any] | None) -> None:
+        """绑定/解绑运行时 HTTP 日志观察器（由插件工作台实时开关控制）。"""
+        self._http_observer = observer
 
     @property
     def base_url(self) -> str:
@@ -137,15 +144,75 @@ class MiniMaxClient:
             files=files,
             **({"timeout": httpx.Timeout(timeout)} if timeout is not None else {}),
         )
-        res = await self._client.send(request, stream=stream)
+        observer = self._http_observer
+        started = time.perf_counter()
+        req_ct = request.headers.get("content-type", "")
+        req_payload: Any = body if files is None else "[multipart/form-data]"
+        if req_payload is None and data is not None:
+            req_payload = data
+        try:
+            res = await self._client.send(request, stream=stream)
+        except Exception as exc:
+            if observer is not None:
+                observer(
+                    client="minimax_api",
+                    method=method,
+                    url=str(request.url),
+                    status_code=None,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    ok=False,
+                    stream=stream,
+                    model=model,
+                    request_headers=request.headers,
+                    request_body=req_payload,
+                    request_content_type=req_ct,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            raise
+        latency_ms = int((time.perf_counter() - started) * 1000)
         if not res.is_success:
             try:
-                await res.aread()
+                raw_err = await res.aread()
                 error = classify_error(res.status_code, res, path)
+                if observer is not None:
+                    observer(
+                        client="minimax_api",
+                        method=method,
+                        url=str(request.url),
+                        status_code=res.status_code,
+                        latency_ms=latency_ms,
+                        ok=False,
+                        stream=stream,
+                        model=model,
+                        request_headers=request.headers,
+                        response_headers=res.headers,
+                        request_body=req_payload,
+                        request_content_type=req_ct,
+                        response_body=raw_err,
+                        response_content_type=res.headers.get("content-type", ""),
+                        error=str(error),
+                    )
                 await self._notify_pool_error(key_index, model, error)
                 raise error
             finally:
                 await res.aclose()
+        if observer is not None:
+            observer(
+                client="minimax_api",
+                method=method,
+                url=str(request.url),
+                status_code=res.status_code,
+                latency_ms=latency_ms,
+                ok=True,
+                stream=stream,
+                model=model,
+                request_headers=request.headers,
+                response_headers=res.headers,
+                request_body=req_payload,
+                request_content_type=req_ct,
+                response_body=None if stream else res.content,
+                response_content_type=res.headers.get("content-type", ""),
+            )
         if stream:
             self._streams.add(res)
         return res

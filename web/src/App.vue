@@ -3,20 +3,28 @@ import { ref, onMounted } from 'vue';
 import SidebarQuota from './components/SidebarQuota.vue';
 import InfiniteCanvas from './components/InfiniteCanvas.vue';
 import MediaPlayground from './components/MediaPlayground.vue';
-import PlanAndTerminal from './components/PlanAndTerminal.vue';
+import PluginLogsConsole from './components/PluginLogsConsole.vue';
 import type { PluginStatusResponse } from './types/mcode';
 import { bridgeGet, bridgePost, pushToast, useBridge } from './composables/useBridge';
 import { useCanvas } from './composables/useCanvas';
+import { useSlidingIndicator } from './composables/useSlidingIndicator';
 
-const { isDark, bridgeConnected, backendOnline, toasts, toggleThemeMode } = useBridge();
+const { bridgeConnected, backendOnline, toasts } = useBridge();
 const { loadCanvasDocument, totalAnnotationsCount } = useCanvas();
 
-const activeTab = ref<'canvas' | 'playground' | 'plan'>('canvas');
+const activeTab = ref<'canvas' | 'playground' | 'logs'>('canvas');
 const sidebarOpen = ref(true);
+const statusReady = ref(false);
+
+const primaryNavRef = ref<HTMLElement | null>(null);
+const { indicatorStyle: navIndicatorStyle } = useSlidingIndicator(primaryNavRef, [
+  activeTab,
+  totalAnnotationsCount,
+]);
 
 const status = ref<PluginStatusResponse>({
   api_version: 1,
-  instance_id: 'mcode_studio_v070',
+  instance_id: 'mcode_studio_preview',
   state: 'ready',
   ready: true,
   region: 'cn',
@@ -52,12 +60,16 @@ async function handleEffortChange(e: Event): Promise<void> {
 }
 
 onMounted(async () => {
-  const remoteStatus = await bridgeGet<PluginStatusResponse>('status', undefined, () => status.value);
-  if (remoteStatus && remoteStatus.model) {
-    status.value = remoteStatus;
-    if (remoteStatus.provider_source_warning) {
-      pushToast(remoteStatus.provider_source_warning, 'warn', 6000);
+  try {
+    const remoteStatus = await bridgeGet<PluginStatusResponse>('status', undefined, () => status.value);
+    if (remoteStatus && remoteStatus.model) {
+      status.value = remoteStatus;
+      if (remoteStatus.provider_source_warning) {
+        pushToast(remoteStatus.provider_source_warning, 'warn', 6000);
+      }
     }
+  } finally {
+    statusReady.value = true;
   }
   await loadCanvasDocument();
 });
@@ -65,38 +77,58 @@ onMounted(async () => {
 
 <template>
   <div class="studio-shell">
-    <!-- Left Control & Quota Sidebar -->
+    <!-- Mobile backdrop when sidebar drawer is open -->
+    <Transition name="modal-fade">
+      <div
+        v-if="sidebarOpen"
+        class="mobile-sidebar-backdrop"
+        @click="sidebarOpen = false"
+      ></div>
+    </Transition>
+
+    <!-- Left Control, Credits & Quota Sidebar -->
     <SidebarQuota
       v-if="sidebarOpen"
       :status="status"
+      :status-ready="statusReady"
       @status-updated="handleStatusUpdated"
       @switch-tab="(tab) => (activeTab = tab)"
+      @close-sidebar="sidebarOpen = false"
     />
 
     <!-- Right Main Workspace -->
     <div class="workspace-column">
-      <!-- Top Navigation Header -->
+      <!-- Claude-style Editorial Top Navigation Bar (theme follows host/system) -->
       <header class="workspace-topbar">
         <div class="topbar-left">
           <button
             type="button"
             class="btn-ghost sidebar-toggle-btn"
+            :class="{ collapsed: !sidebarOpen }"
             :title="sidebarOpen ? '收起左侧面板' : '展开左侧面板'"
+            :aria-label="sidebarOpen ? '收起左侧面板' : '展开左侧面板'"
             @click="sidebarOpen = !sidebarOpen"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="3" y="3" width="18" height="18" rx="2" />
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <rect x="3" y="3" width="18" height="18" rx="3" />
               <line x1="9" y1="3" x2="9" y2="21" />
             </svg>
           </button>
 
-          <nav class="primary-nav" aria-label="主工作区导航">
+          <nav ref="primaryNavRef" class="primary-nav sliding-track" aria-label="主工作区导航">
+            <span class="sliding-pill" :style="navIndicatorStyle()" aria-hidden="true"></span>
             <button
               type="button"
               class="nav-tab"
               :class="{ active: activeTab === 'canvas' }"
               @click="activeTab = 'canvas'"
             >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                <rect x="14" y="14" width="7" height="7" rx="1.5" />
+              </svg>
               无限画布
               <span v-if="totalAnnotationsCount" class="nav-count mono-num">{{ totalAnnotationsCount }}</span>
             </button>
@@ -106,15 +138,22 @@ onMounted(async () => {
               :class="{ active: activeTab === 'playground' }"
               @click="activeTab = 'playground'"
             >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M12 3l2.4 5.4L20 10l-4.5 3.8L17 20l-5-3-5 3 1.5-6.2L4 10l5.6-1.6L12 3z" />
+              </svg>
               多模态试验台
             </button>
             <button
               type="button"
               class="nav-tab"
-              :class="{ active: activeTab === 'plan' }"
-              @click="activeTab = 'plan'"
+              :class="{ active: activeTab === 'logs' }"
+              @click="activeTab = 'logs'"
             >
-              Team Plan 与实时终端
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+              插件日志
             </button>
           </nav>
         </div>
@@ -125,16 +164,16 @@ onMounted(async () => {
             <span class="conn-dot" :class="{ live: backendOnline }"></span>
             {{
               backendOnline
-                ? '已连接插件后端'
+                ? '插件已连接'
                 : bridgeConnected
-                  ? 'Bridge 就绪 (预览态)'
-                  : '独立预览模式'
+                  ? 'Bridge 预览'
+                  : '独立预览'
             }}
           </span>
 
           <!-- Thinking Effort Selector -->
           <label class="effort-control mono-num">
-            <span>Thinking:</span>
+            <span>Thinking</span>
             <select :value="status.thinking_effort" class="effort-select" @change="handleEffortChange">
               <option value="default">default</option>
               <option value="low">low</option>
@@ -144,34 +183,30 @@ onMounted(async () => {
               <option value="max">max</option>
             </select>
           </label>
-
-          <!-- Theme Switcher -->
-          <button
-            type="button"
-            class="btn"
-            :title="isDark ? '切换至羊皮纸浅色主题' : '切换至黑曜石深色主题'"
-            @click="toggleThemeMode"
-          >
-            {{ isDark ? '浅色模式' : '深色模式' }}
-          </button>
         </div>
       </header>
 
-      <!-- Active View Stage -->
+      <!-- Active View Stage with Smooth Cross-Fade Transition -->
       <main class="workspace-stage">
-        <InfiniteCanvas v-if="activeTab === 'canvas'" />
-        <MediaPlayground v-else-if="activeTab === 'playground'" @switch-tab="(t) => (activeTab = t)" />
-        <PlanAndTerminal v-else />
+        <Transition name="stage-fade" mode="out-in">
+          <InfiniteCanvas v-if="activeTab === 'canvas'" key="canvas" />
+          <MediaPlayground
+            v-else-if="activeTab === 'playground'"
+            key="playground"
+            @switch-tab="(t) => (activeTab = t)"
+          />
+          <PluginLogsConsole v-else key="logs" />
+        </Transition>
       </main>
     </div>
 
-    <!-- Claude-style Toast Stack -->
-    <div class="toast-stack" aria-live="polite">
+    <!-- Claude-style Animated Toast Stack -->
+    <TransitionGroup name="toast-pop" tag="div" class="toast-stack" aria-live="polite">
       <div v-for="t in toasts" :key="t.id" class="toast-item" :class="t.kind">
         <span class="toast-dot"></span>
         <span>{{ t.text }}</span>
       </div>
-    </div>
+    </TransitionGroup>
   </div>
 </template>
 
@@ -184,6 +219,10 @@ onMounted(async () => {
   background: var(--bg-canvas);
 }
 
+.mobile-sidebar-backdrop {
+  display: none;
+}
+
 .workspace-column {
   flex: 1;
   min-width: 0;
@@ -193,8 +232,8 @@ onMounted(async () => {
 }
 
 .workspace-topbar {
-  height: 52px;
-  padding: 0 16px;
+  height: 54px;
+  padding: 0 18px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-hairline);
   display: flex;
@@ -215,87 +254,62 @@ onMounted(async () => {
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
   cursor: pointer;
+  transition: background-color 140ms var(--ease-out), color 140ms var(--ease-out), transform 120ms var(--ease-out);
 }
 
-@media (max-width: 768px) {
-  .workspace-topbar {
-    height: auto;
-    min-height: 48px;
-    flex-wrap: wrap;
-    padding: 8px 10px;
-    row-gap: 8px;
-  }
+.sidebar-toggle-btn:active {
+  transform: scale(0.93);
+}
 
-  .topbar-left {
-    flex: 1 1 100%;
-    overflow-x: auto;
-  }
-
-  .primary-nav {
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  .primary-nav::-webkit-scrollbar {
-    display: none;
-  }
-
-  .nav-tab {
-    padding: 5px 9px;
-    font-size: 12.5px;
-    white-space: nowrap;
-  }
-
-  .topbar-right {
-    flex: 1 1 100%;
-    justify-content: space-between;
-    gap: 6px;
-  }
-
-  .effort-control {
-    gap: 4px;
-  }
-
-  .effort-control span {
-    display: none;
-  }
-
-  .pill-badge {
-    font-size: 11px;
-  }
+.sidebar-toggle-btn.collapsed {
+  color: var(--accent);
 }
 
 .primary-nav {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-muted);
+  border: 1px solid var(--border-hairline);
 }
 
 .nav-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  border-radius: 6px;
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 500;
   cursor: pointer;
-  transition: background-color 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+  transition: color 160ms var(--ease-out), transform 120ms var(--ease-out);
+  white-space: nowrap;
+}
+
+.nav-tab svg {
+  transition: transform 180ms var(--ease-out);
 }
 
 .nav-tab:hover {
-  background: var(--bg-surface-muted);
   color: var(--text-primary);
 }
 
+.nav-tab:active {
+  transform: scale(0.97);
+}
+
 .nav-tab.active {
-  background: var(--accent-soft);
   color: var(--accent);
-  border-color: var(--accent-border);
   font-weight: 600;
+}
+
+.nav-tab.active svg {
+  transform: scale(1.06);
 }
 
 .nav-count {
@@ -303,7 +317,7 @@ onMounted(async () => {
   border-radius: var(--radius-pill);
   background: var(--accent);
   color: #ffffff;
-  font-size: 11px;
+  font-size: 10.5px;
 }
 
 .conn-dot {
@@ -321,12 +335,17 @@ onMounted(async () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-hairline);
   background: var(--bg-surface-muted);
   font-size: 11.5px;
   color: var(--text-secondary);
+  transition: border-color 140ms var(--ease-out), background-color 140ms var(--ease-out);
+}
+
+.effort-control:hover {
+  border-color: var(--border-strong);
 }
 
 .effort-select {
@@ -352,7 +371,7 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  z-index: 300;
+  z-index: 320;
   pointer-events: none;
 }
 
@@ -374,6 +393,7 @@ onMounted(async () => {
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
+  flex-shrink: 0;
 }
 
 .toast-item.ok .toast-dot {
@@ -382,5 +402,57 @@ onMounted(async () => {
 
 .toast-item.warn .toast-dot {
   background: var(--status-warn);
+}
+
+@media (max-width: 768px) {
+  .studio-shell {
+    position: relative;
+  }
+
+  .mobile-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 210;
+    background: var(--bg-backdrop);
+    backdrop-filter: blur(2px);
+  }
+
+  .workspace-topbar {
+    height: auto;
+    min-height: 48px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    row-gap: 8px;
+  }
+
+  .topbar-left {
+    flex: 1 1 100%;
+    overflow-x: auto;
+  }
+
+  .primary-nav {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .primary-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-tab {
+    padding: 5px 9px;
+    font-size: 12px;
+  }
+
+  .topbar-right {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .effort-control span {
+    display: none;
+  }
 }
 </style>
