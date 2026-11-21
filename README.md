@@ -238,7 +238,6 @@ astrbot_plugin_mmx_cli_tool/
 ├── main.py                     # 插件入口：指令、工具注册、生命周期
 ├── metadata.yaml               # 插件信息
 ├── _conf_schema.json           # 配置项定义
-├── requirements.txt            # Python 依赖
 ├── README.md                   # 使用说明
 ├── CHANGELOG.md                # 更新日志
 ├── docs/
