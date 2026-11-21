@@ -1,6 +1,6 @@
 name: Tests
 
-# 仅在代码、依赖或测试工作流变更时触发，文档与发版元数据改动不跑测试。
+# 仅在代码或测试工作流变更时触发，文档与发版元数据改动不跑测试。
 on:
   push:
     branches: ['**']
@@ -9,7 +9,6 @@ on:
       - '**/*.py'
       - 'web/**'
       - '!web/**/*.md'
-      - 'requirements.txt'
       - '.github/workflows/tests.yml'
   pull_request:
     paths:
@@ -17,7 +16,6 @@ on:
       - '**/*.py'
       - 'web/**'
       - '!web/**/*.md'
-      - 'requirements.txt'
       - '.github/workflows/tests.yml'
   workflow_dispatch:
 
