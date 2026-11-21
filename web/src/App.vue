@@ -8,6 +8,7 @@ import type { PluginStatusResponse } from './types/mcode';
 import { bridgeGet, bridgePost, pushToast, useBridge } from './composables/useBridge';
 import { useCanvas } from './composables/useCanvas';
 import { useSlidingIndicator } from './composables/useSlidingIndicator';
+import { hydrateUiPrefs } from './composables/useUiPrefs';
 
 const { bridgeConnected, backendOnline, toasts } = useBridge();
 const { loadCanvasDocument, totalAnnotationsCount } = useCanvas();
@@ -60,6 +61,7 @@ async function handleEffortChange(e: Event): Promise<void> {
 }
 
 onMounted(async () => {
+  void hydrateUiPrefs();
   try {
     const remoteStatus = await bridgeGet<PluginStatusResponse>('status', undefined, () => status.value);
     if (remoteStatus && remoteStatus.model) {
@@ -71,7 +73,7 @@ onMounted(async () => {
   } finally {
     statusReady.value = true;
   }
-  await loadCanvasDocument();
+  await Promise.all([loadCanvasDocument(), hydrateUiPrefs()]);
 });
 </script>
 

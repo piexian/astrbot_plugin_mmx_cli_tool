@@ -1547,6 +1547,56 @@ class WebApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cleared["ok"])
         self.assertEqual(cleared["items"], [])
 
+    async def test_ui_prefs_round_trip_and_validation(self):
+        """ui/prefs 与 ui/prefs/save 持久化工作台偏好（含输入框高度），并过滤非法键。"""
+        initial = await self.call("ui/prefs")
+        self.assertEqual(initial, {"values": {}})
+
+        web_request.reset(
+            body={
+                "values": {
+                    "mcode:playground:music-lyrics-height": 268,
+                    "mcode:canvas:extra-prompt-height": 124,
+                    "mcode:playground:audio-history-open": False,
+                    "mcode:playground:music-prompt": "爵士钢琴",
+                    "invalid_prefix": 999,
+                    "mcode:bad:list": [1, 2, 3],
+                }
+            }
+        )
+        saved = await self.call("ui/prefs/save")
+        self.assertTrue(saved["ok"])
+        self.assertEqual(
+            saved["values"],
+            {
+                "mcode:playground:music-lyrics-height": 268,
+                "mcode:canvas:extra-prompt-height": 124,
+                "mcode:playground:audio-history-open": False,
+                "mcode:playground:music-prompt": "爵士钢琴",
+            },
+        )
+
+        # 合并更新与删除键（None）
+        web_request.reset(
+            body={
+                "values": {
+                    "mcode:playground:music-lyrics-height": 300,
+                    "mcode:playground:music-prompt": None,
+                }
+            }
+        )
+        updated = await self.call("ui/prefs/save")
+        self.assertTrue(updated["ok"])
+        self.assertEqual(updated["values"]["mcode:playground:music-lyrics-height"], 300)
+        self.assertNotIn("mcode:playground:music-prompt", updated["values"])
+        self.assertEqual(updated["values"]["mcode:canvas:extra-prompt-height"], 124)
+
+        reloaded = await self.call("ui/prefs")
+        self.assertEqual(reloaded["values"], updated["values"])
+
+        web_request.reset(body={"values": "not-a-dict"})
+        self.assertEqual((await self.call("ui/prefs/save")).status_code, 400)
+
     async def test_auth_error_from_matrix_surfaces_login_hint(self):
 
         self.plugin._matrix.batch_text_to_music = AsyncMock(

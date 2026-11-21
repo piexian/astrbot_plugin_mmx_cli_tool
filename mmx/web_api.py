@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import time
 import uuid
 from collections import deque
@@ -51,6 +52,9 @@ MAX_SEARCH_ITEMS = 5
 MAX_REVERSE_MATCHES = 10
 MAX_ITERATE_NODES = 5
 MAX_AUDIO_HISTORY = 50
+MAX_UI_PREF_KEYS = 64
+MAX_UI_PREF_STR_LEN = 8000
+UI_PREF_KEY_RE = re.compile(r"^mcode:[a-z0-9:_-]{1,80}$")
 MAX_UPLOAD_IMAGE_BYTES = 20 * 1024 * 1024
 LOGIN_SESSION_GRACE_SECONDS = 60.0
 
@@ -365,6 +369,18 @@ class MCodeWebAPI:
             "_handle_logs_clear",
             ["POST"],
             "MCode 工作台：清空本插件内存日志缓冲",
+        ),
+        (
+            "ui/prefs",
+            "_handle_ui_prefs_get",
+            ["GET"],
+            "MCode 工作台：读取前端界面偏好记忆",
+        ),
+        (
+            "ui/prefs/save",
+            "_handle_ui_prefs_set",
+            ["POST"],
+            "MCode 工作台：保存前端界面偏好记忆",
         ),
     )
 
@@ -1699,6 +1715,83 @@ class MCodeWebAPI:
         category = _text(body.get("category"), 16).lower() or "all"
         cleared = self._runtime_logs.clear(category=category)
         return {"ok": True, "cleared": cleared, "category": category}
+
+    # ---------------------------------------------------------------- UI 偏好记忆
+
+    def _ui_prefs_path(self) -> Path:
+        return Path(self._plugin._plugin_data_dir) / "ui_prefs.json"
+
+    def _load_ui_prefs(self) -> dict[str, Any]:
+        path = self._ui_prefs_path()
+        if not path.is_file():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        clean: dict[str, Any] = {}
+        for key, value in raw.items():
+            if len(clean) >= MAX_UI_PREF_KEYS:
+                break
+            if not isinstance(key, str) or not UI_PREF_KEY_RE.match(key):
+                continue
+            normalized = self._normalize_ui_pref_value(value)
+            if normalized is not None:
+                clean[key] = normalized
+        return clean
+
+    @staticmethod
+    def _normalize_ui_pref_value(value: Any) -> bool | int | float | str | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value if math.isfinite(value) else None
+        if isinstance(value, str):
+            return value[:MAX_UI_PREF_STR_LEN]
+        return None
+
+    def _save_ui_prefs(self, values: dict[str, Any]) -> None:
+        path = self._ui_prefs_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(values, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+        except OSError as exc:
+            logger.warning(f"[mmx-web] 持久化工作台偏好失败: {exc}")
+
+    async def _handle_ui_prefs_get(self) -> Any:
+        if self._closed:
+            return error_response("插件已卸载或正在关闭", status_code=503)
+        return {"values": self._load_ui_prefs()}
+
+    async def _handle_ui_prefs_set(self) -> Any:
+        if self._closed:
+            return error_response("插件已卸载或正在关闭", status_code=503)
+        body = await self._body()
+        incoming = body.get("values")
+        if not isinstance(incoming, dict):
+            return error_response("values 必须是对象", status_code=400)
+        prefs = self._load_ui_prefs()
+        for key, value in incoming.items():
+            if not isinstance(key, str) or not UI_PREF_KEY_RE.match(key):
+                continue
+            if value is None:
+                prefs.pop(key, None)
+                continue
+            normalized = self._normalize_ui_pref_value(value)
+            if normalized is None:
+                continue
+            if key not in prefs and len(prefs) >= MAX_UI_PREF_KEYS:
+                continue
+            prefs[key] = normalized
+        self._save_ui_prefs(prefs)
+        return {"ok": True, "values": prefs}
 
     async def _handle_events(self) -> Any:
         if self._closed:

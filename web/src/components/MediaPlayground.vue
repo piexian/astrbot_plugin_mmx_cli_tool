@@ -353,6 +353,7 @@ const DEMO_AUDIO_SEED: MusicTrackItem[] = [
 const demoAudioHistory = usePersistedRef<MusicTrackItem[]>(
   'mcode:playground:audio-demo-history',
   DEMO_AUDIO_SEED,
+  { syncBackend: false },
 );
 const liveAudioHistory = shallowRef<MusicTrackItem[]>([]);
 
@@ -1303,6 +1304,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  flex-shrink: 0;
 }
 
 .lyrics-label-row {
@@ -1324,6 +1326,7 @@ onMounted(() => {
   max-width: 100%;
   min-height: 88px;
   max-height: min(36vh, 340px);
+  flex-shrink: 0;
   resize: vertical;
   overflow-y: auto;
 }

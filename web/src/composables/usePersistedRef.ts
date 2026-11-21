@@ -1,21 +1,39 @@
 import { ref, watch, type Ref } from 'vue';
+import { getUiPrefRefValue, hasUiPref, readUiPref, writeUiPref } from './useUiPrefs';
 
-/** Ref persisted to localStorage so its value survives component remounts and page reloads. */
-export function usePersistedRef<T>(key: string, defaultValue: T): Ref<T> {
-  let initial = defaultValue;
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw !== null) initial = JSON.parse(raw) as T;
-  } catch {
-    // storage unavailable or corrupted — keep the default
-  }
-  const value = ref(initial) as Ref<T>;
-  watch(value, (v) => {
-    try {
-      localStorage.setItem(key, JSON.stringify(v));
-    } catch {
-      // ignore write failures (quota / private mode)
-    }
+export interface PersistedRefOptions {
+  /** Whether to also sync this key to plugin backend ui_prefs.json (default: true). */
+  syncBackend?: boolean;
+}
+
+/**
+ * Ref persisted across in-page tab switches, opaque-origin iframe reloads, and
+ * standalone browser reloads via the unified UI prefs store.
+ */
+export function usePersistedRef<T>(
+  key: string,
+  defaultValue: T,
+  options?: PersistedRefOptions,
+): Ref<T> {
+  const syncBackend = options?.syncBackend !== false;
+  const value = ref(readUiPref<T>(key, defaultValue)) as Ref<T>;
+  let applyingExternal = false;
+
+  watch(
+    () => getUiPrefRefValue(key),
+    (remoteVal) => {
+      if (!hasUiPref(key) || remoteVal === undefined) return;
+      if (Object.is(remoteVal, value.value)) return;
+      applyingExternal = true;
+      value.value = remoteVal as T;
+      applyingExternal = false;
+    },
+  );
+
+  watch(value, (next) => {
+    if (applyingExternal) return;
+    writeUiPref(key, next, { syncBackend });
   });
+
   return value;
 }

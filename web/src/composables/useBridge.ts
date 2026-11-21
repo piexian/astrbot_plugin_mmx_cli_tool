@@ -261,6 +261,32 @@ export async function bridgeUpload<T>(
   throw new Error(`Bridge upload ${endpoint} unavailable`);
 }
 
+export async function bridgeSilentGet<T>(
+  endpoint: string,
+  params?: Record<string, any>,
+): Promise<T | null> {
+  const sdk = getSDK();
+  if (!sdk) return null;
+  try {
+    return await sdk.apiGet<T>(endpoint, params);
+  } catch {
+    return null;
+  }
+}
+
+export async function bridgeSilentPost<T>(
+  endpoint: string,
+  body?: any,
+): Promise<T | null> {
+  const sdk = getSDK();
+  if (!sdk) return null;
+  try {
+    return await sdk.apiPost<T>(endpoint, body);
+  } catch {
+    return null;
+  }
+}
+
 export async function bridgeDownload(
   endpoint: string,
   params: Record<string, any>,
