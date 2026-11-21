@@ -1,12 +1,32 @@
 name: Tests
 
+# 仅在代码、依赖或测试工作流变更时触发，文档与发版元数据改动不跑测试。
 on:
   push:
+    branches: ['**']
+    paths:
+      - '*.py'
+      - '**/*.py'
+      - 'web/**'
+      - '!web/**/*.md'
+      - 'requirements.txt'
+      - '.github/workflows/tests.yml'
   pull_request:
+    paths:
+      - '*.py'
+      - '**/*.py'
+      - 'web/**'
+      - '!web/**/*.md'
+      - 'requirements.txt'
+      - '.github/workflows/tests.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   tests:
@@ -18,7 +38,7 @@ jobs:
         python: ["3.12", "3.13"]
         httpx: ["0.27.2", "0.28.1"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}

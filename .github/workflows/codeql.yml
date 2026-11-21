@@ -1,0 +1,61 @@
+name: CodeQL
+
+# 仅在代码或工作流文件变更时触发，不设定时扫描；
+# 覆盖仓库实际的 Python、WebUI（TypeScript/Vue）与 GitHub Actions，并排除 views/ 构建产物。
+on:
+  push:
+    branches: [master]
+    paths:
+      - '*.py'
+      - '**/*.py'
+      - 'web/**'
+      - '!web/**/*.md'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [master]
+    paths:
+      - '*.py'
+      - '**/*.py'
+      - 'web/**'
+      - '!web/**/*.md'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+          - language: javascript-typescript
+            config: |
+              paths-ignore:
+                - views/**
+          - language: python
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+
+      - name: 初始化 CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          config: ${{ matrix.config }}
+
+      - name: 执行 CodeQL 分析
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
